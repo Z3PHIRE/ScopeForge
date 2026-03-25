@@ -1,11 +1,11 @@
 # ScopeForge
 
-ScopeForge est un mini-projet PowerShell 7 pour l'automatisation de la reconnaissance web bug bounty strictement limitée au scope fourni. Il orchestre `subfinder`, `httpx` et `katana`, applique les exclusions avant probe/crawl, journalise les décisions de filtrage et exporte les résultats en JSON, CSV et HTML.
+ScopeForge est un mini-projet PowerShell 7 pour l'automatisation de la reconnaissance web bug bounty strictement limitée au scope fourni. Il orchestre `subfinder`, `gau`, `httpx` et `katana`, applique les exclusions avant probe/crawl, journalise les décisions de filtrage et exporte les résultats en JSON, CSV, Markdown et HTML.
 
 ## Fichiers
 
 - `ScopeForge.ps1` : script principal contenant toutes les fonctions et l'entrée `Invoke-BugBountyRecon`
-- `Launch-ScopeForge.ps1` : lanceur interactif local avec menu, collage direct du scope et résumé final
+- `Launch-ScopeForge.ps1` : assistant terminal local avec presets, profils, collage direct du scope et résumé final
 - `Launch-OpsForgeFromGitHub.ps1` : bootstrap GitHub prévu pour être utilisé via `irm ... | iex`
 - `examples/scope.json` : exemple de scope d'entrée
 
@@ -101,6 +101,7 @@ Le dossier `output/` contient :
 - `logs/exclusions.log`
 - `logs/tools.log`
 - `raw/subfinder_raw.txt`
+- `raw/gau_raw.txt`
 - `raw/httpx_raw.jsonl`
 - `raw/katana_raw.jsonl`
 - `normalized/scope_normalized.json`
@@ -140,6 +141,7 @@ Le dossier `output/` contient :
 `Launch-ScopeForge.ps1` ajoute un flux plus simple pour lancer la reconnaissance :
 
 - presets `safe`, `balanced`, `deep`
+- profils de cible `webapp`, `api`, `wide-assets`
 - choix du mode d'entrée : fichier JSON, collage direct du JSON, assistant guidé
 - aperçu du scope normalisé avant exécution
 - génération automatique d'un `User-Agent` unique si besoin
@@ -148,17 +150,47 @@ Le dossier `output/` contient :
 - tableau de bord final avec catégories intéressantes, endpoints protégés et exports
 - menu post-run pour relire les URLs les plus prometteuses directement dans le terminal
 
+### Ce que changent les presets
+
+- `safe` : privilégie une exécution prudente, avec peu de threads, profondeur réduite et respect strict du schéma.
+- `balanced` : profil recommandé pour un programme standard avec mélange de découverte d'assets et crawl raisonnable.
+- `deep` : profil plus ambitieux pour les scopes plus larges, avec plus de threads, plus de profondeur et reprise activée.
+
+### Ce que changent les profils de cible
+
+- `webapp` : vise surtout les surfaces login, admin, upload, dashboard et routes applicatives.
+- `api` : réduit le crawl profond et favorise la validation d'URLs déjà connues, utile pour Swagger, OpenAPI, GraphQL et REST versionné.
+- `wide-assets` : privilégie la couverture de nombreux hôtes, utile pour les programmes contenant plusieurs wildcards ou beaucoup d'assets.
+
 Le bootstrap GitHub `Launch-OpsForgeFromGitHub.ps1` télécharge les fichiers nécessaires dans un dossier temporaire puis exécute le lanceur localement sans `Invoke-Expression` supplémentaire dans le script bootstrap lui-même.
 
 ## Hypothèses et limites
 
 - Le script est conçu pour des actions passives ou semi-passives autorisées : parsing de scope, découverte passive, validation HTTP et crawl HTTP(S) strictement borné.
 - Les exclusions sont appliquées avant probe et crawl. Pour la découverte passive `subfinder`, le script interroge la racine du wildcard puis filtre immédiatement les résultats avant toute validation active.
+- Si `gau` est disponible, le script récupère aussi des URLs historiques, puis les refiltre strictement selon le scope, le wildcard réel, le schéma et les exclusions avant toute validation active.
 - Le bootstrap télécharge les dernières releases GitHub officielles dans `output/tools/` sans modifier arbitrairement le système.
 - Les options `httpx` et `katana` sont activées en fonction des flags détectés localement. Une version très ancienne d'un outil peut réduire certains enrichissements.
 - `katana` est borné par les regex in-scope et le filtrage post-traitement. Si un programme a des contraintes supplémentaires, adapte `Depth`, `Threads`, `TimeoutSeconds` et les exclusions.
 - La section `interesting_urls` repose sur des heuristiques de priorisation, pas sur une détection de vulnérabilité.
 - `reports/triage.md` est un export de synthèse destiné au triage manuel rapide.
+
+## Aide au triage
+
+La sortie finale met désormais l'accent sur le triage manuel :
+
+- `normalized/interesting_urls.json` et `normalized/interesting_urls.csv` : URLs les plus prometteuses selon des heuristiques de surface
+- `reports/triage.md` : résumé Markdown rapide à relire ou partager
+- `reports/report.html` : sections dédiées `Interesting Pages`, `Protected Endpoints` et `Spotlight` par catégorie
+
+Les heuristiques mettent en avant par exemple :
+
+- auth/login/signup/session
+- admin/dashboard/panel/portal
+- swagger/openapi/graphql/api-docs
+- upload/import/export/download
+- debug/error/logs/trace
+- config/env/backup
 
 ## Comment adapter les filtres d'exclusion
 

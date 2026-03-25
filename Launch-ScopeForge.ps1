@@ -95,13 +95,40 @@ function Get-LauncherPreset {
     param([Parameter(Mandatory)][string]$Name)
     switch ($Name.ToLowerInvariant()) {
         'safe' {
-            return [pscustomobject]@{ Name = 'safe'; Depth = 2; Threads = 6; TimeoutSeconds = 20; RespectSchemeOnly = $true; Resume = $false; Label = 'Minimal and cautious' }
+            return [pscustomobject]@{
+                Name              = 'safe'
+                Depth             = 2
+                Threads           = 6
+                TimeoutSeconds    = 20
+                RespectSchemeOnly = $true
+                Resume            = $false
+                Label             = 'Minimal and cautious'
+                Description       = 'Réduit le volume HTTP, conserve le schéma déclaré et limite la profondeur de crawl.'
+            }
         }
         'balanced' {
-            return [pscustomobject]@{ Name = 'balanced'; Depth = 3; Threads = 10; TimeoutSeconds = 30; RespectSchemeOnly = $false; Resume = $false; Label = 'Default recon profile' }
+            return [pscustomobject]@{
+                Name              = 'balanced'
+                Depth             = 3
+                Threads           = 10
+                TimeoutSeconds    = 30
+                RespectSchemeOnly = $false
+                Resume            = $false
+                Label             = 'Default recon profile'
+                Description       = "Bon compromis entre découverte d'assets, validation HTTP et crawl de chemins."
+            }
         }
         'deep' {
-            return [pscustomobject]@{ Name = 'deep'; Depth = 4; Threads = 20; TimeoutSeconds = 45; RespectSchemeOnly = $false; Resume = $true; Label = 'Broader crawl for larger scopes' }
+            return [pscustomobject]@{
+                Name              = 'deep'
+                Depth             = 4
+                Threads           = 20
+                TimeoutSeconds    = 45
+                RespectSchemeOnly = $false
+                Resume            = $true
+                Label             = 'Broader crawl for larger scopes'
+                Description       = 'Approfondit davantage le crawl et active une logique adaptée aux scopes plus larges.'
+            }
         }
         default {
             throw "Unknown preset: $Name"
@@ -112,14 +139,79 @@ function Get-LauncherPreset {
 function Select-LauncherPreset {
     Write-LauncherSection -Title 'Preset'
     Write-Host '1. safe      : minimal and cautious' -ForegroundColor Gray
+    Write-Host '   Limite la profondeur, réduit les threads et garde un comportement conservateur.' -ForegroundColor DarkGray
     Write-Host '2. balanced  : default recon profile' -ForegroundColor Gray
+    Write-Host '   Convient à la majorité des programmes web et API classiques.' -ForegroundColor DarkGray
     Write-Host '3. deep      : broader crawl for larger scopes' -ForegroundColor Gray
+    Write-Host '   Augmente le volume de collecte pour les scopes plus vastes ou plus riches.' -ForegroundColor DarkGray
     $choice = Read-LauncherChoice -Prompt 'Choisis un preset' -Allowed @('1', '2', '3') -Default '2'
     switch ($choice) {
-        '1' { return Get-LauncherPreset -Name 'safe' }
-        '2' { return Get-LauncherPreset -Name 'balanced' }
-        '3' { return Get-LauncherPreset -Name 'deep' }
+        '1' { $preset = Get-LauncherPreset -Name 'safe' }
+        '2' { $preset = Get-LauncherPreset -Name 'balanced' }
+        '3' { $preset = Get-LauncherPreset -Name 'deep' }
     }
+    Write-Host ("Preset retenu : {0} - {1}" -f $preset.Name, $preset.Description) -ForegroundColor Cyan
+    return $preset
+}
+
+function Get-LauncherProgramProfile {
+    param([Parameter(Mandatory)][string]$Name)
+    switch ($Name.ToLowerInvariant()) {
+        'webapp' {
+            return [pscustomobject]@{
+                Name = 'webapp'
+                Label = 'Traditional web application'
+                Description = 'Favorise les zones login, admin, upload, dashboard et autres routes applicatives classiques.'
+                SuggestedDepth = 3
+                SuggestedThreads = 10
+                ForceRespectSchemeOnly = $false
+                ForceResume = $false
+            }
+        }
+        'api' {
+            return [pscustomobject]@{
+                Name = 'api'
+                Label = 'API-first target'
+                Description = "Réduit le crawl profond et pousse davantage la validation d'URLs déjà connues, utile pour Swagger, GraphQL, REST et endpoints versionnés."
+                SuggestedDepth = 2
+                SuggestedThreads = 12
+                ForceRespectSchemeOnly = $true
+                ForceResume = $false
+            }
+        }
+        'wide-assets' {
+            return [pscustomobject]@{
+                Name = 'wide-assets'
+                Label = 'Large wildcard-heavy scope'
+                Description = "Met l'accent sur la couverture d'assets et la reprise, utile quand le scope contient beaucoup de hosts ou plusieurs wildcards."
+                SuggestedDepth = 2
+                SuggestedThreads = 16
+                ForceRespectSchemeOnly = $false
+                ForceResume = $true
+            }
+        }
+        default {
+            throw "Unknown program profile: $Name"
+        }
+    }
+}
+
+function Select-LauncherProgramProfile {
+    Write-LauncherSection -Title 'Profil cible'
+    Write-Host '1. webapp      : application web classique' -ForegroundColor Gray
+    Write-Host '   Plus pertinent si tu attends surtout des panels, auth, uploads, dashboards, pages métiers.' -ForegroundColor DarkGray
+    Write-Host '2. api         : cible orientée API' -ForegroundColor Gray
+    Write-Host '   Plus pertinent si le scope contient beaucoup de REST, GraphQL, docs Swagger, routes versionnées.' -ForegroundColor DarkGray
+    Write-Host '3. wide-assets : scope large en wildcard' -ForegroundColor Gray
+    Write-Host '   Plus pertinent si tu veux surtout cartographier rapidement de nombreux hosts et relancer souvent.' -ForegroundColor DarkGray
+    $choice = Read-LauncherChoice -Prompt 'Choisis un profil' -Allowed @('1', '2', '3') -Default '1'
+    switch ($choice) {
+        '1' { $profile = Get-LauncherProgramProfile -Name 'webapp' }
+        '2' { $profile = Get-LauncherProgramProfile -Name 'api' }
+        '3' { $profile = Get-LauncherProgramProfile -Name 'wide-assets' }
+    }
+    Write-Host ("Profil retenu : {0} - {1}" -f $profile.Name, $profile.Description) -ForegroundColor Cyan
+    return $profile
 }
 
 function Show-ScopePreview {
@@ -139,6 +231,14 @@ function Show-ScopePreview {
 function Show-LauncherConfigPreview {
     param([Parameter(Mandatory)][hashtable]$RunConfig)
     Write-LauncherSection -Title 'Configuration'
+    if ($RunConfig.ContainsKey('PresetName')) {
+        Write-Host ("  Preset            : {0}" -f $RunConfig.PresetName) -ForegroundColor Gray
+        Write-Host ("  Preset details    : {0}" -f $RunConfig.PresetDescription) -ForegroundColor DarkGray
+    }
+    if ($RunConfig.ContainsKey('ProfileName')) {
+        Write-Host ("  Program profile   : {0}" -f $RunConfig.ProfileName) -ForegroundColor Gray
+        Write-Host ("  Profile details   : {0}" -f $RunConfig.ProfileDescription) -ForegroundColor DarkGray
+    }
     Write-Host ("  ScopeFile         : {0}" -f $RunConfig.ScopeFile) -ForegroundColor Gray
     Write-Host ("  ProgramName       : {0}" -f $RunConfig.ProgramName) -ForegroundColor Gray
     Write-Host ("  OutputDir         : {0}" -f $RunConfig.OutputDir) -ForegroundColor Gray
@@ -155,6 +255,7 @@ function Show-LauncherConfigPreview {
 function Show-RunSummaryDashboard {
     param([Parameter(Mandatory)][pscustomobject]$Result)
     $summary = $Result.Summary
+    $protectedCount = @($Result.LiveTargets | Where-Object { $_.StatusCode -in 401, 403 }).Count
     Write-LauncherSection -Title 'Dashboard'
     Write-Host ("  Scope items      : {0}" -f $summary.ScopeItemCount) -ForegroundColor Gray
     Write-Host ("  Excluded         : {0}" -f $summary.ExcludedItemCount) -ForegroundColor Gray
@@ -163,6 +264,7 @@ function Show-RunSummaryDashboard {
     Write-Host ("  Live targets     : {0}" -f $summary.LiveTargetCount) -ForegroundColor Gray
     Write-Host ("  URLs discovered  : {0}" -f $summary.DiscoveredUrlCount) -ForegroundColor Gray
     Write-Host ("  Interesting URLs : {0}" -f $summary.InterestingUrlCount) -ForegroundColor Gray
+    Write-Host ("  Protected 401/403: {0}" -f $protectedCount) -ForegroundColor Gray
     Write-Host ("  Errors           : {0}" -f $summary.ErrorCount) -ForegroundColor Gray
 
     if ($summary.TopTechnologies -and $summary.TopTechnologies.Count -gt 0) {
@@ -180,6 +282,17 @@ function Show-RunSummaryDashboard {
             Write-Host ("    {0} ({1})" -f $item.Category, $item.Count) -ForegroundColor Gray
         }
     }
+}
+
+function Get-LauncherInvokeParams {
+    param([Parameter(Mandatory)][hashtable]$RunConfig)
+    $invokeParams = @{}
+    foreach ($name in @('ScopeFile', 'ProgramName', 'OutputDir', 'Depth', 'UniqueUserAgent', 'Threads', 'TimeoutSeconds', 'NoInstall', 'Quiet', 'IncludeApex', 'RespectSchemeOnly', 'Resume')) {
+        if ($RunConfig.ContainsKey($name)) {
+            $invokeParams[$name] = $RunConfig[$name]
+        }
+    }
+    return $invokeParams
 }
 
 function Show-InterestingSummary {
@@ -277,11 +390,25 @@ function Build-InteractiveRunConfig {
     )
 
     $preset = Select-LauncherPreset
+    $profile = Select-LauncherProgramProfile
     $localDepth = $preset.Depth
     $localThreads = $preset.Threads
     $localTimeout = $preset.TimeoutSeconds
     $localRespectSchemeOnly = $preset.RespectSchemeOnly
     $localResume = $preset.Resume
+
+    if ($profile.SuggestedDepth -gt 0) {
+        if ($preset.Name -eq 'safe') {
+            $localDepth = [Math]::Min($localDepth, $profile.SuggestedDepth)
+        } else {
+            $localDepth = [Math]::Max($localDepth, $profile.SuggestedDepth)
+        }
+    }
+    if ($profile.SuggestedThreads -gt 0) {
+        $localThreads = [Math]::Max($localThreads, $profile.SuggestedThreads)
+    }
+    if ($profile.ForceRespectSchemeOnly) { $localRespectSchemeOnly = $true }
+    if ($profile.ForceResume) { $localResume = $true }
 
     if ($Depth -gt 0) { $localDepth = $Depth }
     if ($Threads -gt 0) { $localThreads = $Threads }
@@ -307,6 +434,10 @@ function Build-InteractiveRunConfig {
     $localResume = [bool](Read-LauncherYesNo -Prompt 'Activer le mode reprise ?' -Default $localResume)
 
     return @{
+        PresetName        = $preset.Name
+        PresetDescription = $preset.Description
+        ProfileName       = $profile.Name
+        ProfileDescription = $profile.Description
         ScopeFile         = $localScopeFile
         ProgramName       = $localProgramName
         OutputDir         = $localOutputDir
@@ -368,7 +499,8 @@ function Start-ScopeForgeLauncher {
         if (-not (Read-LauncherYesNo -Prompt 'Confirmer le lancement ?' -Default $true)) { return }
     }
 
-    $result = Invoke-BugBountyRecon @runConfig
+    $invokeParams = Get-LauncherInvokeParams -RunConfig $runConfig
+    $result = Invoke-BugBountyRecon @invokeParams
     Show-RunSummaryDashboard -Result $result
     Show-InterestingSummary -Result $result
     Show-OutputPaths -Result $result

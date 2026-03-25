@@ -68,6 +68,7 @@ function Get-OutputLayout {
         ExclusionsLog      = Join-Path (Join-Path $root 'logs') 'exclusions.log'
         ToolsLog           = Join-Path (Join-Path $root 'logs') 'tools.log'
         SubfinderRaw       = Join-Path (Join-Path $root 'raw') 'subfinder_raw.txt'
+        GauRaw             = Join-Path (Join-Path $root 'raw') 'gau_raw.txt'
         HttpxRaw           = Join-Path (Join-Path $root 'raw') 'httpx_raw.jsonl'
         KatanaRaw          = Join-Path (Join-Path $root 'raw') 'katana_raw.jsonl'
         ScopeNormalized    = Join-Path (Join-Path $root 'normalized') 'scope_normalized.json'
@@ -350,22 +351,34 @@ function Ensure-ReconTools {
     Write-ReconLog -Level INFO -Message ("PowerShell {0} on {1} ({2}/{3})" -f $PSVersionTable.PSVersion, $platformInfo.Description, $platformInfo.Os, $platformInfo.Architecture)
 
     $manifest = @(
-        [pscustomobject]@{ Name = 'subfinder'; Repository = 'projectdiscovery/subfinder'; BinaryName = 'subfinder' },
-        [pscustomobject]@{ Name = 'httpx'; Repository = 'projectdiscovery/httpx'; BinaryName = 'httpx' },
-        [pscustomobject]@{ Name = 'katana'; Repository = 'projectdiscovery/katana'; BinaryName = 'katana' }
+        [pscustomobject]@{ Name = 'subfinder'; Repository = 'projectdiscovery/subfinder'; BinaryName = 'subfinder'; Required = $true },
+        [pscustomobject]@{ Name = 'httpx'; Repository = 'projectdiscovery/httpx'; BinaryName = 'httpx'; Required = $true },
+        [pscustomobject]@{ Name = 'katana'; Repository = 'projectdiscovery/katana'; BinaryName = 'katana'; Required = $true },
+        [pscustomobject]@{ Name = 'gau'; Repository = 'lc/gau'; BinaryName = 'gau'; Required = $false }
     )
 
     $resolvedTools = [ordered]@{}
     foreach ($tool in $manifest) {
         $toolPath = Resolve-ToolPath -Name $tool.Name -ToolsBin $Layout.ToolsBin
         if (-not $toolPath) {
-            if ($NoInstall) { throw "Required tool '$($tool.Name)' not found and -NoInstall was specified." }
-            $toolPath = Install-ExternalTool -ToolName $tool.Name -Repository $tool.Repository -BinaryName $tool.BinaryName -PlatformInfo $platformInfo -Layout $Layout -TimeoutSeconds $TimeoutSeconds
+            if ($tool.Required) {
+                if ($NoInstall) { throw "Required tool '$($tool.Name)' not found and -NoInstall was specified." }
+                $toolPath = Install-ExternalTool -ToolName $tool.Name -Repository $tool.Repository -BinaryName $tool.BinaryName -PlatformInfo $platformInfo -Layout $Layout -TimeoutSeconds $TimeoutSeconds
+            } elseif (-not $NoInstall) {
+                try {
+                    $toolPath = Install-ExternalTool -ToolName $tool.Name -Repository $tool.Repository -BinaryName $tool.BinaryName -PlatformInfo $platformInfo -Layout $Layout -TimeoutSeconds $TimeoutSeconds
+                } catch {
+                    Write-ReconLog -Level WARN -Message "Optional tool '$($tool.Name)' is unavailable: $($_.Exception.Message)"
+                    $toolPath = $null
+                }
+            } else {
+                Write-ReconLog -Level WARN -Message "Optional tool '$($tool.Name)' not found. Historical passive URL discovery will be skipped."
+            }
         }
-        $resolvedTools[$tool.Name] = [pscustomobject]@{ Path = $toolPath; HelpText = Get-ToolHelpText -ToolPath $toolPath }
+        $resolvedTools[$tool.Name] = if ($toolPath) { [pscustomobject]@{ Path = $toolPath; HelpText = Get-ToolHelpText -ToolPath $toolPath } } else { $null }
     }
 
-    [pscustomobject]@{ Platform = $platformInfo; Subfinder = $resolvedTools['subfinder']; Httpx = $resolvedTools['httpx']; Katana = $resolvedTools['katana'] }
+    [pscustomobject]@{ Platform = $platformInfo; Subfinder = $resolvedTools['subfinder']; Httpx = $resolvedTools['httpx']; Katana = $resolvedTools['katana']; Gau = $resolvedTools['gau'] }
 }
 
 function Test-ValidDnsName {
@@ -646,6 +659,30 @@ function Add-ExclusionRecord {
     Write-ReconLog -Level EXCLUDED -Message ("[{0}] Excluded by token '{1}' on {2}: {3}" -f $Phase, $ExclusionResult.Token, $ExclusionResult.MatchedOn, $Target)
 }
 
+function New-HostInventoryRecord {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Host)
+
+    return [ordered]@{
+        Host           = $Host
+        Discovery      = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        SourceScopeIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        SourceTypes    = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        CandidateUrls  = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        RootDomains    = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    }
+}
+
+function Get-OrCreateHostInventoryRecord {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$HostMap, [Parameter(Mandatory)][string]$Host)
+
+    if (-not $HostMap.ContainsKey($Host)) {
+        $HostMap[$Host] = New-HostInventoryRecord -Host $Host
+    }
+    return $HostMap[$Host]
+}
+
 function Get-PassiveSubdomains {
     [CmdletBinding()]
     param(
@@ -667,6 +704,54 @@ function Get-PassiveSubdomains {
         }
         if ($result.ExitCode -ne 0) { Add-ErrorRecord -Phase 'PassiveDiscovery' -Target $RootDomain -Message 'subfinder returned a non-zero exit code.' -Details $result.StdErr }
         return @($rawLines | ForEach-Object { $_.Trim().TrimEnd('.').ToLowerInvariant() } | Where-Object { $_ -and (Test-ValidDnsName -Name $_) } | Select-Object -Unique)
+    } finally {
+        Remove-Item -LiteralPath $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-HistoricalUrls {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Target,
+        [Parameter(Mandatory)][string]$GauPath,
+        [Parameter(Mandatory)][string]$RawOutputPath,
+        [bool]$IncludeSubdomains = $false,
+        [int]$TimeoutSeconds = 60
+    )
+
+    $stdoutFile = Join-Path ([System.IO.Path]::GetTempPath()) ("scopeforge-gau-{0}.txt" -f ([Guid]::NewGuid().ToString('N')))
+    $stderrFile = Join-Path ([System.IO.Path]::GetTempPath()) ("scopeforge-gau-{0}.err" -f ([Guid]::NewGuid().ToString('N')))
+
+    try {
+        $arguments = @()
+        if ($IncludeSubdomains) { $arguments += '--subs' }
+        $arguments += $Target
+
+        $result = Invoke-ExternalCommand -FilePath $GauPath -Arguments $arguments -TimeoutSeconds $TimeoutSeconds -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
+        $rawLines = if (Test-Path -LiteralPath $stdoutFile) { Get-Content -LiteralPath $stdoutFile -Encoding utf8 } else { @() }
+
+        if ($rawLines.Count -gt 0) {
+            Add-Content -LiteralPath $RawOutputPath -Value ($rawLines -join [Environment]::NewLine) -Encoding utf8
+            Add-Content -LiteralPath $RawOutputPath -Value [Environment]::NewLine -Encoding utf8
+        }
+
+        if ($result.ExitCode -ne 0) {
+            Add-ErrorRecord -Phase 'HistoricalDiscovery' -Target $Target -Message 'gau returned a non-zero exit code.' -Details $result.StdErr
+        }
+
+        $urls = $rawLines |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -match '^https?://' } |
+            ForEach-Object {
+                $uri = $null
+                if ([Uri]::TryCreate($_, [UriKind]::Absolute, [ref]$uri) -and $uri.Scheme -in @('http', 'https')) {
+                    $uri.AbsoluteUri
+                }
+            } |
+            Where-Object { $_ } |
+            Select-Object -Unique
+
+        return @($urls)
     } finally {
         Remove-Item -LiteralPath $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
     }
@@ -905,13 +990,13 @@ function Invoke-KatanaCrawl {
 function Merge-ReconResults {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][pscustomobject[]]$ScopeItems,
-        [Parameter(Mandatory)][pscustomobject[]]$HostsAll,
-        [Parameter(Mandatory)][pscustomobject[]]$LiveTargets,
-        [Parameter(Mandatory)][pscustomobject[]]$DiscoveredUrls,
-        [Parameter(Mandatory)][pscustomobject[]]$InterestingUrls,
-        [Parameter(Mandatory)][pscustomobject[]]$Exclusions,
-        [Parameter(Mandatory)][pscustomobject[]]$Errors,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$ScopeItems,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$HostsAll,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$LiveTargets,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$DiscoveredUrls,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$InterestingUrls,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$Exclusions,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$Errors,
         [Parameter(Mandatory)][string]$ProgramName,
         [string]$UniqueUserAgent
     )
@@ -953,8 +1038,8 @@ function ConvertTo-HtmlSafe {
 function Get-InterestingReconFindings {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][pscustomobject[]]$LiveTargets,
-        [Parameter(Mandatory)][pscustomobject[]]$DiscoveredUrls
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$LiveTargets,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$DiscoveredUrls
     )
 
     $liveIndex = @{}
@@ -1035,8 +1120,8 @@ function Export-TriageMarkdownReport {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][pscustomobject]$Summary,
-        [Parameter(Mandatory)][pscustomobject[]]$InterestingUrls,
-        [Parameter(Mandatory)][pscustomobject[]]$LiveTargets,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$InterestingUrls,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$LiveTargets,
         [Parameter(Mandatory)][pscustomobject]$Layout
     )
 
@@ -1100,14 +1185,14 @@ function Export-ReconReport {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][pscustomobject]$Summary,
-        [Parameter(Mandatory)][pscustomobject[]]$ScopeItems,
-        [Parameter(Mandatory)][pscustomobject[]]$HostsAll,
-        [Parameter(Mandatory)][pscustomobject[]]$HostsLive,
-        [Parameter(Mandatory)][pscustomobject[]]$LiveTargets,
-        [Parameter(Mandatory)][pscustomobject[]]$DiscoveredUrls,
-        [Parameter(Mandatory)][pscustomobject[]]$InterestingUrls,
-        [Parameter(Mandatory)][pscustomobject[]]$Exclusions,
-        [Parameter(Mandatory)][pscustomobject[]]$Errors,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$ScopeItems,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$HostsAll,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$HostsLive,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$LiveTargets,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$DiscoveredUrls,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$InterestingUrls,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$Exclusions,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$Errors,
         [Parameter(Mandatory)][pscustomobject]$Layout,
         [switch]$ExportJson,
         [switch]$ExportCsv,
@@ -1144,11 +1229,31 @@ function Export-ReconReport {
     $liveRows = ($LiveTargets | Select-Object -First 1000 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe ($_.Technologies -join ' '))""><td>$(ConvertTo-HtmlSafe $_.Host)</td><td><a href=""$(ConvertTo-HtmlSafe $_.Url)"" target=""_blank"" rel=""noreferrer"">$(ConvertTo-HtmlSafe $_.Url)</a></td><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(ConvertTo-HtmlSafe $_.Title)</td><td>$(ConvertTo-HtmlSafe ($_.Technologies -join ', '))</td></tr>" }) -join [Environment]::NewLine
     $urlRows = ($DiscoveredUrls | Select-Object -First 2000 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe $_.ScopeId)""><td>$(ConvertTo-HtmlSafe $_.Host)</td><td><a href=""$(ConvertTo-HtmlSafe $_.Url)"" target=""_blank"" rel=""noreferrer"">$(ConvertTo-HtmlSafe $_.Url)</a></td><td>$(ConvertTo-HtmlSafe $_.ScopeId)</td><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(ConvertTo-HtmlSafe $_.Source)</td></tr>" }) -join [Environment]::NewLine
     $interestingRows = ($InterestingUrls | Select-Object -First 250 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe ($_.Categories -join ' '))""><td>$(ConvertTo-HtmlSafe $_.Score)</td><td><a href=""$(ConvertTo-HtmlSafe $_.Url)"" target=""_blank"" rel=""noreferrer"">$(ConvertTo-HtmlSafe $_.Url)</a></td><td>$(ConvertTo-HtmlSafe ($_.Categories -join ', '))</td><td>$(ConvertTo-HtmlSafe ($_.Reasons -join ', '))</td></tr>" }) -join [Environment]::NewLine
+    $protectedRows = ($LiveTargets | Where-Object { $_.StatusCode -in 401, 403 } | Select-Object -First 250 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) protected""><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td><a href=""$(ConvertTo-HtmlSafe $_.Url)"" target=""_blank"" rel=""noreferrer"">$(ConvertTo-HtmlSafe $_.Url)</a></td><td>$(ConvertTo-HtmlSafe $_.Title)</td><td>$(ConvertTo-HtmlSafe ($_.Technologies -join ', '))</td></tr>" }) -join [Environment]::NewLine
     $errorRows = ($Errors | Select-Object -First 500 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Phase) $(ConvertTo-HtmlSafe $_.Target) $(ConvertTo-HtmlSafe $_.Message)""><td>$(ConvertTo-HtmlSafe $_.Phase)</td><td>$(ConvertTo-HtmlSafe $_.Target)</td><td>$(ConvertTo-HtmlSafe $_.Message)</td><td>$(ConvertTo-HtmlSafe $_.Details)</td></tr>" }) -join [Environment]::NewLine
     $statusBars = ($Summary.StatusCodeDistribution | ForEach-Object { "<div class=""mini-row""><span>HTTP $(ConvertTo-HtmlSafe $_.StatusCode)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
     $technologyBars = ($Summary.TopTechnologies | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Technology)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
     $subdomainBars = ($Summary.TopSubdomains | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Host)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
     $interestingBars = ($Summary.TopInterestingCategories | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Category)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
+    $spotlightSections = $(
+        foreach ($categoryStat in ($Summary.TopInterestingCategories | Select-Object -First 4)) {
+            $categoryName = [string]$categoryStat.Category
+            $categoryRows = (
+                $InterestingUrls |
+                Where-Object { $_.Categories -contains $categoryName } |
+                Select-Object -First 5 |
+                ForEach-Object {
+                    "<div class=""mini-row""><span><a href=""$(ConvertTo-HtmlSafe $_.Url)"" target=""_blank"" rel=""noreferrer"">$(ConvertTo-HtmlSafe $_.Url)</a></span><strong>$(ConvertTo-HtmlSafe $_.Score)</strong></div>"
+                }
+            ) -join [Environment]::NewLine
+
+            if (-not $categoryRows) {
+                $categoryRows = '<div class="mini-row"><span>No URLs in this category.</span><strong>0</strong></div>'
+            }
+
+            "<section><h2>Spotlight: $(ConvertTo-HtmlSafe $categoryName)</h2>$categoryRows</section>"
+        }
+    ) -join [Environment]::NewLine
 
     $html = @"
 <!DOCTYPE html>
@@ -1157,10 +1262,12 @@ function Export-ReconReport {
 <body><div class="wrap"><div class="hero"><h1>ScopeForge Recon Report</h1><p>Program: $(ConvertTo-HtmlSafe $Summary.ProgramName) | Generated: $(ConvertTo-HtmlSafe $Summary.GeneratedAtUtc) | PowerShell $(ConvertTo-HtmlSafe $Summary.PowerShellVersion)</p></div>
 <div class="grid"><div class="card"><div class="label">Scope Items</div><div class="value">$(ConvertTo-HtmlSafe $Summary.ScopeItemCount)</div></div><div class="card"><div class="label">Excluded</div><div class="value">$(ConvertTo-HtmlSafe $Summary.ExcludedItemCount)</div></div><div class="card"><div class="label">Hosts Found</div><div class="value">$(ConvertTo-HtmlSafe $Summary.DiscoveredHostCount)</div></div><div class="card"><div class="label">Live Hosts</div><div class="value">$(ConvertTo-HtmlSafe $Summary.LiveHostCount)</div></div><div class="card"><div class="label">Live Targets</div><div class="value">$(ConvertTo-HtmlSafe $Summary.LiveTargetCount)</div></div><div class="card"><div class="label">URLs Found</div><div class="value">$(ConvertTo-HtmlSafe $Summary.DiscoveredUrlCount)</div></div><div class="card"><div class="label">Interesting</div><div class="value">$(ConvertTo-HtmlSafe $Summary.InterestingUrlCount)</div></div></div>
 <div class="two-col"><section><h2>HTTP Codes</h2>$statusBars</section><section><h2>Top Technologies</h2>$technologyBars</section><section><h2>Top Subdomains</h2>$subdomainBars</section><section><h2>Interesting Categories</h2>$interestingBars</section></div>
+<div class="two-col">$spotlightSections</div>
 <input id="globalSearch" class="search" type="search" placeholder="Filter all tables..." />
 <section><h2>In Scope</h2><p class="hint">Normalized scope after validation and wildcard parsing.</p><table data-filter-table="true"><thead><tr><th>ID</th><th>Type</th><th>Value</th><th>Exclusions</th></tr></thead><tbody>$scopeRows</tbody></table></section>
 <section><h2>Excluded</h2><p class="hint">Assets removed because they matched exclusion strings before probe or after crawl filtering.</p><table data-filter-table="true"><thead><tr><th>Phase</th><th>Scope</th><th>Target</th><th>Token</th><th>Matched On</th></tr></thead><tbody>$excludedRows</tbody></table></section>
 <section><h2>Live Hosts</h2><p class="hint">Reachable HTTP(S) targets retained after in-scope validation.</p><table data-filter-table="true"><thead><tr><th>Host</th><th>URL</th><th>Status</th><th>Title</th><th>Technologies</th></tr></thead><tbody>$liveRows</tbody></table></section>
+<section><h2>Protected Endpoints</h2><p class="hint">Live endpoints returning 401 or 403, often useful for manual access-control triage.</p><table data-filter-table="true"><thead><tr><th>Status</th><th>URL</th><th>Title</th><th>Technologies</th></tr></thead><tbody>$protectedRows</tbody></table></section>
 <section><h2>Interesting Pages</h2><p class="hint">Heuristically ranked URLs that can help prioritise manual bug bounty review.</p><table data-filter-table="true"><thead><tr><th>Score</th><th>URL</th><th>Categories</th><th>Reasons</th></tr></thead><tbody>$interestingRows</tbody></table></section>
 <section><h2>Discovered URLs</h2><p class="hint">Unique endpoints collected from katana and seed URLs.</p><table data-filter-table="true"><thead><tr><th>Host</th><th>URL</th><th>Scope</th><th>Status</th><th>Source</th></tr></thead><tbody>$urlRows</tbody></table></section>
 <section><h2>Errors</h2><p class="hint">Non-fatal errors captured during execution.</p><table data-filter-table="true"><thead><tr><th>Phase</th><th>Target</th><th>Message</th><th>Details</th></tr></thead><tbody>$errorRows</tbody></table></section></div>
@@ -1233,6 +1340,7 @@ function Invoke-BugBountyRecon {
             Write-StageBanner -Step 3 -Title 'Découverte passive'
             $hostMap = @{}
             $wildcardCache = @{}
+            $historicalUrlCache = @{}
             $scopeCounter = 0
 
             foreach ($scopeItem in $scopeItems) {
@@ -1244,39 +1352,92 @@ function Invoke-BugBountyRecon {
                         $targetHost = $scopeItem.Host
                         $exclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $targetHost -Url $scopeItem.StartUrl -Path ([Uri]$scopeItem.StartUrl).AbsolutePath
                         if ($exclusion.IsExcluded) { Add-ExclusionRecord -Phase 'TargetGeneration' -ScopeItem $scopeItem -Target $scopeItem.StartUrl -ExclusionResult $exclusion; continue }
-                        if (-not $hostMap.ContainsKey($targetHost)) {
-                            $hostMap[$targetHost] = [ordered]@{ Host = $targetHost; Discovery = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase); SourceScopeIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase); SourceTypes = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase); CandidateUrls = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase); RootDomains = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase) }
-                        }
-                        $record = $hostMap[$targetHost]; $record.Discovery.Add('seed-url') | Out-Null; $record.SourceScopeIds.Add($scopeItem.Id) | Out-Null; $record.SourceTypes.Add($scopeItem.Type) | Out-Null; $record.RootDomains.Add($scopeItem.RootDomain) | Out-Null
+                        $record = Get-OrCreateHostInventoryRecord -HostMap $hostMap -Host $targetHost
+                        $record.Discovery.Add('seed-url') | Out-Null; $record.SourceScopeIds.Add($scopeItem.Id) | Out-Null; $record.SourceTypes.Add($scopeItem.Type) | Out-Null; $record.RootDomains.Add($scopeItem.RootDomain) | Out-Null
                         foreach ($candidateUrl in Get-ProbeCandidateUrls -ScopeItem $scopeItem -RespectSchemeOnly:$RespectSchemeOnly) { $record.CandidateUrls.Add($candidateUrl) | Out-Null }
+
+                        if ($tools.Gau) {
+                            if (-not $historicalUrlCache.ContainsKey($targetHost)) {
+                                $historicalUrlCache[$targetHost] = @(Get-HistoricalUrls -Target $targetHost -GauPath $tools.Gau.Path -RawOutputPath $layout.GauRaw -TimeoutSeconds $TimeoutSeconds)
+                            }
+
+                            foreach ($historicalUrl in $historicalUrlCache[$targetHost]) {
+                                if (-not (Test-ScopeMatch -ScopeItem $scopeItem -Url $historicalUrl -RespectSchemeOnly:$RespectSchemeOnly)) { continue }
+                                $historicalUri = [Uri]$historicalUrl
+                                $historicalExclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $historicalUri.DnsSafeHost.ToLowerInvariant() -Url $historicalUrl -Path $historicalUri.AbsolutePath
+                                if ($historicalExclusion.IsExcluded) { Add-ExclusionRecord -Phase 'HistoricalDiscovery' -ScopeItem $scopeItem -Target $historicalUrl -ExclusionResult $historicalExclusion; continue }
+                                $record.CandidateUrls.Add($historicalUrl) | Out-Null
+                                $record.Discovery.Add('gau') | Out-Null
+                            }
+                        }
                     }
                     'Domain' {
                         $targetHost = $scopeItem.Host
                         $exclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $targetHost -Url ("https://$targetHost") -Path '/'
                         if ($exclusion.IsExcluded) { Add-ExclusionRecord -Phase 'TargetGeneration' -ScopeItem $scopeItem -Target $targetHost -ExclusionResult $exclusion; continue }
-                        if (-not $hostMap.ContainsKey($targetHost)) {
-                            $hostMap[$targetHost] = [ordered]@{ Host = $targetHost; Discovery = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase); SourceScopeIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase); SourceTypes = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase); CandidateUrls = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase); RootDomains = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase) }
-                        }
-                        $record = $hostMap[$targetHost]; $record.Discovery.Add('seed-domain') | Out-Null; $record.SourceScopeIds.Add($scopeItem.Id) | Out-Null; $record.SourceTypes.Add($scopeItem.Type) | Out-Null; $record.RootDomains.Add($scopeItem.RootDomain) | Out-Null
+                        $record = Get-OrCreateHostInventoryRecord -HostMap $hostMap -Host $targetHost
+                        $record.Discovery.Add('seed-domain') | Out-Null; $record.SourceScopeIds.Add($scopeItem.Id) | Out-Null; $record.SourceTypes.Add($scopeItem.Type) | Out-Null; $record.RootDomains.Add($scopeItem.RootDomain) | Out-Null
                         foreach ($candidateUrl in Get-ProbeCandidateUrls -ScopeItem $scopeItem -RespectSchemeOnly:$RespectSchemeOnly) { $record.CandidateUrls.Add($candidateUrl) | Out-Null }
+
+                        if ($tools.Gau) {
+                            if (-not $historicalUrlCache.ContainsKey($targetHost)) {
+                                $historicalUrlCache[$targetHost] = @(Get-HistoricalUrls -Target $targetHost -GauPath $tools.Gau.Path -RawOutputPath $layout.GauRaw -TimeoutSeconds $TimeoutSeconds)
+                            }
+
+                            foreach ($historicalUrl in $historicalUrlCache[$targetHost]) {
+                                if (-not (Test-ScopeMatch -ScopeItem $scopeItem -Url $historicalUrl -RespectSchemeOnly:$RespectSchemeOnly)) { continue }
+                                $historicalUri = [Uri]$historicalUrl
+                                $historicalExclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $historicalUri.DnsSafeHost.ToLowerInvariant() -Url $historicalUrl -Path $historicalUri.AbsolutePath
+                                if ($historicalExclusion.IsExcluded) { Add-ExclusionRecord -Phase 'HistoricalDiscovery' -ScopeItem $scopeItem -Target $historicalUrl -ExclusionResult $historicalExclusion; continue }
+                                $record.CandidateUrls.Add($historicalUrl) | Out-Null
+                                $record.Discovery.Add('gau') | Out-Null
+                            }
+                        }
                     }
                     'Wildcard' {
                         if (-not $wildcardCache.ContainsKey($scopeItem.RootDomain)) {
                             $wildcardCache[$scopeItem.RootDomain] = @(Get-PassiveSubdomains -RootDomain $scopeItem.RootDomain -SubfinderPath $tools.Subfinder.Path -RawOutputPath $layout.SubfinderRaw -TimeoutSeconds $TimeoutSeconds)
                         }
+                        if ($tools.Gau -and -not $historicalUrlCache.ContainsKey($scopeItem.RootDomain)) {
+                            $historicalUrlCache[$scopeItem.RootDomain] = @(Get-HistoricalUrls -Target $scopeItem.RootDomain -GauPath $tools.Gau.Path -RawOutputPath $layout.GauRaw -IncludeSubdomains $true -TimeoutSeconds $TimeoutSeconds)
+                        }
                         $candidateHosts = [System.Collections.Generic.List[string]]::new()
                         foreach ($discoveredHost in $wildcardCache[$scopeItem.RootDomain]) { $candidateHosts.Add($discoveredHost) | Out-Null }
                         if ($scopeItem.IncludeApex) { $candidateHosts.Add($scopeItem.RootDomain) | Out-Null }
+
+                        foreach ($historicalUrl in @($historicalUrlCache[$scopeItem.RootDomain])) {
+                            $historicalUri = $null
+                            if (-not [Uri]::TryCreate($historicalUrl, [UriKind]::Absolute, [ref]$historicalUri)) { continue }
+                            $historicalHost = $historicalUri.DnsSafeHost.ToLowerInvariant()
+                            if ([regex]::IsMatch($historicalHost, $scopeItem.HostRegexString, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+                                $candidateHosts.Add($historicalHost) | Out-Null
+                            }
+                        }
+
                         foreach ($candidateHost in ($candidateHosts | Select-Object -Unique)) {
                             if (-not [regex]::IsMatch($candidateHost, $scopeItem.HostRegexString, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) { continue }
                             $probePreview = if ($scopeItem.Scheme) { "{0}://{1}" -f $scopeItem.Scheme, $candidateHost } else { "https://$candidateHost" }
                             $exclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $candidateHost -Url $probePreview -Path '/'
                             if ($exclusion.IsExcluded) { Add-ExclusionRecord -Phase 'TargetGeneration' -ScopeItem $scopeItem -Target $candidateHost -ExclusionResult $exclusion; continue }
-                            if (-not $hostMap.ContainsKey($candidateHost)) {
-                                $hostMap[$candidateHost] = [ordered]@{ Host = $candidateHost; Discovery = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase); SourceScopeIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase); SourceTypes = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase); CandidateUrls = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase); RootDomains = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase) }
+                            $record = Get-OrCreateHostInventoryRecord -HostMap $hostMap -Host $candidateHost
+                            if ($wildcardCache[$scopeItem.RootDomain] -contains $candidateHost) {
+                                $record.Discovery.Add('subfinder') | Out-Null
+                            } elseif ($candidateHost -eq $scopeItem.RootDomain) {
+                                $record.Discovery.Add('wildcard-apex') | Out-Null
                             }
-                            $record = $hostMap[$candidateHost]; $record.Discovery.Add('subfinder') | Out-Null; $record.SourceScopeIds.Add($scopeItem.Id) | Out-Null; $record.SourceTypes.Add($scopeItem.Type) | Out-Null; $record.RootDomains.Add($scopeItem.RootDomain) | Out-Null
+                            $record.SourceScopeIds.Add($scopeItem.Id) | Out-Null; $record.SourceTypes.Add($scopeItem.Type) | Out-Null; $record.RootDomains.Add($scopeItem.RootDomain) | Out-Null
                             foreach ($candidateUrl in Get-ProbeCandidateUrls -ScopeItem $scopeItem -TargetHost $candidateHost -RespectSchemeOnly:$RespectSchemeOnly) { $record.CandidateUrls.Add($candidateUrl) | Out-Null }
+
+                            foreach ($historicalUrl in @($historicalUrlCache[$scopeItem.RootDomain])) {
+                                $historicalUri = $null
+                                if (-not [Uri]::TryCreate($historicalUrl, [UriKind]::Absolute, [ref]$historicalUri)) { continue }
+                                if ($historicalUri.DnsSafeHost.ToLowerInvariant() -ne $candidateHost) { continue }
+                                if (-not (Test-ScopeMatch -ScopeItem $scopeItem -Url $historicalUrl -RespectSchemeOnly:$RespectSchemeOnly)) { continue }
+                                $historicalExclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $candidateHost -Url $historicalUrl -Path $historicalUri.AbsolutePath
+                                if ($historicalExclusion.IsExcluded) { Add-ExclusionRecord -Phase 'HistoricalDiscovery' -ScopeItem $scopeItem -Target $historicalUrl -ExclusionResult $historicalExclusion; continue }
+                                $record.CandidateUrls.Add($historicalUrl) | Out-Null
+                                $record.Discovery.Add('gau') | Out-Null
+                            }
                         }
                     }
                 }
