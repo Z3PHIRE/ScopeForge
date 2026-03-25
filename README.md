@@ -116,6 +116,7 @@ Le dossier `output/` contient :
 - `reports/summary.json`
 - `reports/summary.csv`
 - `reports/report.html`
+- `reports/triage.md`
 
 ## Paramètres principaux
 
@@ -138,11 +139,14 @@ Le dossier `output/` contient :
 
 `Launch-ScopeForge.ps1` ajoute un flux plus simple pour lancer la reconnaissance :
 
+- presets `safe`, `balanced`, `deep`
 - choix du mode d'entrée : fichier JSON, collage direct du JSON, assistant guidé
+- aperçu du scope normalisé avant exécution
 - génération automatique d'un `User-Agent` unique si besoin
 - saisie interactive de la profondeur, du dossier de sortie, des threads et du timeout
 - récapitulatif avant exécution
-- affichage final des pages les plus intéressantes pour le triage bug bounty
+- tableau de bord final avec catégories intéressantes, endpoints protégés et exports
+- menu post-run pour relire les URLs les plus prometteuses directement dans le terminal
 
 Le bootstrap GitHub `Launch-OpsForgeFromGitHub.ps1` télécharge les fichiers nécessaires dans un dossier temporaire puis exécute le lanceur localement sans `Invoke-Expression` supplémentaire dans le script bootstrap lui-même.
 
@@ -154,6 +158,7 @@ Le bootstrap GitHub `Launch-OpsForgeFromGitHub.ps1` télécharge les fichiers n�
 - Les options `httpx` et `katana` sont activées en fonction des flags détectés localement. Une version très ancienne d'un outil peut réduire certains enrichissements.
 - `katana` est borné par les regex in-scope et le filtrage post-traitement. Si un programme a des contraintes supplémentaires, adapte `Depth`, `Threads`, `TimeoutSeconds` et les exclusions.
 - La section `interesting_urls` repose sur des heuristiques de priorisation, pas sur une détection de vulnérabilité.
+- `reports/triage.md` est un export de synthèse destiné au triage manuel rapide.
 
 ## Comment adapter les filtres d'exclusion
 

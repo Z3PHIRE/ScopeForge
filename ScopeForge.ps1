@@ -84,6 +84,7 @@ function Get-OutputLayout {
         SummaryJson        = Join-Path (Join-Path $root 'reports') 'summary.json'
         SummaryCsv         = Join-Path (Join-Path $root 'reports') 'summary.csv'
         ReportHtml         = Join-Path (Join-Path $root 'reports') 'report.html'
+        TriageMarkdown     = Join-Path (Join-Path $root 'reports') 'triage.md'
     }
 }
 
@@ -1030,6 +1031,71 @@ function Get-InterestingReconFindings {
     return @($results | Sort-Object -Property @{ Expression = 'Score'; Descending = $true }, Url)
 }
 
+function Export-TriageMarkdownReport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$Summary,
+        [Parameter(Mandatory)][pscustomobject[]]$InterestingUrls,
+        [Parameter(Mandatory)][pscustomobject[]]$LiveTargets,
+        [Parameter(Mandatory)][pscustomobject]$Layout
+    )
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $lines.Add("# ScopeForge Triage") | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add(("Generated: {0}" -f $Summary.GeneratedAtUtc)) | Out-Null
+    $lines.Add(("Program: {0}" -f $Summary.ProgramName)) | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add('## Summary') | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add(("- Scope items: {0}" -f $Summary.ScopeItemCount)) | Out-Null
+    $lines.Add(("- Excluded assets: {0}" -f $Summary.ExcludedItemCount)) | Out-Null
+    $lines.Add(("- Hosts discovered: {0}" -f $Summary.DiscoveredHostCount)) | Out-Null
+    $lines.Add(("- Live hosts: {0}" -f $Summary.LiveHostCount)) | Out-Null
+    $lines.Add(("- Live targets: {0}" -f $Summary.LiveTargetCount)) | Out-Null
+    $lines.Add(("- URLs discovered: {0}" -f $Summary.DiscoveredUrlCount)) | Out-Null
+    $lines.Add(("- Interesting URLs: {0}" -f $Summary.InterestingUrlCount)) | Out-Null
+    $lines.Add('') | Out-Null
+
+    $lines.Add('## Top Interesting URLs') | Out-Null
+    $lines.Add('') | Out-Null
+    foreach ($item in ($InterestingUrls | Select-Object -First 25)) {
+        $lines.Add(("### [{0}] {1}" -f $item.Score, $item.Url)) | Out-Null
+        $lines.Add(("- Host: {0}" -f $item.Host)) | Out-Null
+        $lines.Add(("- Status: {0}" -f $item.StatusCode)) | Out-Null
+        $lines.Add(("- Categories: {0}" -f (($item.Categories | ForEach-Object { [string]$_ }) -join ', '))) | Out-Null
+        $lines.Add(("- Reasons: {0}" -f (($item.Reasons | ForEach-Object { [string]$_ }) -join ', '))) | Out-Null
+        if ($item.Technologies -and $item.Technologies.Count -gt 0) {
+            $lines.Add(("- Technologies: {0}" -f (($item.Technologies | ForEach-Object { [string]$_ }) -join ', '))) | Out-Null
+        }
+        if ($item.Title) {
+            $lines.Add(("- Title: {0}" -f $item.Title)) | Out-Null
+        }
+        $lines.Add('') | Out-Null
+    }
+
+    $protected = $LiveTargets | Where-Object { $_.StatusCode -in 401, 403 } | Sort-Object -Property StatusCode, Url | Select-Object -First 25
+    $lines.Add('## Protected Endpoints') | Out-Null
+    $lines.Add('') | Out-Null
+    if ($protected.Count -eq 0) {
+        $lines.Add('- No 401/403 live targets captured in current results.') | Out-Null
+    } else {
+        foreach ($item in $protected) {
+            $lines.Add(("- [{0}] {1}" -f $item.StatusCode, $item.Url)) | Out-Null
+        }
+    }
+    $lines.Add('') | Out-Null
+
+    $lines.Add('## Suggested Manual Review') | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add('- Review auth, admin, API documentation, file upload, and debug surfaces first.') | Out-Null
+    $lines.Add('- Compare interesting URLs against program policy before deeper manual testing.') | Out-Null
+    $lines.Add('- Re-check exclusions if noisy environments such as staging or sandbox are still visible.') | Out-Null
+    $lines.Add('') | Out-Null
+
+    Set-Content -LiteralPath $Layout.TriageMarkdown -Value ($lines -join [Environment]::NewLine) -Encoding utf8
+}
+
 function Export-ReconReport {
     [CmdletBinding()]
     param(
@@ -1069,6 +1135,7 @@ function Export-ReconReport {
     }
 
     Write-JsonFile -Path $Layout.InterestingUrlsJson -Data $InterestingUrls
+    Export-TriageMarkdownReport -Summary $Summary -InterestingUrls $InterestingUrls -LiveTargets $LiveTargets -Layout $Layout
 
     if (-not $ExportHtml) { return }
 
