@@ -1,0 +1,17 @@
+[
+  {
+    "type": "URL",
+    "value": "http://clinical-quality.khealth.com/api/v1",
+    "exclusions": []
+  },
+  {
+    "type": "Wildcard",
+    "value": "https://*.khealth.com",
+    "exclusions": ["dev", "stg", "staging"]
+  },
+  {
+    "type": "Domain",
+    "value": "www.kpharmacyllc.com",
+    "exclusions": []
+  }
+]
