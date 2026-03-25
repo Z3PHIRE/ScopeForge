@@ -15,6 +15,8 @@ param(
     [switch]$IncludeApex,
     [switch]$RespectSchemeOnly,
     [switch]$Resume,
+    [switch]$ConsoleMode,
+    [bool]$OpenReportOnFinish = $true,
     [switch]$NonInteractive
 )
 
@@ -22,7 +24,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 function Write-LauncherBanner {
-    Clear-Host
+    try {
+        Clear-Host
+    } catch {
+    }
     Write-Host ''
     Write-Host '=============================================' -ForegroundColor DarkCyan
     Write-Host ' ScopeForge Assistant' -ForegroundColor Cyan
@@ -261,6 +266,9 @@ function Show-ScopePreview {
 function Show-LauncherConfigPreview {
     param([Parameter(Mandatory)][hashtable]$RunConfig)
     Write-LauncherSection -Title 'Configuration'
+    if ($RunConfig.ContainsKey('DocumentWorkspace')) {
+        Write-Host ("  DocumentWorkspace : {0}" -f $RunConfig.DocumentWorkspace) -ForegroundColor Gray
+    }
     if ($RunConfig.ContainsKey('PresetName')) {
         Write-Host ("  Preset            : {0}" -f $RunConfig.PresetName) -ForegroundColor Gray
         Write-Host ("  Preset details    : {0}" -f $RunConfig.PresetDescription) -ForegroundColor DarkGray
@@ -284,6 +292,9 @@ function Show-LauncherConfigPreview {
     Write-Host ("  Sources           : {0}" -f (Get-LauncherSourceSummary -EnableGau $RunConfig.EnableGau -EnableWaybackUrls $RunConfig.EnableWaybackUrls -EnableHakrawler $RunConfig.EnableHakrawler)) -ForegroundColor Gray
     Write-Host ("  NoInstall         : {0}" -f $RunConfig.NoInstall) -ForegroundColor Gray
     Write-Host ("  Resume            : {0}" -f $RunConfig.Resume) -ForegroundColor Gray
+    if ($RunConfig.ContainsKey('OpenReportOnFinish')) {
+        Write-Host ("  OpenReport        : {0}" -f $RunConfig.OpenReportOnFinish) -ForegroundColor Gray
+    }
 }
 
 function Show-RunSummaryDashboard {
@@ -408,6 +419,411 @@ function Show-OutputPaths {
     Write-Host ("  Families    : {0}" -f (Join-Path $Result.OutputDir 'normalized/interesting_families.json')) -ForegroundColor Green
 }
 
+function Get-LauncherStorageRoot {
+    if ($IsWindows) {
+        $basePath = [Environment]::GetFolderPath('LocalApplicationData')
+    } elseif ($HOME) {
+        $basePath = $HOME
+    } else {
+        $basePath = [System.IO.Path]::GetTempPath()
+    }
+
+    $primaryPath = Join-Path $basePath 'OpsForge'
+    try {
+        if (-not (Test-Path -LiteralPath $primaryPath)) {
+            $null = New-Item -ItemType Directory -Path $primaryPath -Force
+        }
+        return $primaryPath
+    } catch {
+        $fallbackPath = Join-Path $PSScriptRoot '.opsforge'
+        if (-not (Test-Path -LiteralPath $fallbackPath)) {
+            $null = New-Item -ItemType Directory -Path $fallbackPath -Force
+        }
+        return $fallbackPath
+    }
+}
+
+function Get-LauncherDefaultOutputDir {
+    $runsRoot = Join-Path (Get-LauncherStorageRoot) 'runs'
+    if (-not (Test-Path -LiteralPath $runsRoot)) {
+        $null = New-Item -ItemType Directory -Path $runsRoot -Force
+    }
+    return (Join-Path $runsRoot ([DateTime]::Now.ToString('yyyyMMdd-HHmmss')))
+}
+
+function Get-LauncherEditorDefinition {
+    if ($IsWindows) {
+        return [pscustomobject]@{
+            FilePath  = 'notepad.exe'
+            Arguments = @()
+            Label     = 'Notepad'
+        }
+    }
+
+    if ($env:VISUAL) {
+        $visual = Get-Command -Name $env:VISUAL -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($visual) {
+            return [pscustomobject]@{
+                FilePath  = $visual.Source
+                Arguments = @()
+                Label     = $visual.Name
+            }
+        }
+    }
+
+    if ($env:EDITOR) {
+        $editor = Get-Command -Name $env:EDITOR -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($editor) {
+            return [pscustomobject]@{
+                FilePath  = $editor.Source
+                Arguments = @()
+                Label     = $editor.Name
+            }
+        }
+    }
+
+    $candidates = @(
+        [pscustomobject]@{ Name = 'code'; Arguments = @('--wait'); Label = 'VS Code' },
+        [pscustomobject]@{ Name = 'gedit'; Arguments = @('--wait'); Label = 'gedit' },
+        [pscustomobject]@{ Name = 'kate'; Arguments = @('--block'); Label = 'kate' },
+        [pscustomobject]@{ Name = 'xed'; Arguments = @('--wait'); Label = 'xed' },
+        [pscustomobject]@{ Name = 'nano'; Arguments = @(); Label = 'nano' }
+    )
+
+    foreach ($candidate in $candidates) {
+        $command = Get-Command -Name $candidate.Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($command) {
+            return [pscustomobject]@{
+                FilePath  = $command.Source
+                Arguments = $candidate.Arguments
+                Label     = $candidate.Label
+            }
+        }
+    }
+
+    throw "Aucun editeur compatible n'a ete detecte. Definis VISUAL/EDITOR ou installe VS Code, gedit, kate ou nano."
+}
+
+function Open-LauncherDocument {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Title
+    )
+
+    $editor = Get-LauncherEditorDefinition
+    Write-Host ("Ouverture de {0} dans {1}" -f $Title, $editor.Label) -ForegroundColor Cyan
+    Start-Process -FilePath $editor.FilePath -ArgumentList @($editor.Arguments + @($Path)) -Wait
+}
+
+function Open-LauncherPath {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+
+    try {
+        if ($IsWindows) {
+            Start-Process -FilePath $Path | Out-Null
+            return
+        }
+
+        if ($IsLinux) {
+            $xdgOpen = Get-Command -Name 'xdg-open' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($xdgOpen) {
+                Start-Process -FilePath $xdgOpen.Source -ArgumentList @($Path) | Out-Null
+            }
+            return
+        }
+
+        if ($IsMacOS) {
+            $openCommand = Get-Command -Name 'open' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($openCommand) {
+                Start-Process -FilePath $openCommand.Source -ArgumentList @($Path) | Out-Null
+            }
+        }
+    } catch {
+        Write-Host ("Impossible d'ouvrir automatiquement: {0}" -f $Path) -ForegroundColor Yellow
+    }
+}
+
+function Get-LauncherDocumentProperty {
+    param(
+        [Parameter(Mandatory)][object]$InputObject,
+        [Parameter(Mandatory)][string]$Name,
+        $Default = $null
+    )
+
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($property) { return $property.Value }
+    return $Default
+}
+
+function New-LauncherDocumentSet {
+    param(
+        [string]$InitialScopeFile,
+        [string]$ProgramName,
+        [string]$OutputDir,
+        [int]$Depth,
+        [string]$UniqueUserAgent,
+        [int]$Threads,
+        [int]$TimeoutSeconds,
+        [bool]$EnableGau,
+        [bool]$EnableWaybackUrls,
+        [bool]$EnableHakrawler,
+        [bool]$NoInstall,
+        [bool]$IncludeApex,
+        [bool]$RespectSchemeOnly,
+        [bool]$Resume,
+        [bool]$OpenReportOnFinish
+    )
+
+    $launcherRoot = Join-Path (Get-LauncherStorageRoot) 'launcher'
+    try {
+        if (-not (Test-Path -LiteralPath $launcherRoot)) {
+            $null = New-Item -ItemType Directory -Path $launcherRoot -Force
+        }
+    } catch {
+        $launcherRoot = Join-Path (Join-Path $PSScriptRoot '.opsforge') 'launcher'
+        if (-not (Test-Path -LiteralPath $launcherRoot)) {
+            $null = New-Item -ItemType Directory -Path $launcherRoot -Force
+        }
+    }
+
+    $sessionRoot = Join-Path $launcherRoot ('session-' + [DateTime]::Now.ToString('yyyyMMdd-HHmmss'))
+    $null = New-Item -ItemType Directory -Path $sessionRoot -Force
+
+    $readmePath = Join-Path $sessionRoot '00-START-HERE.txt'
+    $scopePath = Join-Path $sessionRoot '01-scope.json'
+    $settingsPath = Join-Path $sessionRoot '02-run-settings.json'
+
+    $scopeTemplate = $null
+    if ($InitialScopeFile -and (Test-Path -LiteralPath $InitialScopeFile)) {
+        $scopeTemplate = Get-Content -LiteralPath $InitialScopeFile -Raw -Encoding utf8
+    } else {
+        $exampleScopePath = Join-Path $PSScriptRoot 'examples/scope.json'
+        if (Test-Path -LiteralPath $exampleScopePath) {
+            $scopeTemplate = Get-Content -LiteralPath $exampleScopePath -Raw -Encoding utf8
+        } else {
+            $scopeTemplate = @'
+[
+  {
+    "type": "URL",
+    "value": "https://target.example/api/v1",
+    "exclusions": []
+  },
+  {
+    "type": "Wildcard",
+    "value": "https://*.example.com",
+    "exclusions": ["dev", "stg", "staging"]
+  }
+]
+'@
+        }
+    }
+
+    $defaultProgramName = if ($ProgramName) { $ProgramName } else { 'authorized-bugbounty' }
+    $defaultOutputDir = if ($OutputDir) { $OutputDir } else { Get-LauncherDefaultOutputDir }
+    $defaultUserAgent = if ($UniqueUserAgent) { $UniqueUserAgent } else { "researcher-" + ([Guid]::NewGuid().ToString('N').Substring(0, 8)) }
+
+    $settingsObject = [ordered]@{
+        programName       = $defaultProgramName
+        outputDir         = $defaultOutputDir
+        preset            = 'balanced'
+        profile           = 'webapp'
+        depth             = if ($Depth -gt 0) { $Depth } else { 3 }
+        threads           = if ($Threads -gt 0) { $Threads } else { 10 }
+        timeoutSeconds    = if ($TimeoutSeconds -gt 0) { $TimeoutSeconds } else { 30 }
+        uniqueUserAgent   = $defaultUserAgent
+        includeApex       = $IncludeApex
+        respectSchemeOnly = $RespectSchemeOnly
+        enableGau         = $EnableGau
+        enableWaybackUrls = $EnableWaybackUrls
+        enableHakrawler   = $EnableHakrawler
+        noInstall         = $NoInstall
+        resume            = $Resume
+        openReportOnFinish = $OpenReportOnFinish
+    }
+
+    $instructions = @"
+OpsForge / ScopeForge - mode documents
+
+Ordre recommande:
+1. Lis rapidement ce fichier.
+2. Remplis puis sauvegarde 01-scope.json avec UNIQUEMENT le scope autorise.
+3. Remplis puis sauvegarde 02-run-settings.json.
+4. Ferme les fenetres d'edition. Le launcher validera les fichiers et demarrera automatiquement.
+
+Fichiers:
+- 01-scope.json
+  Mets ici la liste du scope autorise. Format attendu: tableau JSON d'items URL / Wildcard / Domain.
+- 02-run-settings.json
+  Mets ici les reglages du run.
+
+Valeurs utiles dans 02-run-settings.json:
+- preset: safe | balanced | deep
+- profile: webapp | api | wide-assets
+- enableGau / enableWaybackUrls / enableHakrawler: true ou false
+- openReportOnFinish: true pour ouvrir automatiquement le rapport HTML a la fin
+
+Conseils:
+- Conserve un User-Agent unique si le programme le demande.
+- Ne mets jamais de cible hors scope.
+- Si une validation echoue, le launcher rouvrira les fichiers pour correction.
+
+Le rapport final ouvrira le HTML principal avec les pages interessantes, familles, priorites et endpoints proteges.
+"@
+
+    Set-Content -LiteralPath $readmePath -Value $instructions -Encoding utf8
+    Set-Content -LiteralPath $scopePath -Value $scopeTemplate -Encoding utf8
+    Set-Content -LiteralPath $settingsPath -Value ($settingsObject | ConvertTo-Json -Depth 20) -Encoding utf8
+
+    return [pscustomobject]@{
+        RootPath     = $sessionRoot
+        ReadmePath   = $readmePath
+        ScopePath    = $scopePath
+        SettingsPath = $settingsPath
+    }
+}
+
+function Build-DocumentRunConfig {
+    param(
+        [string]$InitialScopeFile,
+        [string]$ProgramName,
+        [string]$OutputDir,
+        [int]$Depth,
+        [string]$UniqueUserAgent,
+        [int]$Threads,
+        [int]$TimeoutSeconds,
+        [bool]$EnableGau,
+        [bool]$EnableWaybackUrls,
+        [bool]$EnableHakrawler,
+        [bool]$NoInstall,
+        [bool]$Quiet,
+        [bool]$IncludeApex,
+        [bool]$RespectSchemeOnly,
+        [bool]$Resume,
+        [bool]$OpenReportOnFinish
+    )
+
+    $documentSet = New-LauncherDocumentSet -InitialScopeFile $InitialScopeFile -ProgramName $ProgramName -OutputDir $OutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -EnableGau $EnableGau -EnableWaybackUrls $EnableWaybackUrls -EnableHakrawler $EnableHakrawler -NoInstall $NoInstall -IncludeApex $IncludeApex -RespectSchemeOnly $RespectSchemeOnly -Resume $Resume -OpenReportOnFinish $OpenReportOnFinish
+
+    Write-LauncherSection -Title 'Mode documents'
+    Write-Host ("Les documents de configuration ont ete crees ici : {0}" -f $documentSet.RootPath) -ForegroundColor Cyan
+    Write-Host 'Remplis, sauvegarde et ferme chaque document. Le launcher reprendra automatiquement.' -ForegroundColor Gray
+
+    Open-LauncherDocument -Path $documentSet.ReadmePath -Title 'Instructions'
+
+    while ($true) {
+        Open-LauncherDocument -Path $documentSet.ScopePath -Title 'Scope autorise'
+        Open-LauncherDocument -Path $documentSet.SettingsPath -Title 'Parametres du run'
+
+        try {
+            $settingsRaw = Get-Content -LiteralPath $documentSet.SettingsPath -Raw -Encoding utf8
+            if ([string]::IsNullOrWhiteSpace($settingsRaw)) { throw 'Le fichier 02-run-settings.json est vide.' }
+            $settings = ConvertFrom-Json -InputObject $settingsRaw -Depth 50
+
+            $presetName = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'preset' -Default 'balanced')
+            if ([string]::IsNullOrWhiteSpace($presetName)) { $presetName = 'balanced' }
+            $preset = Get-LauncherPreset -Name $presetName
+
+            $profileName = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'profile' -Default 'webapp')
+            if ([string]::IsNullOrWhiteSpace($profileName)) { $profileName = 'webapp' }
+            $profile = Get-LauncherProgramProfile -Name $profileName
+
+            $localDepth = $preset.Depth
+            $localThreads = $preset.Threads
+            $localTimeout = $preset.TimeoutSeconds
+            $localRespectSchemeOnly = $preset.RespectSchemeOnly
+            $localResume = $preset.Resume
+            $localEnableGau = $profile.UseGau
+            $localEnableWaybackUrls = $profile.UseWaybackUrls
+            $localEnableHakrawler = $profile.UseHakrawler
+
+            if ($profile.SuggestedDepth -gt 0) {
+                if ($preset.Name -eq 'safe') {
+                    $localDepth = [Math]::Min($localDepth, $profile.SuggestedDepth)
+                } else {
+                    $localDepth = [Math]::Max($localDepth, $profile.SuggestedDepth)
+                }
+            }
+            if ($profile.SuggestedThreads -gt 0) {
+                $localThreads = [Math]::Max($localThreads, $profile.SuggestedThreads)
+            }
+            if ($profile.ForceRespectSchemeOnly) { $localRespectSchemeOnly = $true }
+            if ($profile.ForceResume) { $localResume = $true }
+
+            $programNameValue = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'programName' -Default 'authorized-bugbounty')
+            if ([string]::IsNullOrWhiteSpace($programNameValue)) { throw "Le champ 'programName' doit etre renseigne." }
+
+            $outputDirValue = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'outputDir' -Default (Get-LauncherDefaultOutputDir))
+            if ([string]::IsNullOrWhiteSpace($outputDirValue)) { throw "Le champ 'outputDir' doit etre renseigne." }
+
+            $depthValue = Get-LauncherDocumentProperty -InputObject $settings -Name 'depth' -Default $null
+            if ($null -ne $depthValue -and "$depthValue".Trim()) {
+                $localDepth = [int]$depthValue
+            }
+            if ($localDepth -lt 1 -or $localDepth -gt 20) { throw "Le champ 'depth' doit etre compris entre 1 et 20." }
+
+            $threadsValue = Get-LauncherDocumentProperty -InputObject $settings -Name 'threads' -Default $null
+            if ($null -ne $threadsValue -and "$threadsValue".Trim()) {
+                $localThreads = [int]$threadsValue
+            }
+            if ($localThreads -lt 1 -or $localThreads -gt 200) { throw "Le champ 'threads' doit etre compris entre 1 et 200." }
+
+            $timeoutValue = Get-LauncherDocumentProperty -InputObject $settings -Name 'timeoutSeconds' -Default $null
+            if ($null -ne $timeoutValue -and "$timeoutValue".Trim()) {
+                $localTimeout = [int]$timeoutValue
+            }
+            if ($localTimeout -lt 5 -or $localTimeout -gt 600) { throw "Le champ 'timeoutSeconds' doit etre compris entre 5 et 600." }
+
+            $uniqueUserAgentValue = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'uniqueUserAgent' -Default '')
+            if ([string]::IsNullOrWhiteSpace($uniqueUserAgentValue)) {
+                $uniqueUserAgentValue = "researcher-" + ([Guid]::NewGuid().ToString('N').Substring(0, 8))
+            }
+
+            $includeApexValue = [bool](Get-LauncherDocumentProperty -InputObject $settings -Name 'includeApex' -Default $IncludeApex)
+            $localRespectSchemeOnly = [bool](Get-LauncherDocumentProperty -InputObject $settings -Name 'respectSchemeOnly' -Default $localRespectSchemeOnly)
+            $localEnableGau = [bool](Get-LauncherDocumentProperty -InputObject $settings -Name 'enableGau' -Default $localEnableGau)
+            $localEnableWaybackUrls = [bool](Get-LauncherDocumentProperty -InputObject $settings -Name 'enableWaybackUrls' -Default $localEnableWaybackUrls)
+            $localEnableHakrawler = [bool](Get-LauncherDocumentProperty -InputObject $settings -Name 'enableHakrawler' -Default $localEnableHakrawler)
+            $localNoInstall = [bool](Get-LauncherDocumentProperty -InputObject $settings -Name 'noInstall' -Default $NoInstall)
+            $localResume = [bool](Get-LauncherDocumentProperty -InputObject $settings -Name 'resume' -Default $localResume)
+            $localOpenReportOnFinish = [bool](Get-LauncherDocumentProperty -InputObject $settings -Name 'openReportOnFinish' -Default $OpenReportOnFinish)
+
+            $scopePreview = Read-ScopeFile -Path $documentSet.ScopePath -IncludeApex:$includeApexValue
+
+            return @{
+                PresetName             = $preset.Name
+                PresetDescription      = $preset.Description
+                ProfileName            = $profile.Name
+                ProfileDescription     = $profile.Description
+                ProfileSourceExplanation = $profile.SourceExplanation
+                ScopeFile              = $documentSet.ScopePath
+                ProgramName            = $programNameValue
+                OutputDir              = $outputDirValue
+                Depth                  = $localDepth
+                UniqueUserAgent        = $uniqueUserAgentValue
+                Threads                = $localThreads
+                TimeoutSeconds         = $localTimeout
+                EnableGau              = $localEnableGau
+                EnableWaybackUrls      = $localEnableWaybackUrls
+                EnableHakrawler        = $localEnableHakrawler
+                NoInstall              = $localNoInstall
+                Quiet                  = $Quiet
+                IncludeApex            = $includeApexValue
+                RespectSchemeOnly      = $localRespectSchemeOnly
+                Resume                 = $localResume
+                OpenReportOnFinish     = $localOpenReportOnFinish
+                DocumentWorkspace      = $documentSet.RootPath
+                ScopePreview           = $scopePreview
+            }
+        } catch {
+            Write-Host ''
+            Write-Host ("Validation impossible: {0}" -f $_.Exception.Message) -ForegroundColor Red
+            Write-Host 'Les documents vont etre rouverts pour correction.' -ForegroundColor Yellow
+        }
+    }
+}
+
 function Show-PostRunMenu {
     param([Parameter(Mandatory)][pscustomobject]$Result)
     while ($true) {
@@ -456,7 +872,8 @@ function Build-InteractiveRunConfig {
         [bool]$Quiet,
         [bool]$IncludeApex,
         [bool]$RespectSchemeOnly,
-        [bool]$Resume
+        [bool]$Resume,
+        [bool]$OpenReportOnFinish
     )
 
     $preset = Select-LauncherPreset
@@ -515,6 +932,7 @@ function Build-InteractiveRunConfig {
     $localEnableHakrawler = [bool](Read-LauncherYesNo -Prompt 'Activer hakrawler en crawl complémentaire ?' -Default $localEnableHakrawler)
     $localNoInstall = [bool](Read-LauncherYesNo -Prompt 'Désactiver le bootstrap outils ?' -Default $NoInstall)
     $localResume = [bool](Read-LauncherYesNo -Prompt 'Activer le mode reprise ?' -Default $localResume)
+    $localOpenReportOnFinish = [bool](Read-LauncherYesNo -Prompt 'Ouvrir le rapport HTML a la fin ?' -Default $OpenReportOnFinish)
 
     return @{
         PresetName        = $preset.Name
@@ -537,6 +955,7 @@ function Build-InteractiveRunConfig {
         IncludeApex       = $localIncludeApex
         RespectSchemeOnly = $localRespectSchemeOnly
         Resume            = $localResume
+        OpenReportOnFinish = $localOpenReportOnFinish
     }
 }
 
@@ -558,6 +977,8 @@ function Start-ScopeForgeLauncher {
         [switch]$IncludeApex,
         [switch]$RespectSchemeOnly,
         [switch]$Resume,
+        [switch]$ConsoleMode,
+        [bool]$OpenReportOnFinish = $true,
         [switch]$NonInteractive
     )
 
@@ -581,15 +1002,25 @@ function Start-ScopeForgeLauncher {
         IncludeApex       = [bool]$IncludeApex
         RespectSchemeOnly = [bool]$RespectSchemeOnly
         Resume            = [bool]$Resume
+        OpenReportOnFinish = $OpenReportOnFinish
     }
 
     if (-not $NonInteractive) {
         Write-LauncherBanner
-        $runConfig = Build-InteractiveRunConfig -InitialScopeFile $ScopeFile -ProgramName $ProgramName -OutputDir $OutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -EnableGau $EnableGau -EnableWaybackUrls $EnableWaybackUrls -EnableHakrawler $EnableHakrawler -NoInstall ([bool]$NoInstall) -Quiet ([bool]$Quiet) -IncludeApex ([bool]$IncludeApex) -RespectSchemeOnly ([bool]$RespectSchemeOnly) -Resume ([bool]$Resume)
-        $scopePreview = Read-ScopeFile -Path $runConfig.ScopeFile -IncludeApex:([bool]$runConfig.IncludeApex)
+        if ($ConsoleMode) {
+            $runConfig = Build-InteractiveRunConfig -InitialScopeFile $ScopeFile -ProgramName $ProgramName -OutputDir $OutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -EnableGau $EnableGau -EnableWaybackUrls $EnableWaybackUrls -EnableHakrawler $EnableHakrawler -NoInstall ([bool]$NoInstall) -Quiet ([bool]$Quiet) -IncludeApex ([bool]$IncludeApex) -RespectSchemeOnly ([bool]$RespectSchemeOnly) -Resume ([bool]$Resume) -OpenReportOnFinish $OpenReportOnFinish
+        } else {
+            $runConfig = Build-DocumentRunConfig -InitialScopeFile $ScopeFile -ProgramName $ProgramName -OutputDir $OutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -EnableGau $EnableGau -EnableWaybackUrls $EnableWaybackUrls -EnableHakrawler $EnableHakrawler -NoInstall ([bool]$NoInstall) -Quiet ([bool]$Quiet) -IncludeApex ([bool]$IncludeApex) -RespectSchemeOnly ([bool]$RespectSchemeOnly) -Resume ([bool]$Resume) -OpenReportOnFinish $OpenReportOnFinish
+        }
+        $scopePreview = if ($runConfig.ContainsKey('ScopePreview')) { $runConfig.ScopePreview } else { Read-ScopeFile -Path $runConfig.ScopeFile -IncludeApex:([bool]$runConfig.IncludeApex) }
         Show-ScopePreview -ScopeItems $scopePreview
         Show-LauncherConfigPreview -RunConfig $runConfig
-        if (-not (Read-LauncherYesNo -Prompt 'Confirmer le lancement ?' -Default $true)) { return }
+        if ($ConsoleMode) {
+            if (-not (Read-LauncherYesNo -Prompt 'Confirmer le lancement ?' -Default $true)) { return }
+        } else {
+            Write-Host ''
+            Write-Host 'Configuration validee. Demarrage automatique de la collecte.' -ForegroundColor Green
+        }
     }
 
     $invokeParams = Get-LauncherInvokeParams -RunConfig $runConfig
@@ -598,7 +1029,11 @@ function Start-ScopeForgeLauncher {
     Show-InterestingSummary -Result $result
     Show-OutputPaths -Result $result
 
-    if (-not $NonInteractive) {
+    if ($runConfig.OpenReportOnFinish) {
+        Open-LauncherPath -Path (Join-Path $result.OutputDir 'reports/report.html')
+    }
+
+    if ((-not $NonInteractive) -and $ConsoleMode) {
         Show-PostRunMenu -Result $result
     }
 }

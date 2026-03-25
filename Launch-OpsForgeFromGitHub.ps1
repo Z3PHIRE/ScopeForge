@@ -20,6 +20,8 @@ param(
     [switch]$IncludeApex,
     [switch]$RespectSchemeOnly,
     [switch]$Resume,
+    [switch]$ConsoleMode,
+    [bool]$OpenReportOnFinish = $true,
     [switch]$NonInteractive
 )
 
@@ -34,6 +36,8 @@ $baseRaw = "https://raw.githubusercontent.com/$RepositoryOwner/$RepositoryName/$
 $filesToFetch = @(
     'ScopeForge.ps1',
     'Launch-ScopeForge.ps1',
+    'Launch-OpsForge.ps1',
+    'Launch-OpsForge.cmd',
     'README.md',
     'examples/scope.json'
 )
@@ -58,16 +62,46 @@ foreach ($relativePath in $filesToFetch) {
     Invoke-WebRequest -Uri $uri.AbsoluteUri -Headers @{ 'User-Agent' = 'OpsForge-Bootstrap/1.0' } -OutFile $targetPath -TimeoutSec 60
 }
 
-$launcherPath = Join-Path $BootstrapRoot 'Launch-ScopeForge.ps1'
+if ($IsWindows) {
+    foreach ($scriptPath in @(
+            (Join-Path $BootstrapRoot 'ScopeForge.ps1'),
+            (Join-Path $BootstrapRoot 'Launch-ScopeForge.ps1'),
+            (Join-Path $BootstrapRoot 'Launch-OpsForge.ps1'),
+            (Join-Path $BootstrapRoot 'Launch-OpsForge.cmd')
+        )) {
+        if (Test-Path -LiteralPath $scriptPath) {
+            Unblock-File -LiteralPath $scriptPath -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+$launcherPath = Join-Path $BootstrapRoot 'Launch-OpsForge.ps1'
 if (-not (Test-Path -LiteralPath $launcherPath)) {
     throw "Launcher file not found after bootstrap: $launcherPath"
 }
 
-$launcherParams = @{}
-foreach ($name in @('ScopeFile', 'ProgramName', 'OutputDir', 'Depth', 'UniqueUserAgent', 'Threads', 'TimeoutSeconds', 'EnableGau', 'EnableWaybackUrls', 'EnableHakrawler', 'NoInstall', 'Quiet', 'IncludeApex', 'RespectSchemeOnly', 'Resume', 'NonInteractive')) {
+$pwshCommand = Get-Command -Name 'pwsh' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $pwshCommand) {
+    throw "PowerShell 7 (pwsh) est requis pour lancer OpsForge. Installe pwsh puis relance la commande de bootstrap."
+}
+
+$launcherArgs = @(
+    '-NoLogo',
+    '-NoProfile',
+    '-ExecutionPolicy', 'Bypass',
+    '-File', $launcherPath
+)
+
+foreach ($name in @('ScopeFile', 'ProgramName', 'OutputDir', 'Depth', 'UniqueUserAgent', 'Threads', 'TimeoutSeconds', 'EnableGau', 'EnableWaybackUrls', 'EnableHakrawler', 'OpenReportOnFinish')) {
     if ($PSBoundParameters.ContainsKey($name)) {
-        $launcherParams[$name] = $PSBoundParameters[$name]
+        $launcherArgs += @("-$name", [string]$PSBoundParameters[$name])
     }
 }
 
-& $launcherPath @launcherParams
+foreach ($name in @('NoInstall', 'Quiet', 'IncludeApex', 'RespectSchemeOnly', 'Resume', 'ConsoleMode', 'NonInteractive')) {
+    if ($PSBoundParameters.ContainsKey($name) -and $PSBoundParameters[$name]) {
+        $launcherArgs += "-$name"
+    }
+}
+
+& $pwshCommand.Source @launcherArgs

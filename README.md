@@ -5,7 +5,9 @@ ScopeForge est un mini-projet PowerShell 7 pour l'automatisation de la reconnais
 ## Fichiers
 
 - `ScopeForge.ps1` : script principal contenant toutes les fonctions et l'entrée `Invoke-BugBountyRecon`
-- `Launch-ScopeForge.ps1` : assistant terminal local avec presets, profils, collage direct du scope et résumé final
+- `Launch-ScopeForge.ps1` : launcher principal, désormais orienté mode documents
+- `Launch-OpsForge.ps1` : alias launcher aligné sur le nom du dépôt `OpsForge`
+- `Launch-OpsForge.cmd` : lanceur Windows double-clic
 - `Launch-OpsForgeFromGitHub.ps1` : bootstrap GitHub prévu pour être utilisé via `irm ... | iex`
 - `examples/scope.json` : exemple de scope d'entrée
 
@@ -34,10 +36,16 @@ Exécution directe :
 ./ScopeForge.ps1 -ScopeFile ./examples/scope.json -Depth 3 -OutputDir ./output -ProgramName "khealth" -UniqueUserAgent "researcher-12345"
 ```
 
-Lanceur interactif local :
+Lanceur local en mode documents :
 
 ```powershell
-./Launch-ScopeForge.ps1
+./Launch-OpsForge.ps1
+```
+
+Sous Windows, tu peux aussi simplement double-cliquer :
+
+```text
+Launch-OpsForge.cmd
 ```
 
 Bootstrap GitHub après publication du dépôt :
@@ -65,7 +73,11 @@ irm https://raw.githubusercontent.com/Z3PHIRE/OpsForge/main/Launch-OpsForgeFromG
 ```
 
 ```powershell
-./Launch-ScopeForge.ps1
+./Launch-OpsForge.ps1
+```
+
+```text
+Launch-OpsForge.cmd
 ```
 
 ```powershell
@@ -148,18 +160,31 @@ Le dossier `output/` contient :
 
 ## Lanceur visuel
 
-`Launch-ScopeForge.ps1` ajoute un flux plus simple pour lancer la reconnaissance :
+`Launch-OpsForge.ps1` et `Launch-ScopeForge.ps1` ouvrent maintenant par défaut un flux base sur des documents a remplir :
 
-- presets `safe`, `balanced`, `deep`
-- profils de cible `webapp`, `api`, `wide-assets`
-- choix du mode d'entrée : fichier JSON, collage direct du JSON, assistant guidé
-- aperçu du scope normalisé avant exécution
-- génération automatique d'un `User-Agent` unique si besoin
-- saisie interactive de la profondeur, du dossier de sortie, des threads et du timeout
-- choix explicite des sources complémentaires `gau`, `waybackurls`, `hakrawler`
-- récapitulatif avant exécution
-- tableau de bord final avec familles, priorités, catégories intéressantes, endpoints protégés et exports
-- menu post-run pour relire les URLs les plus prometteuses directement dans le terminal
+- creation d'un dossier de session avec :
+  - `00-START-HERE.txt`
+  - `01-scope.json`
+  - `02-run-settings.json`
+- ouverture automatique de ces documents dans un editeur local
+- validation automatique apres sauvegarde et fermeture
+- demarrage automatique du run quand les fichiers sont valides
+- ouverture automatique du rapport HTML a la fin par defaut
+- tableau de bord terminal compact avec familles, priorites, categories interessantes, endpoints proteges et exports
+
+Le but est simple :
+
+1. le script ouvre les documents
+2. tu remplis `01-scope.json`
+3. tu ajustes `02-run-settings.json`
+4. tu sauvegardes, tu fermes
+5. OpsForge lance la collecte et ouvre le rapport final
+
+Si tu preferes l'ancien assistant en console, tu peux toujours forcer ce mode :
+
+```powershell
+./Launch-OpsForge.ps1 -ConsoleMode
+```
 
 ### Ce que changent les presets
 
@@ -173,7 +198,7 @@ Le dossier `output/` contient :
 - `api` : réduit le crawl profond et favorise la validation d'URLs déjà connues, utile pour Swagger, OpenAPI, GraphQL et REST versionné. Active `gau` et `waybackurls`, mais laisse `hakrawler` désactivé par défaut.
 - `wide-assets` : privilégie la couverture de nombreux hôtes, utile pour les programmes contenant plusieurs wildcards ou beaucoup d'assets. Active `gau` et `waybackurls`, garde `hakrawler` désactivé par défaut pour limiter le coût par host.
 
-Le bootstrap GitHub `Launch-OpsForgeFromGitHub.ps1` télécharge les fichiers nécessaires dans un dossier temporaire puis exécute le lanceur localement sans `Invoke-Expression` supplémentaire dans le script bootstrap lui-même.
+Le bootstrap GitHub `Launch-OpsForgeFromGitHub.ps1` telecharge les fichiers necessaires, les deblocque sous Windows si besoin, puis relance `Launch-OpsForge.ps1` via `pwsh -ExecutionPolicy Bypass` pour eviter les erreurs d'`ExecutionPolicy` rencontrees depuis Windows PowerShell.
 
 ## Hypothèses et limites
 
