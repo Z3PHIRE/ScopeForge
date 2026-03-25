@@ -7,6 +7,9 @@ param(
     [string]$UniqueUserAgent,
     [int]$Threads = 10,
     [int]$TimeoutSeconds = 30,
+    [bool]$EnableGau = $true,
+    [bool]$EnableWaybackUrls = $true,
+    [bool]$EnableHakrawler = $true,
     [switch]$NoInstall,
     [switch]$Quiet,
     [switch]$IncludeApex,
@@ -154,6 +157,21 @@ function Select-LauncherPreset {
     return $preset
 }
 
+function Get-LauncherSourceSummary {
+    param(
+        [bool]$EnableGau,
+        [bool]$EnableWaybackUrls,
+        [bool]$EnableHakrawler
+    )
+
+    $sources = [System.Collections.Generic.List[string]]::new()
+    if ($EnableGau) { $sources.Add('gau') | Out-Null }
+    if ($EnableWaybackUrls) { $sources.Add('waybackurls') | Out-Null }
+    if ($EnableHakrawler) { $sources.Add('hakrawler') | Out-Null }
+    if ($sources.Count -eq 0) { return 'subfinder/httpx/katana only' }
+    return ('subfinder/httpx/katana + ' + ($sources -join ', '))
+}
+
 function Get-LauncherProgramProfile {
     param([Parameter(Mandatory)][string]$Name)
     switch ($Name.ToLowerInvariant()) {
@@ -166,6 +184,10 @@ function Get-LauncherProgramProfile {
                 SuggestedThreads = 10
                 ForceRespectSchemeOnly = $false
                 ForceResume = $false
+                UseGau = $true
+                UseWaybackUrls = $true
+                UseHakrawler = $true
+                SourceExplanation = 'Ajoute des seeds historiques et un crawl complémentaire pour mieux remonter login, admin, upload et pages métiers.'
             }
         }
         'api' {
@@ -177,6 +199,10 @@ function Get-LauncherProgramProfile {
                 SuggestedThreads = 12
                 ForceRespectSchemeOnly = $true
                 ForceResume = $false
+                UseGau = $true
+                UseWaybackUrls = $true
+                UseHakrawler = $false
+                SourceExplanation = 'Favorise les URLs historiques et limite le crawl complémentaire pour réduire le bruit sur les APIs et docs techniques.'
             }
         }
         'wide-assets' {
@@ -188,6 +214,10 @@ function Get-LauncherProgramProfile {
                 SuggestedThreads = 16
                 ForceRespectSchemeOnly = $false
                 ForceResume = $true
+                UseGau = $true
+                UseWaybackUrls = $true
+                UseHakrawler = $false
+                SourceExplanation = 'Privilégie la couverture large des hosts et des URLs historiques, sans ajouter trop de coût par host.'
             }
         }
         default {
@@ -238,6 +268,9 @@ function Show-LauncherConfigPreview {
     if ($RunConfig.ContainsKey('ProfileName')) {
         Write-Host ("  Program profile   : {0}" -f $RunConfig.ProfileName) -ForegroundColor Gray
         Write-Host ("  Profile details   : {0}" -f $RunConfig.ProfileDescription) -ForegroundColor DarkGray
+        if ($RunConfig.ContainsKey('ProfileSourceExplanation')) {
+            Write-Host ("  Source strategy   : {0}" -f $RunConfig.ProfileSourceExplanation) -ForegroundColor DarkGray
+        }
     }
     Write-Host ("  ScopeFile         : {0}" -f $RunConfig.ScopeFile) -ForegroundColor Gray
     Write-Host ("  ProgramName       : {0}" -f $RunConfig.ProgramName) -ForegroundColor Gray
@@ -248,6 +281,7 @@ function Show-LauncherConfigPreview {
     Write-Host ("  UniqueUserAgent   : {0}" -f $RunConfig.UniqueUserAgent) -ForegroundColor Gray
     Write-Host ("  IncludeApex       : {0}" -f $RunConfig.IncludeApex) -ForegroundColor Gray
     Write-Host ("  RespectSchemeOnly : {0}" -f $RunConfig.RespectSchemeOnly) -ForegroundColor Gray
+    Write-Host ("  Sources           : {0}" -f (Get-LauncherSourceSummary -EnableGau $RunConfig.EnableGau -EnableWaybackUrls $RunConfig.EnableWaybackUrls -EnableHakrawler $RunConfig.EnableHakrawler)) -ForegroundColor Gray
     Write-Host ("  NoInstall         : {0}" -f $RunConfig.NoInstall) -ForegroundColor Gray
     Write-Host ("  Resume            : {0}" -f $RunConfig.Resume) -ForegroundColor Gray
 }
@@ -275,6 +309,22 @@ function Show-RunSummaryDashboard {
         }
     }
 
+    if ($summary.TopInterestingFamilies -and $summary.TopInterestingFamilies.Count -gt 0) {
+        Write-Host ''
+        Write-Host '  Interesting families' -ForegroundColor Cyan
+        foreach ($item in ($summary.TopInterestingFamilies | Select-Object -First 5)) {
+            Write-Host ("    {0} ({1})" -f $item.Family, $item.Count) -ForegroundColor Gray
+        }
+    }
+
+    if ($summary.InterestingPriorityDistribution -and $summary.InterestingPriorityDistribution.Count -gt 0) {
+        Write-Host ''
+        Write-Host '  Interesting priorities' -ForegroundColor Cyan
+        foreach ($item in $summary.InterestingPriorityDistribution) {
+            Write-Host ("    {0,-10} {1,5}" -f $item.Priority, $item.Count) -ForegroundColor Gray
+        }
+    }
+
     if ($summary.TopInterestingCategories -and $summary.TopInterestingCategories.Count -gt 0) {
         Write-Host ''
         Write-Host '  Interesting categories' -ForegroundColor Cyan
@@ -287,7 +337,7 @@ function Show-RunSummaryDashboard {
 function Get-LauncherInvokeParams {
     param([Parameter(Mandatory)][hashtable]$RunConfig)
     $invokeParams = @{}
-    foreach ($name in @('ScopeFile', 'ProgramName', 'OutputDir', 'Depth', 'UniqueUserAgent', 'Threads', 'TimeoutSeconds', 'NoInstall', 'Quiet', 'IncludeApex', 'RespectSchemeOnly', 'Resume')) {
+    foreach ($name in @('ScopeFile', 'ProgramName', 'OutputDir', 'Depth', 'UniqueUserAgent', 'Threads', 'TimeoutSeconds', 'EnableGau', 'EnableWaybackUrls', 'EnableHakrawler', 'NoInstall', 'Quiet', 'IncludeApex', 'RespectSchemeOnly', 'Resume')) {
         if ($RunConfig.ContainsKey($name)) {
             $invokeParams[$name] = $RunConfig[$name]
         }
@@ -303,9 +353,23 @@ function Show-InterestingSummary {
         return
     }
     foreach ($item in ($Result.InterestingUrls | Select-Object -First 15)) {
-        Write-Host ("  [{0}] {1}" -f $item.Score, $item.Url) -ForegroundColor DarkYellow
+        Write-Host ("  [{0}/{1}/{2}] {3}" -f $item.Priority, $item.PrimaryFamily, $item.Score, $item.Url) -ForegroundColor DarkYellow
         if ($item.Categories) { Write-Host ("      {0}" -f ($item.Categories -join ', ')) -ForegroundColor Gray }
         if ($item.Reasons) { Write-Host ("      {0}" -f ($item.Reasons -join '; ')) -ForegroundColor DarkGray }
+    }
+}
+
+function Show-InterestingFamilyBreakdown {
+    param([Parameter(Mandatory)][pscustomobject]$Result)
+    Write-LauncherSection -Title 'Familles intéressantes'
+    $groups = $Result.InterestingUrls | Group-Object -Property PrimaryFamily | Where-Object { $_.Name } | Sort-Object -Property @{ Expression = 'Count'; Descending = $true }, Name
+    if ($groups.Count -eq 0) {
+        Write-Host '  Aucune famille à afficher.' -ForegroundColor Gray
+        return
+    }
+    foreach ($group in $groups) {
+        $best = $group.Group | Sort-Object -Property PriorityRank, @{ Expression = 'Score'; Descending = $true }, Url | Select-Object -First 1
+        Write-Host ("  {0,-18} {1,5}  best={2}/{3}" -f $group.Name, $group.Count, $best.Priority, $best.Score) -ForegroundColor Gray
     }
 }
 
@@ -341,6 +405,7 @@ function Show-OutputPaths {
     Write-Host ("  HTML report : {0}" -f (Join-Path $Result.OutputDir 'reports/report.html')) -ForegroundColor Green
     Write-Host ("  Markdown    : {0}" -f (Join-Path $Result.OutputDir 'reports/triage.md')) -ForegroundColor Green
     Write-Host ("  Interesting : {0}" -f (Join-Path $Result.OutputDir 'normalized/interesting_urls.json')) -ForegroundColor Green
+    Write-Host ("  Families    : {0}" -f (Join-Path $Result.OutputDir 'normalized/interesting_families.json')) -ForegroundColor Green
 }
 
 function Show-PostRunMenu {
@@ -348,17 +413,19 @@ function Show-PostRunMenu {
     while ($true) {
         Write-LauncherSection -Title 'Actions'
         Write-Host '1. Revoir les pages intéressantes' -ForegroundColor Gray
-        Write-Host '2. Voir les catégories intéressantes' -ForegroundColor Gray
-        Write-Host '3. Voir les endpoints protégés' -ForegroundColor Gray
-        Write-Host '4. Voir les chemins d''export' -ForegroundColor Gray
-        Write-Host '5. Terminer' -ForegroundColor Gray
-        $choice = Read-LauncherChoice -Prompt 'Action' -Allowed @('1', '2', '3', '4', '5') -Default '5'
+        Write-Host '2. Voir les familles intéressantes' -ForegroundColor Gray
+        Write-Host '3. Voir les catégories intéressantes' -ForegroundColor Gray
+        Write-Host '4. Voir les endpoints protégés' -ForegroundColor Gray
+        Write-Host '5. Voir les chemins d''export' -ForegroundColor Gray
+        Write-Host '6. Terminer' -ForegroundColor Gray
+        $choice = Read-LauncherChoice -Prompt 'Action' -Allowed @('1', '2', '3', '4', '5', '6') -Default '6'
         switch ($choice) {
             '1' { Show-InterestingSummary -Result $Result }
-            '2' { Show-InterestingCategoryBreakdown -Result $Result }
-            '3' { Show-ProtectedEndpoints -Result $Result }
-            '4' { Show-OutputPaths -Result $Result }
-            '5' { break }
+            '2' { Show-InterestingFamilyBreakdown -Result $Result }
+            '3' { Show-InterestingCategoryBreakdown -Result $Result }
+            '4' { Show-ProtectedEndpoints -Result $Result }
+            '5' { Show-OutputPaths -Result $Result }
+            '6' { break }
         }
     }
 }
@@ -382,6 +449,9 @@ function Build-InteractiveRunConfig {
         [string]$UniqueUserAgent,
         [int]$Threads,
         [int]$TimeoutSeconds,
+        [bool]$EnableGau,
+        [bool]$EnableWaybackUrls,
+        [bool]$EnableHakrawler,
         [bool]$NoInstall,
         [bool]$Quiet,
         [bool]$IncludeApex,
@@ -396,6 +466,13 @@ function Build-InteractiveRunConfig {
     $localTimeout = $preset.TimeoutSeconds
     $localRespectSchemeOnly = $preset.RespectSchemeOnly
     $localResume = $preset.Resume
+    $localEnableGau = $profile.UseGau
+    $localEnableWaybackUrls = $profile.UseWaybackUrls
+    $localEnableHakrawler = $profile.UseHakrawler
+
+    if (-not $EnableGau) { $localEnableGau = $false }
+    if (-not $EnableWaybackUrls) { $localEnableWaybackUrls = $false }
+    if (-not $EnableHakrawler) { $localEnableHakrawler = $false }
 
     if ($profile.SuggestedDepth -gt 0) {
         if ($preset.Name -eq 'safe') {
@@ -430,6 +507,12 @@ function Build-InteractiveRunConfig {
     $localTimeout = [int](Read-LauncherValue -Prompt 'Timeout secondes' -Default ([string]$localTimeout))
     $localIncludeApex = [bool](Read-LauncherYesNo -Prompt 'Inclure l''apex des wildcards ?' -Default $IncludeApex)
     $localRespectSchemeOnly = [bool](Read-LauncherYesNo -Prompt 'Respecter strictement le schéma explicite ?' -Default $localRespectSchemeOnly)
+    Write-Host ''
+    Write-Host 'Sources complémentaires' -ForegroundColor Cyan
+    Write-Host ("  Profil {0} : {1}" -f $profile.Name, $profile.SourceExplanation) -ForegroundColor DarkGray
+    $localEnableGau = [bool](Read-LauncherYesNo -Prompt 'Activer gau pour les URLs historiques ?' -Default $localEnableGau)
+    $localEnableWaybackUrls = [bool](Read-LauncherYesNo -Prompt 'Activer waybackurls pour les archives web ?' -Default $localEnableWaybackUrls)
+    $localEnableHakrawler = [bool](Read-LauncherYesNo -Prompt 'Activer hakrawler en crawl complémentaire ?' -Default $localEnableHakrawler)
     $localNoInstall = [bool](Read-LauncherYesNo -Prompt 'Désactiver le bootstrap outils ?' -Default $NoInstall)
     $localResume = [bool](Read-LauncherYesNo -Prompt 'Activer le mode reprise ?' -Default $localResume)
 
@@ -438,6 +521,7 @@ function Build-InteractiveRunConfig {
         PresetDescription = $preset.Description
         ProfileName       = $profile.Name
         ProfileDescription = $profile.Description
+        ProfileSourceExplanation = $profile.SourceExplanation
         ScopeFile         = $localScopeFile
         ProgramName       = $localProgramName
         OutputDir         = $localOutputDir
@@ -445,6 +529,9 @@ function Build-InteractiveRunConfig {
         UniqueUserAgent   = $localUserAgent
         Threads           = $localThreads
         TimeoutSeconds    = $localTimeout
+        EnableGau         = $localEnableGau
+        EnableWaybackUrls = $localEnableWaybackUrls
+        EnableHakrawler   = $localEnableHakrawler
         NoInstall         = $localNoInstall
         Quiet             = $Quiet
         IncludeApex       = $localIncludeApex
@@ -463,6 +550,9 @@ function Start-ScopeForgeLauncher {
         [string]$UniqueUserAgent,
         [int]$Threads = 10,
         [int]$TimeoutSeconds = 30,
+        [bool]$EnableGau = $true,
+        [bool]$EnableWaybackUrls = $true,
+        [bool]$EnableHakrawler = $true,
         [switch]$NoInstall,
         [switch]$Quiet,
         [switch]$IncludeApex,
@@ -483,6 +573,9 @@ function Start-ScopeForgeLauncher {
         UniqueUserAgent   = $UniqueUserAgent
         Threads           = $Threads
         TimeoutSeconds    = $TimeoutSeconds
+        EnableGau         = $EnableGau
+        EnableWaybackUrls = $EnableWaybackUrls
+        EnableHakrawler   = $EnableHakrawler
         NoInstall         = [bool]$NoInstall
         Quiet             = [bool]$Quiet
         IncludeApex       = [bool]$IncludeApex
@@ -492,7 +585,7 @@ function Start-ScopeForgeLauncher {
 
     if (-not $NonInteractive) {
         Write-LauncherBanner
-        $runConfig = Build-InteractiveRunConfig -InitialScopeFile $ScopeFile -ProgramName $ProgramName -OutputDir $OutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -NoInstall ([bool]$NoInstall) -Quiet ([bool]$Quiet) -IncludeApex ([bool]$IncludeApex) -RespectSchemeOnly ([bool]$RespectSchemeOnly) -Resume ([bool]$Resume)
+        $runConfig = Build-InteractiveRunConfig -InitialScopeFile $ScopeFile -ProgramName $ProgramName -OutputDir $OutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -EnableGau $EnableGau -EnableWaybackUrls $EnableWaybackUrls -EnableHakrawler $EnableHakrawler -NoInstall ([bool]$NoInstall) -Quiet ([bool]$Quiet) -IncludeApex ([bool]$IncludeApex) -RespectSchemeOnly ([bool]$RespectSchemeOnly) -Resume ([bool]$Resume)
         $scopePreview = Read-ScopeFile -Path $runConfig.ScopeFile -IncludeApex:([bool]$runConfig.IncludeApex)
         Show-ScopePreview -ScopeItems $scopePreview
         Show-LauncherConfigPreview -RunConfig $runConfig

@@ -12,6 +12,9 @@ param(
     [string]$UniqueUserAgent,
     [int]$Threads = 10,
     [int]$TimeoutSeconds = 30,
+    [bool]$EnableGau = $true,
+    [bool]$EnableWaybackUrls = $true,
+    [bool]$EnableHakrawler = $true,
     [switch]$NoInstall,
     [switch]$Quiet,
     [switch]$IncludeApex,
@@ -61,7 +64,7 @@ if (-not (Test-Path -LiteralPath $launcherPath)) {
 }
 
 $launcherParams = @{}
-foreach ($name in @('ScopeFile', 'ProgramName', 'OutputDir', 'Depth', 'UniqueUserAgent', 'Threads', 'TimeoutSeconds', 'NoInstall', 'Quiet', 'IncludeApex', 'RespectSchemeOnly', 'Resume', 'NonInteractive')) {
+foreach ($name in @('ScopeFile', 'ProgramName', 'OutputDir', 'Depth', 'UniqueUserAgent', 'Threads', 'TimeoutSeconds', 'EnableGau', 'EnableWaybackUrls', 'EnableHakrawler', 'NoInstall', 'Quiet', 'IncludeApex', 'RespectSchemeOnly', 'Resume', 'NonInteractive')) {
     if ($PSBoundParameters.ContainsKey($name)) {
         $launcherParams[$name] = $PSBoundParameters[$name]
     }

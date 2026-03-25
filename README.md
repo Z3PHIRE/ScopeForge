@@ -1,6 +1,6 @@
 # ScopeForge
 
-ScopeForge est un mini-projet PowerShell 7 pour l'automatisation de la reconnaissance web bug bounty strictement limitée au scope fourni. Il orchestre `subfinder`, `gau`, `httpx` et `katana`, applique les exclusions avant probe/crawl, journalise les décisions de filtrage et exporte les résultats en JSON, CSV, Markdown et HTML.
+ScopeForge est un mini-projet PowerShell 7 pour l'automatisation de la reconnaissance web bug bounty strictement limitée au scope fourni. Il orchestre `subfinder`, `gau`, `waybackurls`, `httpx`, `katana` et `hakrawler`, applique les exclusions avant probe/crawl, journalise les décisions de filtrage et exporte les résultats en JSON, CSV, Markdown et HTML.
 
 ## Fichiers
 
@@ -61,6 +61,10 @@ irm https://raw.githubusercontent.com/Z3PHIRE/OpsForge/main/Launch-OpsForgeFromG
 ```
 
 ```powershell
+./ScopeForge.ps1 -ScopeFile ./examples/scope.json -Depth 2 -OutputDir ./output_api -ProgramName "khealth" -UniqueUserAgent "researcher-12345" -EnableHakrawler:$false -EnableWaybackUrls:$true
+```
+
+```powershell
 ./Launch-ScopeForge.ps1
 ```
 
@@ -102,8 +106,10 @@ Le dossier `output/` contient :
 - `logs/tools.log`
 - `raw/subfinder_raw.txt`
 - `raw/gau_raw.txt`
+- `raw/waybackurls_raw.txt`
 - `raw/httpx_raw.jsonl`
 - `raw/katana_raw.jsonl`
+- `raw/hakrawler_raw.txt`
 - `normalized/scope_normalized.json`
 - `normalized/hosts_all.json`
 - `normalized/hosts_live.json`
@@ -113,6 +119,7 @@ Le dossier `output/` contient :
 - `normalized/urls_discovered.csv`
 - `normalized/interesting_urls.json`
 - `normalized/interesting_urls.csv`
+- `normalized/interesting_families.json`
 - `normalized/endpoints_unique.txt`
 - `reports/summary.json`
 - `reports/summary.csv`
@@ -128,6 +135,9 @@ Le dossier `output/` contient :
 - `-UniqueUserAgent` : User-Agent global personnalisé
 - `-Threads` : niveau de parallélisme transmis à `httpx` et `katana`
 - `-TimeoutSeconds` : timeout des outils externes
+- `-EnableGau` : active ou désactive `gau`
+- `-EnableWaybackUrls` : active ou désactive `waybackurls`
+- `-EnableHakrawler` : active ou désactive `hakrawler`
 - `-NoInstall` : désactive le bootstrap automatique des outils
 - `-Quiet` : réduit la sortie terminal
 - `-Verbose` : active les détails supplémentaires
@@ -146,8 +156,9 @@ Le dossier `output/` contient :
 - aperçu du scope normalisé avant exécution
 - génération automatique d'un `User-Agent` unique si besoin
 - saisie interactive de la profondeur, du dossier de sortie, des threads et du timeout
+- choix explicite des sources complémentaires `gau`, `waybackurls`, `hakrawler`
 - récapitulatif avant exécution
-- tableau de bord final avec catégories intéressantes, endpoints protégés et exports
+- tableau de bord final avec familles, priorités, catégories intéressantes, endpoints protégés et exports
 - menu post-run pour relire les URLs les plus prometteuses directement dans le terminal
 
 ### Ce que changent les presets
@@ -158,9 +169,9 @@ Le dossier `output/` contient :
 
 ### Ce que changent les profils de cible
 
-- `webapp` : vise surtout les surfaces login, admin, upload, dashboard et routes applicatives.
-- `api` : réduit le crawl profond et favorise la validation d'URLs déjà connues, utile pour Swagger, OpenAPI, GraphQL et REST versionné.
-- `wide-assets` : privilégie la couverture de nombreux hôtes, utile pour les programmes contenant plusieurs wildcards ou beaucoup d'assets.
+- `webapp` : vise surtout les surfaces login, admin, upload, dashboard et routes applicatives. Active `gau`, `waybackurls` et `hakrawler`.
+- `api` : réduit le crawl profond et favorise la validation d'URLs déjà connues, utile pour Swagger, OpenAPI, GraphQL et REST versionné. Active `gau` et `waybackurls`, mais laisse `hakrawler` désactivé par défaut.
+- `wide-assets` : privilégie la couverture de nombreux hôtes, utile pour les programmes contenant plusieurs wildcards ou beaucoup d'assets. Active `gau` et `waybackurls`, garde `hakrawler` désactivé par défaut pour limiter le coût par host.
 
 Le bootstrap GitHub `Launch-OpsForgeFromGitHub.ps1` télécharge les fichiers nécessaires dans un dossier temporaire puis exécute le lanceur localement sans `Invoke-Expression` supplémentaire dans le script bootstrap lui-même.
 
@@ -168,20 +179,22 @@ Le bootstrap GitHub `Launch-OpsForgeFromGitHub.ps1` télécharge les fichiers n�
 
 - Le script est conçu pour des actions passives ou semi-passives autorisées : parsing de scope, découverte passive, validation HTTP et crawl HTTP(S) strictement borné.
 - Les exclusions sont appliquées avant probe et crawl. Pour la découverte passive `subfinder`, le script interroge la racine du wildcard puis filtre immédiatement les résultats avant toute validation active.
-- Si `gau` est disponible, le script récupère aussi des URLs historiques, puis les refiltre strictement selon le scope, le wildcard réel, le schéma et les exclusions avant toute validation active.
+- Si `gau` et/ou `waybackurls` sont disponibles, le script récupère aussi des URLs historiques, puis les refiltre strictement selon le scope, le wildcard réel, le schéma et les exclusions avant toute validation active.
+- Si `hakrawler` est disponible, il est utilisé en passe complémentaire après `katana`, toujours refiltré par le moteur in-scope/exclusions avant fusion finale.
 - Le bootstrap télécharge les dernières releases GitHub officielles dans `output/tools/` sans modifier arbitrairement le système.
 - Les options `httpx` et `katana` sont activées en fonction des flags détectés localement. Une version très ancienne d'un outil peut réduire certains enrichissements.
 - `katana` est borné par les regex in-scope et le filtrage post-traitement. Si un programme a des contraintes supplémentaires, adapte `Depth`, `Threads`, `TimeoutSeconds` et les exclusions.
 - La section `interesting_urls` repose sur des heuristiques de priorisation, pas sur une détection de vulnérabilité.
-- `reports/triage.md` est un export de synthèse destiné au triage manuel rapide.
+- `reports/triage.md` et `normalized/interesting_families.json` sont pensés pour le triage manuel rapide par familles et priorités.
 
 ## Aide au triage
 
 La sortie finale met désormais l'accent sur le triage manuel :
 
 - `normalized/interesting_urls.json` et `normalized/interesting_urls.csv` : URLs les plus prometteuses selon des heuristiques de surface
+- `normalized/interesting_families.json` : regroupement par famille principale avec score max, priorités et exemples d'URLs
 - `reports/triage.md` : résumé Markdown rapide à relire ou partager
-- `reports/report.html` : sections dédiées `Interesting Pages`, `Protected Endpoints` et `Spotlight` par catégorie
+- `reports/report.html` : sections dédiées `Interesting Families`, `Interesting Pages`, `Protected Endpoints` et `Spotlight` par famille
 
 Les heuristiques mettent en avant par exemple :
 
@@ -191,6 +204,12 @@ Les heuristiques mettent en avant par exemple :
 - upload/import/export/download
 - debug/error/logs/trace
 - config/env/backup
+
+Le triage calcule ensuite pour chaque URL :
+
+- une `PrimaryFamily` pour prioriser le type de surface à revoir
+- une `Priority` (`Critical`, `High`, `Medium`, `Low`) basée sur le score heuristique
+- une liste de `Categories` et `Reasons` pour comprendre pourquoi la page remonte
 
 ## Comment adapter les filtres d'exclusion
 
@@ -223,6 +242,12 @@ Le script est structuré pour être étendu proprement :
 - exécute l'outil via `Invoke-ExternalCommand`
 - normalise ses résultats avant `Merge-ReconResults`
 - ajoute ses exports dans `Export-ReconReport` si nécessaire
+
+Les intégrations actuelles fournissent déjà trois modèles utiles :
+
+- `gau` pour l'historique d'URLs avec option sous-domaines
+- `waybackurls` pour une seconde source d'archives web
+- `hakrawler` pour un crawl complémentaire léger fusionné ensuite avec `katana`
 
 L'approche recommandée est de conserver un pipeline explicite :
 
