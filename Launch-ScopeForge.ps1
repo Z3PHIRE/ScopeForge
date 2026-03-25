@@ -428,14 +428,14 @@ function Get-LauncherStorageRoot {
         $basePath = [System.IO.Path]::GetTempPath()
     }
 
-    $primaryPath = Join-Path $basePath 'OpsForge'
+    $primaryPath = Join-Path $basePath 'ScopeForge'
     try {
         if (-not (Test-Path -LiteralPath $primaryPath)) {
             $null = New-Item -ItemType Directory -Path $primaryPath -Force
         }
         return $primaryPath
     } catch {
-        $fallbackPath = Join-Path $PSScriptRoot '.opsforge'
+        $fallbackPath = Join-Path $PSScriptRoot '.scopeforge'
         if (-not (Test-Path -LiteralPath $fallbackPath)) {
             $null = New-Item -ItemType Directory -Path $fallbackPath -Force
         }
@@ -582,7 +582,7 @@ function New-LauncherDocumentSet {
             $null = New-Item -ItemType Directory -Path $launcherRoot -Force
         }
     } catch {
-        $launcherRoot = Join-Path (Join-Path $PSScriptRoot '.opsforge') 'launcher'
+        $launcherRoot = Join-Path (Join-Path $PSScriptRoot '.scopeforge') 'launcher'
         if (-not (Test-Path -LiteralPath $launcherRoot)) {
             $null = New-Item -ItemType Directory -Path $launcherRoot -Force
         }
@@ -644,7 +644,7 @@ function New-LauncherDocumentSet {
     }
 
     $instructions = @"
-OpsForge / ScopeForge - mode documents
+ScopeForge - mode documents
 
 Ordre recommande:
 1. Lis rapidement ce fichier.

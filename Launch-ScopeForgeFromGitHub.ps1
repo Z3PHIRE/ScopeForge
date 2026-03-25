@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$RepositoryOwner = 'Z3PHIRE',
-    [string]$RepositoryName = 'OpsForge',
+    [string]$RepositoryName = 'ScopeForge',
     [string]$Branch = 'main',
     [string]$BootstrapRoot,
     [switch]$ForceRefresh,
