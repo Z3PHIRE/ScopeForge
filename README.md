@@ -5,6 +5,8 @@ ScopeForge est un mini-projet PowerShell 7 pour l'automatisation de la reconnais
 ## Fichiers
 
 - `ScopeForge.ps1` : script principal contenant toutes les fonctions et l'entrée `Invoke-BugBountyRecon`
+- `Launch-ScopeForge.ps1` : lanceur interactif local avec menu, collage direct du scope et résumé final
+- `Launch-OpsForgeFromGitHub.ps1` : bootstrap GitHub prévu pour être utilisé via `irm ... | iex`
 - `examples/scope.json` : exemple de scope d'entrée
 
 ## Fonction principale
@@ -32,6 +34,18 @@ Exécution directe :
 ./ScopeForge.ps1 -ScopeFile ./examples/scope.json -Depth 3 -OutputDir ./output -ProgramName "khealth" -UniqueUserAgent "researcher-12345"
 ```
 
+Lanceur interactif local :
+
+```powershell
+./Launch-ScopeForge.ps1
+```
+
+Bootstrap GitHub après publication du dépôt :
+
+```powershell
+irm https://raw.githubusercontent.com/Z3PHIRE/OpsForge/main/Launch-OpsForgeFromGitHub.ps1 | iex
+```
+
 ## Exemples de commandes
 
 ```powershell
@@ -44,6 +58,14 @@ Exécution directe :
 
 ```powershell
 ./ScopeForge.ps1 -ScopeFile ./examples/scope.json -Depth 4 -OutputDir ./output_resume -ProgramName "khealth" -UniqueUserAgent "researcher-12345" -Resume -NoInstall -Quiet
+```
+
+```powershell
+./Launch-ScopeForge.ps1
+```
+
+```powershell
+irm https://raw.githubusercontent.com/Z3PHIRE/OpsForge/main/Launch-OpsForgeFromGitHub.ps1 | iex
 ```
 
 ## Fichier de scope
@@ -88,6 +110,8 @@ Le dossier `output/` contient :
 - `normalized/live_targets.csv`
 - `normalized/urls_discovered.json`
 - `normalized/urls_discovered.csv`
+- `normalized/interesting_urls.json`
+- `normalized/interesting_urls.csv`
 - `normalized/endpoints_unique.txt`
 - `reports/summary.json`
 - `reports/summary.csv`
@@ -110,6 +134,18 @@ Le dossier `output/` contient :
 - `-ExportHtml`, `-ExportCsv`, `-ExportJson` : contrôle des exports de rapport
 - `-Resume` : réutilise les sorties normalisées d'une exécution précédente quand le scope est identique
 
+## Lanceur visuel
+
+`Launch-ScopeForge.ps1` ajoute un flux plus simple pour lancer la reconnaissance :
+
+- choix du mode d'entrée : fichier JSON, collage direct du JSON, assistant guidé
+- génération automatique d'un `User-Agent` unique si besoin
+- saisie interactive de la profondeur, du dossier de sortie, des threads et du timeout
+- récapitulatif avant exécution
+- affichage final des pages les plus intéressantes pour le triage bug bounty
+
+Le bootstrap GitHub `Launch-OpsForgeFromGitHub.ps1` télécharge les fichiers nécessaires dans un dossier temporaire puis exécute le lanceur localement sans `Invoke-Expression` supplémentaire dans le script bootstrap lui-même.
+
 ## Hypothèses et limites
 
 - Le script est conçu pour des actions passives ou semi-passives autorisées : parsing de scope, découverte passive, validation HTTP et crawl HTTP(S) strictement borné.
@@ -117,6 +153,7 @@ Le dossier `output/` contient :
 - Le bootstrap télécharge les dernières releases GitHub officielles dans `output/tools/` sans modifier arbitrairement le système.
 - Les options `httpx` et `katana` sont activées en fonction des flags détectés localement. Une version très ancienne d'un outil peut réduire certains enrichissements.
 - `katana` est borné par les regex in-scope et le filtrage post-traitement. Si un programme a des contraintes supplémentaires, adapte `Depth`, `Threads`, `TimeoutSeconds` et les exclusions.
+- La section `interesting_urls` repose sur des heuristiques de priorisation, pas sur une détection de vulnérabilité.
 
 ## Comment adapter les filtres d'exclusion
 
@@ -162,6 +199,10 @@ L'approche recommandée est de conserver un pipeline explicite :
 
 ```powershell
 pwsh -NoLogo -NoProfile -Command ". ./ScopeForge.ps1; Get-Command Invoke-BugBountyRecon"
+```
+
+```powershell
+pwsh -NoLogo -NoProfile -Command ". ./Launch-ScopeForge.ps1; Get-Command Start-ScopeForgeLauncher"
 ```
 
 ## Rappel sécurité

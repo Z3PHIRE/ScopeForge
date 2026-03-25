@@ -78,6 +78,8 @@ function Get-OutputLayout {
         LiveTargetsCsv     = Join-Path (Join-Path $root 'normalized') 'live_targets.csv'
         UrlsDiscoveredJson = Join-Path (Join-Path $root 'normalized') 'urls_discovered.json'
         UrlsDiscoveredCsv  = Join-Path (Join-Path $root 'normalized') 'urls_discovered.csv'
+        InterestingUrlsJson = Join-Path (Join-Path $root 'normalized') 'interesting_urls.json'
+        InterestingUrlsCsv  = Join-Path (Join-Path $root 'normalized') 'interesting_urls.csv'
         EndpointsUniqueTxt = Join-Path (Join-Path $root 'normalized') 'endpoints_unique.txt'
         SummaryJson        = Join-Path (Join-Path $root 'reports') 'summary.json'
         SummaryCsv         = Join-Path (Join-Path $root 'reports') 'summary.csv'
@@ -906,6 +908,7 @@ function Merge-ReconResults {
         [Parameter(Mandatory)][pscustomobject[]]$HostsAll,
         [Parameter(Mandatory)][pscustomobject[]]$LiveTargets,
         [Parameter(Mandatory)][pscustomobject[]]$DiscoveredUrls,
+        [Parameter(Mandatory)][pscustomobject[]]$InterestingUrls,
         [Parameter(Mandatory)][pscustomobject[]]$Exclusions,
         [Parameter(Mandatory)][pscustomobject[]]$Errors,
         [Parameter(Mandatory)][string]$ProgramName,
@@ -915,6 +918,7 @@ function Merge-ReconResults {
     $statusCounts = $LiveTargets | Group-Object -Property StatusCode | Sort-Object -Property Name | ForEach-Object { [pscustomobject]@{ StatusCode = $_.Name; Count = $_.Count } }
     $technologyCounts = $LiveTargets | ForEach-Object { $_.Technologies } | Where-Object { $_ } | Group-Object | Sort-Object Count -Descending | Select-Object -First 10 | ForEach-Object { [pscustomobject]@{ Technology = $_.Name; Count = $_.Count } }
     $subdomainCounts = $HostsAll | Group-Object -Property Host | Sort-Object Count -Descending | Select-Object -First 10 | ForEach-Object { [pscustomobject]@{ Host = $_.Name; Count = $_.Count } }
+    $interestingCategoryCounts = $InterestingUrls | ForEach-Object { $_.Categories } | Where-Object { $_ } | Group-Object | Sort-Object Count -Descending | Select-Object -First 10 | ForEach-Object { [pscustomobject]@{ Category = $_.Name; Count = $_.Count } }
 
     [pscustomobject]@{
         ProgramName            = $ProgramName
@@ -926,11 +930,13 @@ function Merge-ReconResults {
         LiveHostCount          = ($LiveTargets | Select-Object -ExpandProperty Host -Unique).Count
         LiveTargetCount        = $LiveTargets.Count
         DiscoveredUrlCount     = $DiscoveredUrls.Count
+        InterestingUrlCount    = $InterestingUrls.Count
         ErrorCount             = $Errors.Count
         UniqueUserAgent        = $UniqueUserAgent
         StatusCodeDistribution = $statusCounts
         TopTechnologies        = $technologyCounts
         TopSubdomains          = $subdomainCounts
+        TopInterestingCategories = $interestingCategoryCounts
     }
 }
 
@@ -943,6 +949,87 @@ function ConvertTo-HtmlSafe {
     return [System.Net.WebUtility]::HtmlEncode($text)
 }
 
+function Get-InterestingReconFindings {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][pscustomobject[]]$LiveTargets,
+        [Parameter(Mandatory)][pscustomobject[]]$DiscoveredUrls
+    )
+
+    $liveIndex = @{}
+    foreach ($liveTarget in $LiveTargets) { $liveIndex[(Get-CanonicalUrlKey -Url $liveTarget.Url)] = $liveTarget }
+
+    $patterns = @(
+        @{ Category = 'Auth'; Score = 3; Reason = 'Authentication surface'; Pattern = '(?i)(^|[/?#._-])(login|signin|sign-in|auth|oauth|sso|register|signup|session|mfa)([/?#._-]|$)' },
+        @{ Category = 'Admin'; Score = 4; Reason = 'Administrative surface'; Pattern = '(?i)(^|[/?#._-])(admin|dashboard|manage|console|panel|backoffice|staff|portal)([/?#._-]|$)' },
+        @{ Category = 'API'; Score = 4; Reason = 'API or schema surface'; Pattern = '(?i)(swagger|openapi|redoc|graphql|graphiql|api-docs|/api/|/v[0-9]+/)' },
+        @{ Category = 'Files'; Score = 3; Reason = 'File handling surface'; Pattern = '(?i)(upload|import|export|download|attachment|avatar|media|document|file)' },
+        @{ Category = 'Infra'; Score = 3; Reason = 'Operational surface'; Pattern = '(?i)(status|health|metrics|actuator|prometheus|ready|live|heartbeat)' },
+        @{ Category = 'Debug'; Score = 4; Reason = 'Debug or verbose endpoint'; Pattern = '(?i)(debug|trace|stack|exception|error|dump|logs?)' },
+        @{ Category = 'Config'; Score = 4; Reason = 'Configuration or backup artifact'; Pattern = '(?i)(config|env|backup|bak|old|zip|tar|yaml|yml|json|xml)' },
+        @{ Category = 'Discovery'; Score = 2; Reason = 'Discovery helper'; Pattern = '(?i)(robots\.txt|sitemap\.xml|security\.txt|humans\.txt)' },
+        @{ Category = 'Redirect'; Score = 2; Reason = 'Callback or redirect workflow'; Pattern = '(?i)(callback|redirect|return|continue|next=|url=)' }
+    )
+
+    $results = [System.Collections.Generic.List[object]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($entry in $DiscoveredUrls) {
+        $url = [string]$entry.Url
+        if ([string]::IsNullOrWhiteSpace($url)) { continue }
+        $key = Get-CanonicalUrlKey -Url $url
+        if ($seen.Contains($key)) { continue }
+        $null = $seen.Add($key)
+
+        $score = 0
+        $reasons = [System.Collections.Generic.List[string]]::new()
+        $categories = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($pattern in $patterns) {
+            if ($url -match $pattern.Pattern) {
+                $score += [int]$pattern.Score
+                $reasons.Add($pattern.Reason) | Out-Null
+                $categories.Add($pattern.Category) | Out-Null
+            }
+        }
+
+        $statusCode = [int]$entry.StatusCode
+        if ($statusCode -in 401, 403) {
+            $score += 2
+            $reasons.Add('Access-controlled endpoint') | Out-Null
+            $categories.Add('Protected') | Out-Null
+        }
+
+        $liveMatch = $liveIndex[$key]
+        if ($liveMatch) {
+            if ($liveMatch.Technologies -and $liveMatch.Technologies.Count -gt 0) {
+                $score += 1
+                $categories.Add('Live') | Out-Null
+            }
+            if ($liveMatch.Title -and $liveMatch.Title -match '(?i)(admin|login|dashboard|swagger|graphql|portal)') {
+                $score += 2
+                $reasons.Add('Interesting page title') | Out-Null
+            }
+        }
+
+        if ($score -le 0) { continue }
+
+        $results.Add([pscustomobject]@{
+                Url         = $url
+                Host        = $entry.Host
+                StatusCode  = $statusCode
+                Score       = $score
+                Categories  = @($categories | Sort-Object)
+                Reasons     = @($reasons | Select-Object -Unique)
+                ScopeId     = $entry.ScopeId
+                Source      = $entry.Source
+                Title       = if ($liveMatch) { $liveMatch.Title } else { '' }
+                Technologies = if ($liveMatch) { $liveMatch.Technologies } else { @() }
+            })
+    }
+
+    return @($results | Sort-Object -Property @{ Expression = 'Score'; Descending = $true }, Url)
+}
+
 function Export-ReconReport {
     [CmdletBinding()]
     param(
@@ -952,6 +1039,7 @@ function Export-ReconReport {
         [Parameter(Mandatory)][pscustomobject[]]$HostsLive,
         [Parameter(Mandatory)][pscustomobject[]]$LiveTargets,
         [Parameter(Mandatory)][pscustomobject[]]$DiscoveredUrls,
+        [Parameter(Mandatory)][pscustomobject[]]$InterestingUrls,
         [Parameter(Mandatory)][pscustomobject[]]$Exclusions,
         [Parameter(Mandatory)][pscustomobject[]]$Errors,
         [Parameter(Mandatory)][pscustomobject]$Layout,
@@ -971,12 +1059,16 @@ function Export-ReconReport {
             [pscustomobject]@{ Metric = 'LiveHostCount'; Value = $Summary.LiveHostCount },
             [pscustomobject]@{ Metric = 'LiveTargetCount'; Value = $Summary.LiveTargetCount },
             [pscustomobject]@{ Metric = 'DiscoveredUrlCount'; Value = $Summary.DiscoveredUrlCount },
+            [pscustomobject]@{ Metric = 'InterestingUrlCount'; Value = $Summary.InterestingUrlCount },
             [pscustomobject]@{ Metric = 'ErrorCount'; Value = $Summary.ErrorCount }
         )
         Export-FlatCsv -Path $Layout.HostsAllCsv -Rows $HostsAll
         Export-FlatCsv -Path $Layout.LiveTargetsCsv -Rows $LiveTargets
         Export-FlatCsv -Path $Layout.UrlsDiscoveredCsv -Rows $DiscoveredUrls
+        Export-FlatCsv -Path $Layout.InterestingUrlsCsv -Rows $InterestingUrls
     }
+
+    Write-JsonFile -Path $Layout.InterestingUrlsJson -Data $InterestingUrls
 
     if (-not $ExportHtml) { return }
 
@@ -984,22 +1076,25 @@ function Export-ReconReport {
     $excludedRows = ($Exclusions | Select-Object -First 500 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.ScopeId) $(ConvertTo-HtmlSafe $_.Target) $(ConvertTo-HtmlSafe $_.Token)""><td>$(ConvertTo-HtmlSafe $_.Phase)</td><td>$(ConvertTo-HtmlSafe $_.ScopeId)</td><td>$(ConvertTo-HtmlSafe $_.Target)</td><td>$(ConvertTo-HtmlSafe $_.Token)</td><td>$(ConvertTo-HtmlSafe $_.MatchedOn)</td></tr>" }) -join [Environment]::NewLine
     $liveRows = ($LiveTargets | Select-Object -First 1000 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe ($_.Technologies -join ' '))""><td>$(ConvertTo-HtmlSafe $_.Host)</td><td><a href=""$(ConvertTo-HtmlSafe $_.Url)"" target=""_blank"" rel=""noreferrer"">$(ConvertTo-HtmlSafe $_.Url)</a></td><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(ConvertTo-HtmlSafe $_.Title)</td><td>$(ConvertTo-HtmlSafe ($_.Technologies -join ', '))</td></tr>" }) -join [Environment]::NewLine
     $urlRows = ($DiscoveredUrls | Select-Object -First 2000 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe $_.ScopeId)""><td>$(ConvertTo-HtmlSafe $_.Host)</td><td><a href=""$(ConvertTo-HtmlSafe $_.Url)"" target=""_blank"" rel=""noreferrer"">$(ConvertTo-HtmlSafe $_.Url)</a></td><td>$(ConvertTo-HtmlSafe $_.ScopeId)</td><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(ConvertTo-HtmlSafe $_.Source)</td></tr>" }) -join [Environment]::NewLine
+    $interestingRows = ($InterestingUrls | Select-Object -First 250 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe ($_.Categories -join ' '))""><td>$(ConvertTo-HtmlSafe $_.Score)</td><td><a href=""$(ConvertTo-HtmlSafe $_.Url)"" target=""_blank"" rel=""noreferrer"">$(ConvertTo-HtmlSafe $_.Url)</a></td><td>$(ConvertTo-HtmlSafe ($_.Categories -join ', '))</td><td>$(ConvertTo-HtmlSafe ($_.Reasons -join ', '))</td></tr>" }) -join [Environment]::NewLine
     $errorRows = ($Errors | Select-Object -First 500 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Phase) $(ConvertTo-HtmlSafe $_.Target) $(ConvertTo-HtmlSafe $_.Message)""><td>$(ConvertTo-HtmlSafe $_.Phase)</td><td>$(ConvertTo-HtmlSafe $_.Target)</td><td>$(ConvertTo-HtmlSafe $_.Message)</td><td>$(ConvertTo-HtmlSafe $_.Details)</td></tr>" }) -join [Environment]::NewLine
     $statusBars = ($Summary.StatusCodeDistribution | ForEach-Object { "<div class=""mini-row""><span>HTTP $(ConvertTo-HtmlSafe $_.StatusCode)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
     $technologyBars = ($Summary.TopTechnologies | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Technology)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
     $subdomainBars = ($Summary.TopSubdomains | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Host)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
+    $interestingBars = ($Summary.TopInterestingCategories | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Category)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
 
     $html = @"
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>ScopeForge Report - $(ConvertTo-HtmlSafe $Summary.ProgramName)</title><style>
 :root{--bg:#0a1016;--panel:#111c25;--panel2:#162633;--text:#edf4f8;--muted:#9eb4c2;--accent:#51d0b1;--border:rgba(255,255,255,.08);--shadow:0 24px 80px rgba(0,0,0,.35)}*{box-sizing:border-box}body{margin:0;font-family:"Segoe UI","Helvetica Neue",sans-serif;background:radial-gradient(circle at top right,rgba(81,208,177,.15),transparent 28%),radial-gradient(circle at top left,rgba(109,184,255,.12),transparent 22%),linear-gradient(180deg,#091018 0%,#0b141b 100%);color:var(--text)}.wrap{max-width:1500px;margin:0 auto;padding:32px 20px 60px}.hero,section,.card{background:rgba(17,28,37,.9);border:1px solid var(--border);box-shadow:var(--shadow)}.hero{padding:24px;border-radius:22px;margin-bottom:24px}.hero h1{margin:0 0 8px;font-size:30px}.hero p,.hint,.mini-row,.label,th{color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin:24px 0}.card{padding:18px;border-radius:18px}.value{margin-top:10px;font-size:28px;font-weight:700}.two-col{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:24px}.mini-row{display:flex;justify-content:space-between;gap:16px;padding:10px 0;border-bottom:1px solid var(--border)}.mini-row strong{color:var(--text)}.search{width:100%;margin:0 0 16px;padding:14px 16px;border:1px solid var(--border);border-radius:14px;background:rgba(10,16,22,.8);color:var(--text)}section{margin-bottom:24px;padding:18px;border-radius:18px}table{width:100%;border-collapse:collapse}th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top;font-size:14px}th{font-size:11px;text-transform:uppercase;letter-spacing:.08em}a{color:#6db8ff;text-decoration:none}@media(max-width:720px){.wrap{padding:20px 12px 40px}.hero h1{font-size:24px}}</style></head>
 <body><div class="wrap"><div class="hero"><h1>ScopeForge Recon Report</h1><p>Program: $(ConvertTo-HtmlSafe $Summary.ProgramName) | Generated: $(ConvertTo-HtmlSafe $Summary.GeneratedAtUtc) | PowerShell $(ConvertTo-HtmlSafe $Summary.PowerShellVersion)</p></div>
-<div class="grid"><div class="card"><div class="label">Scope Items</div><div class="value">$(ConvertTo-HtmlSafe $Summary.ScopeItemCount)</div></div><div class="card"><div class="label">Excluded</div><div class="value">$(ConvertTo-HtmlSafe $Summary.ExcludedItemCount)</div></div><div class="card"><div class="label">Hosts Found</div><div class="value">$(ConvertTo-HtmlSafe $Summary.DiscoveredHostCount)</div></div><div class="card"><div class="label">Live Hosts</div><div class="value">$(ConvertTo-HtmlSafe $Summary.LiveHostCount)</div></div><div class="card"><div class="label">Live Targets</div><div class="value">$(ConvertTo-HtmlSafe $Summary.LiveTargetCount)</div></div><div class="card"><div class="label">URLs Found</div><div class="value">$(ConvertTo-HtmlSafe $Summary.DiscoveredUrlCount)</div></div></div>
-<div class="two-col"><section><h2>HTTP Codes</h2>$statusBars</section><section><h2>Top Technologies</h2>$technologyBars</section><section><h2>Top Subdomains</h2>$subdomainBars</section></div>
+<div class="grid"><div class="card"><div class="label">Scope Items</div><div class="value">$(ConvertTo-HtmlSafe $Summary.ScopeItemCount)</div></div><div class="card"><div class="label">Excluded</div><div class="value">$(ConvertTo-HtmlSafe $Summary.ExcludedItemCount)</div></div><div class="card"><div class="label">Hosts Found</div><div class="value">$(ConvertTo-HtmlSafe $Summary.DiscoveredHostCount)</div></div><div class="card"><div class="label">Live Hosts</div><div class="value">$(ConvertTo-HtmlSafe $Summary.LiveHostCount)</div></div><div class="card"><div class="label">Live Targets</div><div class="value">$(ConvertTo-HtmlSafe $Summary.LiveTargetCount)</div></div><div class="card"><div class="label">URLs Found</div><div class="value">$(ConvertTo-HtmlSafe $Summary.DiscoveredUrlCount)</div></div><div class="card"><div class="label">Interesting</div><div class="value">$(ConvertTo-HtmlSafe $Summary.InterestingUrlCount)</div></div></div>
+<div class="two-col"><section><h2>HTTP Codes</h2>$statusBars</section><section><h2>Top Technologies</h2>$technologyBars</section><section><h2>Top Subdomains</h2>$subdomainBars</section><section><h2>Interesting Categories</h2>$interestingBars</section></div>
 <input id="globalSearch" class="search" type="search" placeholder="Filter all tables..." />
 <section><h2>In Scope</h2><p class="hint">Normalized scope after validation and wildcard parsing.</p><table data-filter-table="true"><thead><tr><th>ID</th><th>Type</th><th>Value</th><th>Exclusions</th></tr></thead><tbody>$scopeRows</tbody></table></section>
 <section><h2>Excluded</h2><p class="hint">Assets removed because they matched exclusion strings before probe or after crawl filtering.</p><table data-filter-table="true"><thead><tr><th>Phase</th><th>Scope</th><th>Target</th><th>Token</th><th>Matched On</th></tr></thead><tbody>$excludedRows</tbody></table></section>
 <section><h2>Live Hosts</h2><p class="hint">Reachable HTTP(S) targets retained after in-scope validation.</p><table data-filter-table="true"><thead><tr><th>Host</th><th>URL</th><th>Status</th><th>Title</th><th>Technologies</th></tr></thead><tbody>$liveRows</tbody></table></section>
+<section><h2>Interesting Pages</h2><p class="hint">Heuristically ranked URLs that can help prioritise manual bug bounty review.</p><table data-filter-table="true"><thead><tr><th>Score</th><th>URL</th><th>Categories</th><th>Reasons</th></tr></thead><tbody>$interestingRows</tbody></table></section>
 <section><h2>Discovered URLs</h2><p class="hint">Unique endpoints collected from katana and seed URLs.</p><table data-filter-table="true"><thead><tr><th>Host</th><th>URL</th><th>Scope</th><th>Status</th><th>Source</th></tr></thead><tbody>$urlRows</tbody></table></section>
 <section><h2>Errors</h2><p class="hint">Non-fatal errors captured during execution.</p><table data-filter-table="true"><thead><tr><th>Phase</th><th>Target</th><th>Message</th><th>Details</th></tr></thead><tbody>$errorRows</tbody></table></section></div>
 <script>const input=document.getElementById('globalSearch');const tables=Array.from(document.querySelectorAll('[data-filter-table="true"]'));function applyFilter(){const query=input.value.trim().toLowerCase();tables.forEach(table=>{table.querySelectorAll('tbody tr').forEach(row=>{const haystack=(row.dataset.search||row.textContent||'').toLowerCase();row.style.display=!query||haystack.includes(query)?'':'none';});});}input.addEventListener('input',applyFilter);</script></body></html>
@@ -1166,11 +1261,12 @@ function Invoke-BugBountyRecon {
         }
 
         Write-StageBanner -Step 6 -Title 'Génération des rapports'
-        $summary = Merge-ReconResults -ScopeItems $scopeItems -HostsAll $hostsAll -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -Exclusions @($script:ScopeForgeContext.Exclusions) -Errors @($script:ScopeForgeContext.Errors) -ProgramName $ProgramName -UniqueUserAgent $UniqueUserAgent
-        Export-ReconReport -Summary $summary -ScopeItems $scopeItems -HostsAll $hostsAll -HostsLive $hostsLive -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -Exclusions @($script:ScopeForgeContext.Exclusions) -Errors @($script:ScopeForgeContext.Errors) -Layout $layout -ExportJson:$exportJsonEnabled -ExportCsv:$exportCsvEnabled -ExportHtml:$exportHtmlEnabled
+        $interestingUrls = Get-InterestingReconFindings -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls
+        $summary = Merge-ReconResults -ScopeItems $scopeItems -HostsAll $hostsAll -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls $interestingUrls -Exclusions @($script:ScopeForgeContext.Exclusions) -Errors @($script:ScopeForgeContext.Errors) -ProgramName $ProgramName -UniqueUserAgent $UniqueUserAgent
+        Export-ReconReport -Summary $summary -ScopeItems $scopeItems -HostsAll $hostsAll -HostsLive $hostsLive -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls $interestingUrls -Exclusions @($script:ScopeForgeContext.Exclusions) -Errors @($script:ScopeForgeContext.Errors) -Layout $layout -ExportJson:$exportJsonEnabled -ExportCsv:$exportCsvEnabled -ExportHtml:$exportHtmlEnabled
         Write-StageProgress -Step 6 -Title 'Génération des rapports' -Percent 100 -Status 'Reports completed'
 
-        $result = [pscustomobject]@{ ProgramName = $ProgramName; OutputDir = $layout.Root; ScopeItems = $scopeItems; HostsAll = $hostsAll; HostsLive = $hostsLive; LiveTargets = $liveTargets; DiscoveredUrls = $discoveredUrls; Summary = $summary; Exclusions = @($script:ScopeForgeContext.Exclusions); Errors = @($script:ScopeForgeContext.Errors); ExportHtmlEnabled = $exportHtmlEnabled; ExportCsvEnabled = $exportCsvEnabled; ExportJsonEnabled = $exportJsonEnabled }
+        $result = [pscustomobject]@{ ProgramName = $ProgramName; OutputDir = $layout.Root; ScopeItems = $scopeItems; HostsAll = $hostsAll; HostsLive = $hostsLive; LiveTargets = $liveTargets; DiscoveredUrls = $discoveredUrls; InterestingUrls = $interestingUrls; Summary = $summary; Exclusions = @($script:ScopeForgeContext.Exclusions); Errors = @($script:ScopeForgeContext.Errors); ExportHtmlEnabled = $exportHtmlEnabled; ExportCsvEnabled = $exportCsvEnabled; ExportJsonEnabled = $exportJsonEnabled }
         if (-not $Quiet) {
             Write-Host ''
             Write-Host 'Recon summary' -ForegroundColor Green
@@ -1180,8 +1276,16 @@ function Invoke-BugBountyRecon {
             Write-Host ('  Live hosts       : {0}' -f $summary.LiveHostCount) -ForegroundColor Gray
             Write-Host ('  Live targets     : {0}' -f $summary.LiveTargetCount) -ForegroundColor Gray
             Write-Host ('  URLs discovered  : {0}' -f $summary.DiscoveredUrlCount) -ForegroundColor Gray
+            Write-Host ('  Interesting URLs : {0}' -f $summary.InterestingUrlCount) -ForegroundColor Gray
             Write-Host ('  Errors           : {0}' -f $summary.ErrorCount) -ForegroundColor Gray
             Write-Host ('  Output           : {0}' -f $layout.Root) -ForegroundColor Gray
+            if ($interestingUrls.Count -gt 0) {
+                Write-Host ''
+                Write-Host 'Top interesting pages' -ForegroundColor Yellow
+                foreach ($item in ($interestingUrls | Select-Object -First 10)) {
+                    Write-Host ('  [{0}] {1}' -f $item.Score, $item.Url) -ForegroundColor DarkYellow
+                }
+            }
         }
         return $result
     } catch {
