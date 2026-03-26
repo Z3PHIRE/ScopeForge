@@ -20,9 +20,12 @@ jobs:
       - name: Run Pester
         shell: pwsh
         run: |
-          if (-not (Get-Module -ListAvailable -Name Pester)) {
-            Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck
+          $requiredPesterVersion = [version]'3.4.0'
+          $installedPester = Get-Module -ListAvailable -Name Pester | Where-Object { $_.Version -eq $requiredPesterVersion } | Select-Object -First 1
+          if (-not $installedPester) {
+            Install-Module Pester -Name Pester -RequiredVersion $requiredPesterVersion -Scope CurrentUser -Force -SkipPublisherCheck -AllowClobber
           }
+          Import-Module Pester -RequiredVersion $requiredPesterVersion -Force
           $invokePester = Get-Command Invoke-Pester
           $pesterParams = @{ PassThru = $true }
           if ($invokePester.Parameters.ContainsKey('Path')) {

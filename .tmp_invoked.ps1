@@ -1,0 +1,4 @@
+\"InvocationName=\"
+\"ScriptName=\"
+\"MyCommandPath=\"
+\"PSCommandPath=\"
