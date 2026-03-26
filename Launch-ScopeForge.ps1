@@ -557,6 +557,29 @@ function Get-LauncherDocumentProperty {
     return $Default
 }
 
+function ConvertTo-LauncherBoolean {
+    param(
+        [Parameter(Mandatory)][AllowNull()]$Value,
+        [bool]$Default = $false
+    )
+
+    if ($null -eq $Value) { return $Default }
+    if ($Value -is [bool]) { return $Value }
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) { return $Default }
+
+    switch ($text.Trim().ToLowerInvariant()) {
+        'true' { return $true }
+        'false' { return $false }
+        '1' { return $true }
+        '0' { return $false }
+        default {
+            throw "La valeur booléenne '$Value' est invalide. Utilise true ou false."
+        }
+    }
+}
+
 function New-LauncherDocumentSet {
     param(
         [string]$InitialScopeFile,
@@ -780,14 +803,14 @@ function Build-DocumentRunConfig {
                 $uniqueUserAgentValue = "researcher-" + ([Guid]::NewGuid().ToString('N').Substring(0, 8))
             }
 
-            $includeApexValue = [bool](Get-LauncherDocumentProperty -InputObject $settings -Name 'includeApex' -Default $IncludeApex)
-            $localRespectSchemeOnly = [bool](Get-LauncherDocumentProperty -InputObject $settings -Name 'respectSchemeOnly' -Default $localRespectSchemeOnly)
-            $localEnableGau = [bool](Get-LauncherDocumentProperty -InputObject $settings -Name 'enableGau' -Default $localEnableGau)
-            $localEnableWaybackUrls = [bool](Get-LauncherDocumentProperty -InputObject $settings -Name 'enableWaybackUrls' -Default $localEnableWaybackUrls)
-            $localEnableHakrawler = [bool](Get-LauncherDocumentProperty -InputObject $settings -Name 'enableHakrawler' -Default $localEnableHakrawler)
-            $localNoInstall = [bool](Get-LauncherDocumentProperty -InputObject $settings -Name 'noInstall' -Default $NoInstall)
-            $localResume = [bool](Get-LauncherDocumentProperty -InputObject $settings -Name 'resume' -Default $localResume)
-            $localOpenReportOnFinish = [bool](Get-LauncherDocumentProperty -InputObject $settings -Name 'openReportOnFinish' -Default $OpenReportOnFinish)
+            $includeApexValue = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'includeApex' -Default $IncludeApex) -Default $IncludeApex
+            $localRespectSchemeOnly = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'respectSchemeOnly' -Default $localRespectSchemeOnly) -Default $localRespectSchemeOnly
+            $localEnableGau = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'enableGau' -Default $localEnableGau) -Default $localEnableGau
+            $localEnableWaybackUrls = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'enableWaybackUrls' -Default $localEnableWaybackUrls) -Default $localEnableWaybackUrls
+            $localEnableHakrawler = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'enableHakrawler' -Default $localEnableHakrawler) -Default $localEnableHakrawler
+            $localNoInstall = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'noInstall' -Default $NoInstall) -Default $NoInstall
+            $localResume = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'resume' -Default $localResume) -Default $localResume
+            $localOpenReportOnFinish = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'openReportOnFinish' -Default $OpenReportOnFinish) -Default $OpenReportOnFinish
 
             $scopePreview = Read-ScopeFile -Path $documentSet.ScopePath -IncludeApex:$includeApexValue
 
@@ -858,7 +881,7 @@ function Get-InteractiveScopeFile {
 
 function Build-InteractiveRunConfig {
     param(
-        [Parameter(Mandatory)][string]$InitialScopeFile,
+        [string]$InitialScopeFile,
         [string]$ProgramName,
         [string]$OutputDir,
         [int]$Depth,

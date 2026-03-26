@@ -123,6 +123,7 @@ Le dossier `output/` contient :
 - `raw/hakrawler_raw.txt`
 - `normalized/scope_normalized.json`
 - `normalized/hosts_all.json`
+- `normalized/hosts_all.csv`
 - `normalized/hosts_live.json`
 - `normalized/live_targets.json`
 - `normalized/live_targets.csv`
