@@ -42,6 +42,295 @@ function Write-LauncherSection {
     Write-Host ("[{0}]" -f $Title) -ForegroundColor Cyan
 }
 
+function Get-LauncherConsoleWidth {
+    try {
+        return [Math]::Max($Host.UI.RawUI.BufferSize.Width, 100)
+    } catch {
+        return 120
+    }
+}
+
+function ConvertTo-LauncherCellText {
+    param([AllowNull()][object]$Value)
+
+    if ($null -eq $Value) { return '' }
+    if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [string]) {
+        return (($Value | ForEach-Object { [string]$_ }) -join ', ')
+    }
+    return [string]$Value
+}
+
+function Split-LauncherWrappedText {
+    param(
+        [AllowNull()][object]$Value,
+        [int]$Width = 32
+    )
+
+    $safeWidth = [Math]::Max($Width, 8)
+    $text = ConvertTo-LauncherCellText -Value $Value
+    $lines = [System.Collections.Generic.List[string]]::new()
+    foreach ($rawLine in ($text -split "`r`n|`n|`r")) {
+        $line = [string]$rawLine
+        if ([string]::IsNullOrEmpty($line)) {
+            $lines.Add('') | Out-Null
+            continue
+        }
+
+        while ($line.Length -gt $safeWidth) {
+            $sliceLength = [Math]::Min($safeWidth, $line.Length)
+            $breakIndex = $line.LastIndexOf(' ', $sliceLength - 1, $sliceLength)
+            if ($breakIndex -lt [Math]::Floor($safeWidth / 2)) {
+                $breakIndex = $sliceLength
+            }
+            $chunk = $line.Substring(0, $breakIndex).TrimEnd()
+            if ($chunk.Length -eq 0) {
+                $chunk = $line.Substring(0, $sliceLength)
+                $line = $line.Substring($sliceLength).TrimStart()
+            } else {
+                $line = $line.Substring($breakIndex).TrimStart()
+            }
+            $lines.Add($chunk) | Out-Null
+        }
+        $lines.Add($line) | Out-Null
+    }
+
+    if ($lines.Count -eq 0) { $lines.Add('') | Out-Null }
+    return @($lines)
+}
+
+function Write-LauncherKV {
+    param(
+        [Parameter(Mandatory)][string]$Key,
+        [AllowNull()][object]$Value,
+        [ConsoleColor]$Color = [ConsoleColor]::Gray
+    )
+
+    Write-Host ("  {0,-18} : {1}" -f $Key, (ConvertTo-LauncherCellText -Value $Value)) -ForegroundColor $Color
+}
+
+function Write-LauncherLink {
+    param(
+        [Parameter(Mandatory)][string]$Label,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    Write-Host ("  {0,-18} : {1}" -f $Label, $Path) -ForegroundColor Green
+}
+
+function Write-LauncherBarList {
+    param(
+        [Parameter(Mandatory)][string]$Title,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Items,
+        [Parameter(Mandatory)][string]$LabelProperty,
+        [Parameter(Mandatory)][string]$ValueProperty
+    )
+
+    if (-not $Items -or $Items.Count -eq 0) { return }
+    Write-Host ''
+    Write-Host ("  {0}" -f $Title) -ForegroundColor Cyan
+    $maxValue = [int](($Items | Measure-Object -Property $ValueProperty -Maximum).Maximum)
+    if ($maxValue -lt 1) { $maxValue = 1 }
+    foreach ($item in ($Items | Select-Object -First 5)) {
+        $label = ConvertTo-LauncherCellText -Value $item.$LabelProperty
+        $count = [int]$item.$ValueProperty
+        $barLength = [Math]::Max([Math]::Round(($count / $maxValue) * 14), 1)
+        $bar = ('#' * $barLength).PadRight(14, '.')
+        Write-Host ("    {0,-18} {1} {2,4}" -f $label, $bar, $count) -ForegroundColor Gray
+    }
+}
+
+function Write-LauncherTable {
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Rows,
+        [Parameter(Mandatory)][string[]]$Columns,
+        [hashtable]$Headers = @{},
+        [hashtable]$Widths = @{}
+    )
+
+    if (-not $Rows -or $Rows.Count -eq 0) { return }
+
+    $columnWidths = @{}
+    foreach ($column in $Columns) {
+        $label = if ($Headers.ContainsKey($column)) { [string]$Headers[$column] } else { [string]$column }
+        $columnWidths[$column] = [Math]::Max($label.Length, $(if ($Widths.ContainsKey($column)) { [int]$Widths[$column] } else { 18 }))
+    }
+
+    $header = ($Columns | ForEach-Object {
+        $label = if ($Headers.ContainsKey($_)) { [string]$Headers[$_] } else { [string]$_ }
+        $label.PadRight($columnWidths[$_])
+    }) -join ' | '
+    $separator = ($Columns | ForEach-Object { ''.PadRight($columnWidths[$_], '-') }) -join '-+-'
+
+    Write-Host ("  {0}" -f $header) -ForegroundColor DarkCyan
+    Write-Host ("  {0}" -f $separator) -ForegroundColor DarkGray
+
+    foreach ($row in $Rows) {
+        $wrappedByColumn = @{}
+        $maxLines = 1
+        foreach ($column in $Columns) {
+            $wrappedByColumn[$column] = @(Split-LauncherWrappedText -Value $row.$column -Width $columnWidths[$column])
+            if ($wrappedByColumn[$column].Count -gt $maxLines) { $maxLines = $wrappedByColumn[$column].Count }
+        }
+
+        for ($lineIndex = 0; $lineIndex -lt $maxLines; $lineIndex++) {
+            $line = ($Columns | ForEach-Object {
+                $cellLines = $wrappedByColumn[$_]
+                $cellText = if ($lineIndex -lt $cellLines.Count) { $cellLines[$lineIndex] } else { '' }
+                $cellText.PadRight($columnWidths[$_])
+            }) -join ' | '
+            Write-Host ("  {0}" -f $line) -ForegroundColor Gray
+        }
+    }
+}
+
+function Throw-LauncherConfigValidationError {
+    param(
+        [Parameter(Mandatory)][string]$Field,
+        [AllowNull()][object]$Value,
+        [Parameter(Mandatory)][string]$Problem,
+        [Parameter(Mandatory)][string]$Example
+    )
+
+    $payload = [ordered]@{
+        Kind    = 'LauncherConfigValidation'
+        Field   = $Field
+        Value   = $(if ($null -eq $Value) { 'null' } else { ConvertTo-LauncherCellText -Value $Value })
+        Problem = $Problem
+        Example = $Example
+    }
+    throw ('SCOPEFORGE_CONFIG::{0}' -f ($payload | ConvertTo-Json -Compress))
+}
+
+function Get-LauncherConfigValidationIssue {
+    param([Parameter(Mandatory)][System.Exception]$Exception)
+
+    $prefix = 'SCOPEFORGE_CONFIG::'
+    if (-not $Exception.Message.StartsWith($prefix)) { return $null }
+    try {
+        return ($Exception.Message.Substring($prefix.Length) | ConvertFrom-Json -Depth 10)
+    } catch {
+        return $null
+    }
+}
+
+function Show-LauncherConfigValidationSummary {
+    param([Parameter(Mandatory)][pscustomobject]$Issue)
+
+    Write-LauncherSection -Title 'Erreur de configuration'
+    Write-Host 'Le launcher a bloque le run avant execution. Corrige le champ ci-dessous dans 02-run-settings.json.' -ForegroundColor Yellow
+    Write-LauncherTable -Rows @(
+        [pscustomobject]@{
+            Champ    = $Issue.Field
+            Valeur   = $Issue.Value
+            Probleme = $Issue.Problem
+            Exemple  = $Issue.Example
+        }
+    ) -Columns @('Champ', 'Valeur', 'Probleme', 'Exemple') -Widths @{ Champ = 18; Valeur = 22; Probleme = 40; Exemple = 24 }
+}
+
+function Write-LauncherKeyValue {
+    param(
+        [Parameter(Mandatory)][string]$Key,
+        [AllowNull()][object]$Value,
+        [string]$Color = 'Gray',
+        [int]$Padding = 18
+    )
+
+    $displayValue = if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) { '-' } else { [string]$Value }
+    $format = "  {0,-$Padding}: {1}"
+    Write-Host ($format -f $Key, $displayValue) -ForegroundColor $Color
+}
+
+function Write-LauncherLink {
+    param(
+        [Parameter(Mandatory)][string]$Label,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    Write-LauncherKeyValue -Key $Label -Value $Path -Color 'Green'
+}
+
+function Write-LauncherBarRow {
+    param(
+        [Parameter(Mandatory)][string]$Label,
+        [Parameter(Mandatory)][int]$Count,
+        [int]$MaxCount = 0,
+        [string]$Color = 'Gray'
+    )
+
+    $barWidth = 0
+    if ($MaxCount -gt 0) {
+        $barWidth = [Math]::Max([int][Math]::Round(($Count / [double]$MaxCount) * 12), $(if ($Count -gt 0) { 1 } else { 0 }))
+    }
+    $bar = if ($barWidth -gt 0) { ''.PadLeft($barWidth, '#') } else { '-' }
+    Write-Host ("  {0,-20} {1,5}  {2}" -f $Label, $Count, $bar) -ForegroundColor $Color
+}
+
+function New-LauncherConfigIssue {
+    param(
+        [Parameter(Mandatory)][string]$Field,
+        [AllowNull()][object]$Value,
+        [Parameter(Mandatory)][string]$Problem,
+        [Parameter(Mandatory)][string]$Example
+    )
+
+    $displayValue = switch ($Value) {
+        $null { 'null' }
+        { $_ -is [string] -and [string]::IsNullOrWhiteSpace($_) } { '<empty>' }
+        default { [string]$Value }
+    }
+
+    [pscustomobject]@{
+        Field   = $Field
+        Value   = $displayValue
+        Problem = $Problem
+        Example = $Example
+    }
+}
+
+function Throw-LauncherConfigIssue {
+    param(
+        [Parameter(Mandatory)][string]$Field,
+        [AllowNull()][object]$Value,
+        [Parameter(Mandatory)][string]$Problem,
+        [Parameter(Mandatory)][string]$Example
+    )
+
+    $exception = [System.InvalidOperationException]::new(("Champ '{0}' invalide: {1}" -f $Field, $Problem))
+    $exception.Data['ScopeForgeConfigIssues'] = @(
+        New-LauncherConfigIssue -Field $Field -Value $Value -Problem $Problem -Example $Example
+    )
+    throw $exception
+}
+
+function Get-LauncherConfigIssues {
+    param([Parameter(Mandatory)][System.Exception]$Exception)
+
+    if ($Exception.Data -and $Exception.Data.Contains('ScopeForgeConfigIssues')) {
+        return @($Exception.Data['ScopeForgeConfigIssues'])
+    }
+    return @()
+}
+
+function Show-LauncherConfigIssues {
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Issues)
+
+    if (-not $Issues -or $Issues.Count -eq 0) { return }
+
+    Write-LauncherSection -Title 'Erreur de configuration'
+    Write-Host 'Le fichier 02-run-settings.json contient une valeur invalide. Corrige le champ ci-dessous puis sauvegarde a nouveau.' -ForegroundColor Red
+    Write-LauncherTable -Rows @(
+        $Issues | ForEach-Object {
+            [pscustomobject]@{
+                Champ    = $_.Field
+                Valeur   = $_.Value
+                Probleme = $_.Problem
+                Exemple  = $_.Example
+            }
+        }
+    ) -Columns @('Champ', 'Valeur', 'Probleme', 'Exemple') -Widths @{ Champ = 18; Valeur = 20; Probleme = 42; Exemple = 24 }
+}
+
 function Read-LauncherValue {
     param([string]$Prompt, [string]$Default = '')
     $label = if ($Default) { "$Prompt [$Default]" } else { $Prompt }
@@ -252,48 +541,62 @@ function Select-LauncherProgramProfile {
 function Show-ScopePreview {
     param([Parameter(Mandatory)][pscustomobject[]]$ScopeItems)
     Write-LauncherSection -Title 'Scope validé'
-    $rows = $ScopeItems | ForEach-Object {
+    Write-Host ("  Items in-scope: {0}" -f $ScopeItems.Count) -ForegroundColor Gray
+    $rows = @($ScopeItems | ForEach-Object {
         [pscustomobject]@{
             Id         = $_.Id
             Type       = $_.Type
             Value      = $_.NormalizedValue
-            Exclusions = ($_.Exclusions -join ', ')
+            Exclusions = if ($_.Exclusions -and $_.Exclusions.Count -gt 0) { ($_.Exclusions -join ', ') } else { '-' }
         }
-    }
-    $rows | Format-Table -AutoSize | Out-Host
+    })
+    Write-LauncherTable -Rows $rows -Columns @('Id', 'Type', 'Value', 'Exclusions') -Widths @{ Id = 10; Type = 10; Value = 58; Exclusions = 24 }
 }
 
 function Show-LauncherConfigPreview {
     param([Parameter(Mandatory)][hashtable]$RunConfig)
     Write-LauncherSection -Title 'Configuration'
     if ($RunConfig.ContainsKey('DocumentWorkspace')) {
-        Write-Host ("  DocumentWorkspace : {0}" -f $RunConfig.DocumentWorkspace) -ForegroundColor Gray
+        Write-LauncherKeyValue -Key 'DocumentWorkspace' -Value $RunConfig.DocumentWorkspace
     }
     if ($RunConfig.ContainsKey('PresetName')) {
-        Write-Host ("  Preset            : {0}" -f $RunConfig.PresetName) -ForegroundColor Gray
-        Write-Host ("  Preset details    : {0}" -f $RunConfig.PresetDescription) -ForegroundColor DarkGray
+        Write-Host ''
+        Write-Host '  Program' -ForegroundColor Cyan
+        Write-LauncherKeyValue -Key 'Preset' -Value $RunConfig.PresetName
+        Write-LauncherKeyValue -Key 'Preset details' -Value $RunConfig.PresetDescription -Color 'DarkGray'
     }
     if ($RunConfig.ContainsKey('ProfileName')) {
-        Write-Host ("  Program profile   : {0}" -f $RunConfig.ProfileName) -ForegroundColor Gray
-        Write-Host ("  Profile details   : {0}" -f $RunConfig.ProfileDescription) -ForegroundColor DarkGray
+        Write-LauncherKeyValue -Key 'Program profile' -Value $RunConfig.ProfileName
+        Write-LauncherKeyValue -Key 'Profile details' -Value $RunConfig.ProfileDescription -Color 'DarkGray'
         if ($RunConfig.ContainsKey('ProfileSourceExplanation')) {
-            Write-Host ("  Source strategy   : {0}" -f $RunConfig.ProfileSourceExplanation) -ForegroundColor DarkGray
+            Write-LauncherKeyValue -Key 'Source strategy' -Value $RunConfig.ProfileSourceExplanation -Color 'DarkGray'
         }
     }
-    Write-Host ("  ScopeFile         : {0}" -f $RunConfig.ScopeFile) -ForegroundColor Gray
-    Write-Host ("  ProgramName       : {0}" -f $RunConfig.ProgramName) -ForegroundColor Gray
-    Write-Host ("  OutputDir         : {0}" -f $RunConfig.OutputDir) -ForegroundColor Gray
-    Write-Host ("  Depth             : {0}" -f $RunConfig.Depth) -ForegroundColor Gray
-    Write-Host ("  Threads           : {0}" -f $RunConfig.Threads) -ForegroundColor Gray
-    Write-Host ("  TimeoutSeconds    : {0}" -f $RunConfig.TimeoutSeconds) -ForegroundColor Gray
-    Write-Host ("  UniqueUserAgent   : {0}" -f $RunConfig.UniqueUserAgent) -ForegroundColor Gray
-    Write-Host ("  IncludeApex       : {0}" -f $RunConfig.IncludeApex) -ForegroundColor Gray
-    Write-Host ("  RespectSchemeOnly : {0}" -f $RunConfig.RespectSchemeOnly) -ForegroundColor Gray
-    Write-Host ("  Sources           : {0}" -f (Get-LauncherSourceSummary -EnableGau $RunConfig.EnableGau -EnableWaybackUrls $RunConfig.EnableWaybackUrls -EnableHakrawler $RunConfig.EnableHakrawler)) -ForegroundColor Gray
-    Write-Host ("  NoInstall         : {0}" -f $RunConfig.NoInstall) -ForegroundColor Gray
-    Write-Host ("  Resume            : {0}" -f $RunConfig.Resume) -ForegroundColor Gray
+
+    Write-LauncherKeyValue -Key 'ScopeFile' -Value $RunConfig.ScopeFile
+    Write-LauncherKeyValue -Key 'ProgramName' -Value $RunConfig.ProgramName
+    Write-LauncherKeyValue -Key 'OutputDir' -Value $RunConfig.OutputDir
+
+    Write-Host ''
+    Write-Host '  Performance' -ForegroundColor Cyan
+    Write-LauncherKeyValue -Key 'Depth' -Value $RunConfig.Depth
+    Write-LauncherKeyValue -Key 'Threads' -Value $RunConfig.Threads
+    Write-LauncherKeyValue -Key 'TimeoutSeconds' -Value $RunConfig.TimeoutSeconds
+    Write-LauncherKeyValue -Key 'UniqueUserAgent' -Value $RunConfig.UniqueUserAgent
+
+    Write-Host ''
+    Write-Host '  Sources' -ForegroundColor Cyan
+    Write-LauncherKeyValue -Key 'Sources' -Value (Get-LauncherSourceSummary -EnableGau $RunConfig.EnableGau -EnableWaybackUrls $RunConfig.EnableWaybackUrls -EnableHakrawler $RunConfig.EnableHakrawler)
+
+    Write-Host ''
+    Write-Host '  Flags' -ForegroundColor Cyan
+    Write-LauncherKeyValue -Key 'IncludeApex' -Value $RunConfig.IncludeApex
+    Write-LauncherKeyValue -Key 'RespectSchemeOnly' -Value $RunConfig.RespectSchemeOnly
+    Write-LauncherKeyValue -Key 'NoInstall' -Value $RunConfig.NoInstall
+    Write-LauncherKeyValue -Key 'Quiet' -Value $RunConfig.Quiet
+    Write-LauncherKeyValue -Key 'Resume' -Value $RunConfig.Resume
     if ($RunConfig.ContainsKey('OpenReportOnFinish')) {
-        Write-Host ("  OpenReport        : {0}" -f $RunConfig.OpenReportOnFinish) -ForegroundColor Gray
+        Write-LauncherKeyValue -Key 'OpenReport' -Value $RunConfig.OpenReportOnFinish
     }
 }
 
@@ -301,46 +604,58 @@ function Show-RunSummaryDashboard {
     param([Parameter(Mandatory)][pscustomobject]$Result)
     $summary = $Result.Summary
     $protectedCount = @($Result.LiveTargets | Where-Object { $_.StatusCode -in 401, 403 }).Count
+    $metricRows = @(
+        @{ Label = 'Scope items'; Count = [int]$summary.ScopeItemCount },
+        @{ Label = 'Excluded'; Count = [int]$summary.ExcludedItemCount },
+        @{ Label = 'Hosts discovered'; Count = [int]$summary.DiscoveredHostCount },
+        @{ Label = 'Live hosts'; Count = [int]$summary.LiveHostCount },
+        @{ Label = 'Live targets'; Count = [int]$summary.LiveTargetCount },
+        @{ Label = 'URLs discovered'; Count = [int]$summary.DiscoveredUrlCount },
+        @{ Label = 'Interesting URLs'; Count = [int]$summary.InterestingUrlCount },
+        @{ Label = 'Protected 401/403'; Count = [int]$protectedCount },
+        @{ Label = 'Errors'; Count = [int]$summary.ErrorCount }
+    )
+    $maxMetricCount = [int](($metricRows | Measure-Object -Property Count -Maximum).Maximum)
+    if ($maxMetricCount -lt 1) { $maxMetricCount = 1 }
     Write-LauncherSection -Title 'Dashboard'
-    Write-Host ("  Scope items      : {0}" -f $summary.ScopeItemCount) -ForegroundColor Gray
-    Write-Host ("  Excluded         : {0}" -f $summary.ExcludedItemCount) -ForegroundColor Gray
-    Write-Host ("  Hosts discovered : {0}" -f $summary.DiscoveredHostCount) -ForegroundColor Gray
-    Write-Host ("  Live hosts       : {0}" -f $summary.LiveHostCount) -ForegroundColor Gray
-    Write-Host ("  Live targets     : {0}" -f $summary.LiveTargetCount) -ForegroundColor Gray
-    Write-Host ("  URLs discovered  : {0}" -f $summary.DiscoveredUrlCount) -ForegroundColor Gray
-    Write-Host ("  Interesting URLs : {0}" -f $summary.InterestingUrlCount) -ForegroundColor Gray
-    Write-Host ("  Protected 401/403: {0}" -f $protectedCount) -ForegroundColor Gray
-    Write-Host ("  Errors           : {0}" -f $summary.ErrorCount) -ForegroundColor Gray
+    Write-Host '  Counters' -ForegroundColor Cyan
+    foreach ($metric in $metricRows) {
+        Write-LauncherBarRow -Label $metric.Label -Count $metric.Count -MaxCount $maxMetricCount -Color 'Gray'
+    }
 
     if ($summary.TopTechnologies -and $summary.TopTechnologies.Count -gt 0) {
         Write-Host ''
         Write-Host '  Top technologies' -ForegroundColor Cyan
+        $maxTech = [int](($summary.TopTechnologies | Measure-Object -Property Count -Maximum).Maximum)
         foreach ($item in ($summary.TopTechnologies | Select-Object -First 5)) {
-            Write-Host ("    {0} ({1})" -f $item.Technology, $item.Count) -ForegroundColor Gray
+            Write-LauncherBarRow -Label $item.Technology -Count ([int]$item.Count) -MaxCount $maxTech
         }
     }
 
     if ($summary.TopInterestingFamilies -and $summary.TopInterestingFamilies.Count -gt 0) {
         Write-Host ''
         Write-Host '  Interesting families' -ForegroundColor Cyan
+        $maxFamilies = [int](($summary.TopInterestingFamilies | Measure-Object -Property Count -Maximum).Maximum)
         foreach ($item in ($summary.TopInterestingFamilies | Select-Object -First 5)) {
-            Write-Host ("    {0} ({1})" -f $item.Family, $item.Count) -ForegroundColor Gray
+            Write-LauncherBarRow -Label $item.Family -Count ([int]$item.Count) -MaxCount $maxFamilies
         }
     }
 
     if ($summary.InterestingPriorityDistribution -and $summary.InterestingPriorityDistribution.Count -gt 0) {
         Write-Host ''
         Write-Host '  Interesting priorities' -ForegroundColor Cyan
+        $maxPriority = [int](($summary.InterestingPriorityDistribution | Measure-Object -Property Count -Maximum).Maximum)
         foreach ($item in $summary.InterestingPriorityDistribution) {
-            Write-Host ("    {0,-10} {1,5}" -f $item.Priority, $item.Count) -ForegroundColor Gray
+            Write-LauncherBarRow -Label $item.Priority -Count ([int]$item.Count) -MaxCount $maxPriority
         }
     }
 
     if ($summary.TopInterestingCategories -and $summary.TopInterestingCategories.Count -gt 0) {
         Write-Host ''
         Write-Host '  Interesting categories' -ForegroundColor Cyan
+        $maxCategories = [int](($summary.TopInterestingCategories | Measure-Object -Property Count -Maximum).Maximum)
         foreach ($item in ($summary.TopInterestingCategories | Select-Object -First 5)) {
-            Write-Host ("    {0} ({1})" -f $item.Category, $item.Count) -ForegroundColor Gray
+            Write-LauncherBarRow -Label $item.Category -Count ([int]$item.Count) -MaxCount $maxCategories
         }
     }
 }
@@ -348,18 +663,18 @@ function Show-RunSummaryDashboard {
 function Get-LauncherInvokeParams {
     param([Parameter(Mandatory)][hashtable]$RunConfig)
     $invokeParams = @{}
-    foreach ($name in @('ScopeFile', 'ProgramName', 'OutputDir', 'Depth', 'UniqueUserAgent', 'Threads', 'TimeoutSeconds', 'EnableGau', 'EnableWaybackUrls', 'EnableHakrawler')) {
+    foreach ($name in @('ScopeFile', 'ProgramName', 'OutputDir', 'Depth', 'UniqueUserAgent', 'Threads', 'TimeoutSeconds')) {
         if ($RunConfig.ContainsKey($name)) {
             $invokeParams[$name] = $RunConfig[$name]
         }
     }
-    foreach ($name in @('NoInstall', 'Quiet', 'IncludeApex', 'RespectSchemeOnly', 'Resume')) {
+    foreach ($name in @('EnableGau', 'EnableWaybackUrls', 'EnableHakrawler')) {
         if (-not $RunConfig.ContainsKey($name)) { continue }
-        $value = $RunConfig[$name]
-        if ($value -isnot [bool] -and $value -isnot [System.Management.Automation.SwitchParameter]) {
-            $typeName = if ($null -eq $value) { 'null' } else { $value.GetType().FullName }
-            throw ("Le champ '{0}' du launcher doit deja etre un booléen avant l'appel recon. Valeur recue: {1} (type: {2})" -f $name, $value, $typeName)
-        }
+        $invokeParams[$name] = ConvertTo-LauncherBoolean -Value $RunConfig[$name] -Name $name -Default $false
+    }
+    foreach ($name in @('NoInstall', 'Quiet', 'IncludeApex', 'RespectSchemeOnly', 'ExportHtml', 'ExportCsv', 'ExportJson', 'Resume')) {
+        if (-not $RunConfig.ContainsKey($name)) { continue }
+        $value = ConvertTo-LauncherBoolean -Value $RunConfig[$name] -Name $name -Default $false
         if ([bool]$value) {
             $invokeParams[$name] = $true
         }
@@ -424,10 +739,86 @@ function Show-ProtectedEndpoints {
 function Show-OutputPaths {
     param([Parameter(Mandatory)][pscustomobject]$Result)
     Write-LauncherSection -Title 'Exports'
-    Write-Host ("  HTML report : {0}" -f (Join-Path $Result.OutputDir 'reports/report.html')) -ForegroundColor Green
-    Write-Host ("  Markdown    : {0}" -f (Join-Path $Result.OutputDir 'reports/triage.md')) -ForegroundColor Green
-    Write-Host ("  Interesting : {0}" -f (Join-Path $Result.OutputDir 'normalized/interesting_urls.json')) -ForegroundColor Green
-    Write-Host ("  Families    : {0}" -f (Join-Path $Result.OutputDir 'normalized/interesting_families.json')) -ForegroundColor Green
+    Write-Host '  Quick actions' -ForegroundColor Cyan
+    Write-LauncherLink -Label 'Open report.html' -Path (Join-Path $Result.OutputDir 'reports/report.html')
+    Write-LauncherLink -Label 'Open triage.md' -Path (Join-Path $Result.OutputDir 'reports/triage.md')
+    Write-LauncherLink -Label 'Open interesting_urls.json' -Path (Join-Path $Result.OutputDir 'normalized/interesting_urls.json')
+    Write-LauncherLink -Label 'Open interesting_families.json' -Path (Join-Path $Result.OutputDir 'normalized/interesting_families.json')
+    Write-LauncherLink -Label 'Open errors.log' -Path (Join-Path $Result.OutputDir 'logs/errors.log')
+    Write-LauncherLink -Label 'Open tools.log' -Path (Join-Path $Result.OutputDir 'logs/tools.log')
+}
+
+function Get-LauncherErrorRecommendation {
+    param([Parameter(Mandatory)][pscustomobject]$ErrorRecord)
+
+    switch ($ErrorRecord.ErrorCode) {
+        'ToolMissing' { return 'Installe l''outil manquant ou ajuste le preset/profile pour ne pas l''utiliser.' }
+        'ToolExitCode' { return 'Consulte tools.log puis relance avec moins de threads, un timeout plus large, ou une source moins bruyante.' }
+        'ToolTimeout' { return 'Augmente timeoutSeconds ou relance le run avec moins de concurrence.' }
+        'InvalidBooleanInConfig' { return 'Corrige la valeur en true/false sans guillemets dans 02-run-settings.json.' }
+        default { return 'Consulte errors.log et tools.log pour le détail complet.' }
+    }
+}
+
+function Show-ErrorSummaryPanel {
+    param([Parameter(Mandatory)][pscustomobject]$Result)
+
+    if (-not $Result.Errors -or $Result.Errors.Count -eq 0) { return }
+
+    Write-LauncherSection -Title 'Résumé des erreurs'
+    Write-Host ("  Total erreurs non fatales: {0}" -f $Result.Errors.Count) -ForegroundColor Yellow
+    $groupRows = @(
+        $Result.Errors |
+        Group-Object -Property @{ Expression = { $_.Phase } }, @{ Expression = { if ($_.Tool) { $_.Tool } else { '-' } } } |
+        Sort-Object -Property Count -Descending |
+        Select-Object -First 8 |
+        ForEach-Object {
+            [pscustomobject]@{
+                Phase = $_.Group[0].Phase
+                Tool  = if ($_.Group[0].Tool) { $_.Group[0].Tool } else { '-' }
+                Count = $_.Count
+            }
+        }
+    )
+    if ($groupRows.Count -gt 0) {
+        Write-Host '  Groupes' -ForegroundColor Cyan
+        Write-LauncherTable -Rows $groupRows -Columns @('Phase', 'Tool', 'Count') -Widths @{ Phase = 18; Tool = 12; Count = 6 }
+    }
+    $groupedRows = @(
+        $Result.Errors |
+        Group-Object -Property { '{0}|{1}' -f $_.Phase, $(if ($_.Tool) { $_.Tool } else { '-' }) } |
+        Sort-Object Count -Descending |
+        ForEach-Object {
+            $sample = $_.Group | Select-Object -First 1
+            [pscustomobject]@{
+                Phase      = $sample.Phase
+                Tool       = if ($sample.Tool) { $sample.Tool } else { '-' }
+                Count      = $_.Count
+                Code       = if ($sample.ErrorCode) { $sample.ErrorCode } else { '-' }
+                Suggestion = Get-LauncherErrorRecommendation -ErrorRecord $sample
+            }
+        }
+    )
+    Write-LauncherTable -Rows $groupedRows -Columns @('Phase', 'Tool', 'Count', 'Code', 'Suggestion') -Widths @{ Phase = 18; Tool = 12; Count = 6; Code = 18; Suggestion = 48 }
+
+    Write-Host ''
+    Write-Host '  Dernieres erreurs utiles' -ForegroundColor Cyan
+    $rows = @(
+        $Result.Errors |
+        Select-Object -Last 12 |
+        ForEach-Object {
+            [pscustomobject]@{
+                Phase   = $_.Phase
+                Tool    = if ($_.Tool) { $_.Tool } else { '-' }
+                Code    = if ($_.ErrorCode) { $_.ErrorCode } else { '-' }
+                Target  = if ($_.Target) { $_.Target } else { '-' }
+                Message = $_.Message
+            }
+        }
+    )
+    Write-LauncherTable -Rows $rows -Columns @('Phase', 'Tool', 'Code', 'Target', 'Message') -Widths @{ Phase = 16; Tool = 12; Code = 18; Target = 28; Message = 46 }
+    Write-LauncherLink -Label 'errors.log' -Path (Join-Path $Result.OutputDir 'logs/errors.log')
+    Write-LauncherLink -Label 'tools.log' -Path (Join-Path $Result.OutputDir 'logs/tools.log')
 }
 
 function Get-LauncherStorageRoot {
@@ -583,7 +974,7 @@ function ConvertTo-LauncherBoolean {
             0 { return $false }
             1 { return $true }
             default {
-                throw ("Champ '{0}' invalide dans 02-run-settings.json: utiliser true/false sans guillemets. Exemple: `"{0}`": false. Valeur recue: {1}" -f $Name, $Value)
+                Throw-LauncherConfigIssue -Field $Name -Value $Value -Problem 'Doit etre un booléen JSON true/false.' -Example ('"{0}": false' -f $Name)
             }
         }
     }
@@ -591,7 +982,7 @@ function ConvertTo-LauncherBoolean {
     if ($Value -is [string]) {
         $text = $Value.Trim()
         if ([string]::IsNullOrWhiteSpace($text)) {
-            throw ("Champ '{0}' invalide dans 02-run-settings.json: utiliser true/false sans guillemets. Exemple: `"{0}`": false. Valeur recue: chaine vide" -f $Name)
+            Throw-LauncherConfigIssue -Field $Name -Value $Value -Problem 'Doit etre un booléen JSON true/false, pas une chaine vide.' -Example ('"{0}": false' -f $Name)
         }
 
         switch ($text.ToLowerInvariant()) {
@@ -612,12 +1003,67 @@ function ConvertTo-LauncherBoolean {
                 return $false
             }
             default {
-                throw ("Champ '{0}' invalide dans 02-run-settings.json: utiliser true/false sans guillemets. Exemple: `"{0}`": false. Valeur recue: `"{1}`"" -f $Name, $Value)
+                Throw-LauncherConfigIssue -Field $Name -Value $Value -Problem 'Doit etre un booléen JSON true/false.' -Example ('"{0}": false' -f $Name)
             }
         }
     }
 
-    throw ("Champ '{0}' invalide dans 02-run-settings.json: utiliser true/false sans guillemets. Exemple: `"{0}`": false. Type recu: {1}" -f $Name, $Value.GetType().FullName)
+    Throw-LauncherConfigIssue -Field $Name -Value $Value.GetType().FullName -Problem 'Type non supporté pour un booléen de configuration.' -Example ('"{0}": false' -f $Name)
+}
+
+function ConvertTo-LauncherInteger {
+    param(
+        [AllowNull()]$Value,
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][int]$Default,
+        [Parameter(Mandatory)][int]$Minimum,
+        [Parameter(Mandatory)][int]$Maximum
+    )
+
+    if ($null -eq $Value) { return $Default }
+
+    if ($Value -is [string]) {
+        $text = $Value.Trim()
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            Throw-LauncherConfigIssue -Field $Name -Value $Value -Problem ("Doit etre un entier compris entre {0} et {1}." -f $Minimum, $Maximum) -Example ('"{0}": {1}' -f $Name, $Default)
+        }
+    }
+
+    try {
+        $intValue = [int]$Value
+    } catch {
+        Throw-LauncherConfigIssue -Field $Name -Value $Value -Problem ("Doit etre un entier compris entre {0} et {1}." -f $Minimum, $Maximum) -Example ('"{0}": {1}' -f $Name, $Default)
+    }
+
+    if ($intValue -lt $Minimum -or $intValue -gt $Maximum) {
+        Throw-LauncherConfigIssue -Field $Name -Value $Value -Problem ("Doit etre compris entre {0} et {1}." -f $Minimum, $Maximum) -Example ('"{0}": {1}' -f $Name, $Default)
+    }
+
+    return $intValue
+}
+
+function Read-LauncherIntegerValue {
+    param(
+        [Parameter(Mandatory)][string]$Prompt,
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][int]$Default,
+        [Parameter(Mandatory)][int]$Minimum,
+        [Parameter(Mandatory)][int]$Maximum
+    )
+
+    while ($true) {
+        $rawValue = Read-LauncherValue -Prompt $Prompt -Default ([string]$Default)
+        try {
+            return (ConvertTo-LauncherInteger -Value $rawValue -Name $Name -Default $Default -Minimum $Minimum -Maximum $Maximum)
+        } catch {
+            $configIssues = @(Get-LauncherConfigIssues -Exception $_.Exception)
+            if ($configIssues.Count -gt 0) {
+                Show-LauncherConfigIssues -Issues $configIssues
+                continue
+            }
+            throw
+        }
+    }
 }
 
 function New-LauncherDocumentSet {
@@ -789,11 +1235,19 @@ function Build-DocumentRunConfig {
 
             $presetName = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'preset' -Default 'balanced')
             if ([string]::IsNullOrWhiteSpace($presetName)) { $presetName = 'balanced' }
-            $preset = Get-LauncherPreset -Name $presetName
+            try {
+                $preset = Get-LauncherPreset -Name $presetName
+            } catch {
+                Throw-LauncherConfigIssue -Field 'preset' -Value $presetName -Problem 'Preset inconnu. Valeurs attendues: safe, balanced, deep.' -Example '"preset": "balanced"'
+            }
 
             $profileName = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'profile' -Default 'webapp')
             if ([string]::IsNullOrWhiteSpace($profileName)) { $profileName = 'webapp' }
-            $profile = Get-LauncherProgramProfile -Name $profileName
+            try {
+                $profile = Get-LauncherProgramProfile -Name $profileName
+            } catch {
+                Throw-LauncherConfigIssue -Field 'profile' -Value $profileName -Problem 'Profil inconnu. Valeurs attendues: webapp, api, wide-assets.' -Example '"profile": "webapp"'
+            }
 
             $localDepth = $preset.Depth
             $localThreads = $preset.Threads
@@ -818,28 +1272,29 @@ function Build-DocumentRunConfig {
             if ($profile.ForceResume) { $localResume = $true }
 
             $programNameValue = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'programName' -Default 'authorized-bugbounty')
-            if ([string]::IsNullOrWhiteSpace($programNameValue)) { throw "Le champ 'programName' doit etre renseigne." }
+            if ([string]::IsNullOrWhiteSpace($programNameValue)) {
+                Throw-LauncherConfigIssue -Field 'programName' -Value $programNameValue -Problem 'Doit etre renseigné.' -Example '"programName": "authorized-bugbounty"'
+            }
 
             $outputDirValue = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'outputDir' -Default (Get-LauncherDefaultOutputDir))
-            if ([string]::IsNullOrWhiteSpace($outputDirValue)) { throw "Le champ 'outputDir' doit etre renseigne." }
+            if ([string]::IsNullOrWhiteSpace($outputDirValue)) {
+                Throw-LauncherConfigIssue -Field 'outputDir' -Value $outputDirValue -Problem 'Doit etre renseigné.' -Example '"outputDir": "./output"'
+            }
 
             $depthValue = Get-LauncherDocumentProperty -InputObject $settings -Name 'depth' -Default $null
-            if ($null -ne $depthValue -and "$depthValue".Trim()) {
-                $localDepth = [int]$depthValue
+            if ($null -ne $depthValue) {
+                $localDepth = ConvertTo-LauncherInteger -Value $depthValue -Name 'depth' -Default $localDepth -Minimum 1 -Maximum 20
             }
-            if ($localDepth -lt 1 -or $localDepth -gt 20) { throw "Le champ 'depth' doit etre compris entre 1 et 20." }
 
             $threadsValue = Get-LauncherDocumentProperty -InputObject $settings -Name 'threads' -Default $null
-            if ($null -ne $threadsValue -and "$threadsValue".Trim()) {
-                $localThreads = [int]$threadsValue
+            if ($null -ne $threadsValue) {
+                $localThreads = ConvertTo-LauncherInteger -Value $threadsValue -Name 'threads' -Default $localThreads -Minimum 1 -Maximum 200
             }
-            if ($localThreads -lt 1 -or $localThreads -gt 200) { throw "Le champ 'threads' doit etre compris entre 1 et 200." }
 
             $timeoutValue = Get-LauncherDocumentProperty -InputObject $settings -Name 'timeoutSeconds' -Default $null
-            if ($null -ne $timeoutValue -and "$timeoutValue".Trim()) {
-                $localTimeout = [int]$timeoutValue
+            if ($null -ne $timeoutValue) {
+                $localTimeout = ConvertTo-LauncherInteger -Value $timeoutValue -Name 'timeoutSeconds' -Default $localTimeout -Minimum 5 -Maximum 600
             }
-            if ($localTimeout -lt 5 -or $localTimeout -gt 600) { throw "Le champ 'timeoutSeconds' doit etre compris entre 5 et 600." }
 
             $uniqueUserAgentValue = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'uniqueUserAgent' -Default '')
             if ([string]::IsNullOrWhiteSpace($uniqueUserAgentValue)) {
@@ -885,8 +1340,15 @@ function Build-DocumentRunConfig {
             }
         } catch {
             Write-Host ''
-            Write-Host ("Validation impossible: {0}" -f $_.Exception.Message) -ForegroundColor Red
-            Write-Host 'Les documents vont etre rouverts pour correction.' -ForegroundColor Yellow
+            $configIssues = @(Get-LauncherConfigIssues -Exception $_.Exception)
+            if ($configIssues.Count -gt 0) {
+                Show-LauncherConfigIssues -Issues $configIssues
+                Write-Host 'Les documents vont etre rouverts pour correction.' -ForegroundColor Yellow
+            } else {
+                Write-LauncherSection -Title 'Erreur interne du launcher'
+                Write-Host ("Une erreur inattendue a interrompu la validation: {0}" -f $_.Exception.Message) -ForegroundColor Red
+                throw
+            }
         }
     }
 }
@@ -899,16 +1361,18 @@ function Show-PostRunMenu {
         Write-Host '2. Voir les familles intéressantes' -ForegroundColor Gray
         Write-Host '3. Voir les catégories intéressantes' -ForegroundColor Gray
         Write-Host '4. Voir les endpoints protégés' -ForegroundColor Gray
-        Write-Host '5. Voir les chemins d''export' -ForegroundColor Gray
-        Write-Host '6. Terminer' -ForegroundColor Gray
-        $choice = Read-LauncherChoice -Prompt 'Action' -Allowed @('1', '2', '3', '4', '5', '6') -Default '6'
+        Write-Host '5. Voir le résumé des erreurs' -ForegroundColor Gray
+        Write-Host '6. Voir les chemins d''export' -ForegroundColor Gray
+        Write-Host '7. Terminer' -ForegroundColor Gray
+        $choice = Read-LauncherChoice -Prompt 'Action' -Allowed @('1', '2', '3', '4', '5', '6', '7') -Default '7'
         switch ($choice) {
             '1' { Show-InterestingSummary -Result $Result }
             '2' { Show-InterestingFamilyBreakdown -Result $Result }
             '3' { Show-InterestingCategoryBreakdown -Result $Result }
             '4' { Show-ProtectedEndpoints -Result $Result }
-            '5' { Show-OutputPaths -Result $Result }
-            '6' { break }
+            '5' { Show-ErrorSummaryPanel -Result $Result }
+            '6' { Show-OutputPaths -Result $Result }
+            '7' { break }
         }
     }
 }
@@ -985,10 +1449,10 @@ function Build-InteractiveRunConfig {
     Write-LauncherSection -Title 'Ajustements'
     $localProgramName = Read-LauncherValue -Prompt 'Nom du programme' -Default $localProgramName
     $localOutputDir = Read-LauncherValue -Prompt 'Dossier de sortie' -Default $localOutputDir
-    $localDepth = [int](Read-LauncherValue -Prompt 'Profondeur de crawl' -Default ([string]$localDepth))
+    $localDepth = Read-LauncherIntegerValue -Prompt 'Profondeur de crawl' -Name 'depth' -Default $localDepth -Minimum 1 -Maximum 20
     $localUserAgent = Read-LauncherValue -Prompt 'User-Agent unique' -Default $localUserAgent
-    $localThreads = [int](Read-LauncherValue -Prompt 'Threads' -Default ([string]$localThreads))
-    $localTimeout = [int](Read-LauncherValue -Prompt 'Timeout secondes' -Default ([string]$localTimeout))
+    $localThreads = Read-LauncherIntegerValue -Prompt 'Threads' -Name 'threads' -Default $localThreads -Minimum 1 -Maximum 200
+    $localTimeout = Read-LauncherIntegerValue -Prompt 'Timeout secondes' -Name 'timeoutSeconds' -Default $localTimeout -Minimum 5 -Maximum 600
     $localIncludeApex = [bool](Read-LauncherYesNo -Prompt 'Inclure l''apex des wildcards ?' -Default $IncludeApex)
     $localRespectSchemeOnly = [bool](Read-LauncherYesNo -Prompt 'Respecter strictement le schéma explicite ?' -Default $localRespectSchemeOnly)
     Write-Host ''
@@ -1094,6 +1558,7 @@ function Start-ScopeForgeLauncher {
     $result = Invoke-BugBountyRecon @invokeParams
     Show-RunSummaryDashboard -Result $result
     Show-InterestingSummary -Result $result
+    Show-ErrorSummaryPanel -Result $result
     Show-OutputPaths -Result $result
 
     if ($runConfig.OpenReportOnFinish) {

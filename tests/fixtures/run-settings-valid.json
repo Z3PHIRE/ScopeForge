@@ -1,0 +1,19 @@
+{
+  "preset": "balanced",
+  "profile": "webapp",
+  "programName": "demo",
+  "outputDir": "./output",
+  "depth": "4",
+  "threads": "12",
+  "timeoutSeconds": "45",
+  "uniqueUserAgent": "ua-test",
+  "includeApex": "false",
+  "respectSchemeOnly": "true",
+  "enableGau": "false",
+  "enableWaybackUrls": "1",
+  "enableHakrawler": "0",
+  "noInstall": "true",
+  "quiet": "false",
+  "resume": "false",
+  "openReportOnFinish": "true"
+}

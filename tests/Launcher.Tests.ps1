@@ -2,6 +2,12 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 . (Join-Path $repoRoot 'Launch-ScopeForge.ps1')
 . (Join-Path $repoRoot 'ScopeForge.ps1')
 
+function Get-TestFixtureContent {
+    param([Parameter(Mandatory)][string]$Name)
+
+    return [System.IO.File]::ReadAllText((Join-Path $repoRoot ("tests\fixtures\{0}" -f $Name)))
+}
+
 Describe 'ScopeForge launcher boolean handling' {
     Context 'ConvertTo-LauncherBoolean' {
         It 'keeps native booleans unchanged' {
@@ -135,27 +141,7 @@ Describe 'ScopeForge launcher boolean handling' {
         }
 
         It 'accepts legacy string values in run-settings without leaking strings downstream' {
-            $script:launcherSettingsJson = @'
-{
-  "preset": "balanced",
-  "profile": "webapp",
-  "programName": "demo",
-  "outputDir": "./output",
-  "depth": "4",
-  "threads": "12",
-  "timeoutSeconds": "45",
-  "uniqueUserAgent": "ua-test",
-  "includeApex": "false",
-  "respectSchemeOnly": "true",
-  "enableGau": "false",
-  "enableWaybackUrls": "1",
-  "enableHakrawler": "0",
-  "noInstall": "true",
-  "quiet": "false",
-  "resume": "false",
-  "openReportOnFinish": "true"
-}
-'@
+            $script:launcherSettingsJson = Get-TestFixtureContent -Name 'run-settings-valid.json'
 
             $result = Build-DocumentRunConfig `
                 -InitialScopeFile '.\scope.json' `
@@ -188,6 +174,42 @@ Describe 'ScopeForge launcher boolean handling' {
             if ($result.EnableGau.GetType().FullName -ne 'System.Boolean') { throw 'Expected EnableGau to stay a native boolean.' }
             if ($result.NoInstall.GetType().FullName -ne 'System.Boolean') { throw 'Expected NoInstall to stay a native boolean.' }
             if ($result.Resume.GetType().FullName -ne 'System.Boolean') { throw 'Expected Resume to stay a native boolean.' }
+        }
+
+        It 'surfaces an invalid document boolean before accepting a corrected rerun' {
+            $script:launcherSettingsReadCount = 0
+            $script:launcherConfigIssueShown = $false
+
+            Mock Show-LauncherConfigIssues { $script:launcherConfigIssueShown = $true }
+            Mock Get-Content {
+                $script:launcherSettingsReadCount++
+                if ($script:launcherSettingsReadCount -eq 1) {
+                    return (Get-TestFixtureContent -Name 'run-settings-invalid-bool.json')
+                }
+                return (Get-TestFixtureContent -Name 'run-settings-valid.json')
+            }
+
+            $result = Build-DocumentRunConfig `
+                -InitialScopeFile '.\scope.json' `
+                -ProgramName 'demo' `
+                -OutputDir '.\output' `
+                -Depth 3 `
+                -UniqueUserAgent 'ua-test' `
+                -Threads 10 `
+                -TimeoutSeconds 30 `
+                -EnableGau $true `
+                -EnableWaybackUrls $true `
+                -EnableHakrawler $true `
+                -NoInstall $false `
+                -Quiet $false `
+                -IncludeApex $false `
+                -RespectSchemeOnly $false `
+                -Resume $false `
+                -OpenReportOnFinish $false
+
+            if (-not $script:launcherConfigIssueShown) { throw 'Expected invalid run-settings to trigger a validation summary.' }
+            if ($script:launcherSettingsReadCount -lt 2) { throw 'Expected the launcher to reopen settings after the validation error.' }
+            if ($result.Quiet) { throw 'Expected the corrected fixture to keep Quiet at $false.' }
         }
     }
 
@@ -235,8 +257,29 @@ Describe 'ScopeForge launcher boolean handling' {
                 } | Out-Null
                 throw "Expected non-boolean Quiet to fail before recon."
             } catch {
-                if ($_.Exception.Message -notlike "*launcher*") { throw }
+                if ($_.Exception.Message -notlike "*Champ 'Quiet' invalide*" -and $_.Exception.Message -notlike "*Champ 'quiet' invalide*") { throw }
             }
+        }
+    }
+
+    Context 'Console error summary' {
+        It 'renders the error summary panel without throwing' {
+            $result = [pscustomobject]@{
+                Errors = @(
+                    [pscustomobject]@{
+                        Timestamp      = '2026-03-26T12:00:00.0000000+00:00'
+                        Phase          = 'Probe'
+                        Tool           = 'httpx'
+                        ErrorCode      = 'ToolExitCode'
+                        Target         = 'https://app.example.com'
+                        Message        = 'httpx exited with code 1'
+                        Recommendation = 'Inspect tools.log.'
+                    }
+                )
+                OutputDir = 'C:\Temp\ScopeForge'
+            }
+
+            Show-ErrorSummaryPanel -Result $result
         }
     }
 }

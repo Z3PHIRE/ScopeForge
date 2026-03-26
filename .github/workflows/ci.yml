@@ -25,9 +25,9 @@ jobs:
           $invokePester = Get-Command Invoke-Pester
           $pesterParams = @{ PassThru = $true }
           if ($invokePester.Parameters.ContainsKey('Path')) {
-            $pesterParams.Path = '.\tests\Launcher.Tests.ps1'
+            $pesterParams.Path = '.\tests'
           } else {
-            $pesterParams.Script = '.\tests\Launcher.Tests.ps1'
+            $pesterParams.Script = '.\tests'
           }
           $result = Invoke-Pester @pesterParams
           $failedCount = if ($null -ne $result.FailedCount) { [int]$result.FailedCount } else { 0 }

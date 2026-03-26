@@ -674,11 +674,56 @@ function Export-FlatCsv {
     $normalizedRows | Export-Csv -LiteralPath $Path -NoTypeInformation -Encoding utf8
 }
 
+function Get-ErrorRecommendation {
+    [CmdletBinding()]
+    param(
+        [string]$ErrorCode,
+        [string]$Tool
+    )
+
+    switch ($ErrorCode) {
+        'ToolMissing' { return "Install or restore '$Tool', or rerun with -NoInstall disabled." }
+        'ToolExitCode' { return "Inspect tools.log for '$Tool', then retry with fewer threads or a higher timeout." }
+        'ToolTimeout' { return "Increase timeoutSeconds or reduce concurrency for '$Tool'." }
+        'ParseError' { return 'Inspect the raw output file and tool version; malformed output was skipped.' }
+        'InvalidBooleanInConfig' { return 'Use JSON booleans true/false without quotes in 02-run-settings.json.' }
+        default { return 'Inspect errors.log and tools.log for details, then rerun with a narrower scope or safer preset.' }
+    }
+}
+
 function Add-ErrorRecord {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Phase, [Parameter(Mandatory)][string]$Message, [string]$Target, [string]$Details)
+    param(
+        [Parameter(Mandatory)][string]$Phase,
+        [Parameter(Mandatory)][string]$Message,
+        [string]$Target,
+        [string]$Details,
+        [string]$Tool,
+        [Nullable[int]]$ExitCode,
+        [string]$ErrorCode,
+        [string]$Recommendation
+    )
 
-    $record = [pscustomobject]@{ Timestamp = [DateTimeOffset]::Now.ToString('o'); Phase = $Phase; Target = $Target; Message = $Message; Details = $Details }
+    $resolvedErrorCode = if ($ErrorCode) {
+        $ErrorCode
+    } elseif ($Message -like 'Command timed out*') {
+        'ToolTimeout'
+    } elseif ($Message -like '*non-zero exit code*') {
+        'ToolExitCode'
+    } else {
+        'RuntimeError'
+    }
+    $record = [pscustomobject]@{
+        Timestamp      = [DateTimeOffset]::Now.ToString('o')
+        Phase          = $Phase
+        Tool           = $Tool
+        ErrorCode      = $resolvedErrorCode
+        ExitCode       = $ExitCode
+        Target         = $Target
+        Message        = $Message
+        Details        = $Details
+        Recommendation = $(if ($Recommendation) { $Recommendation } else { Get-ErrorRecommendation -ErrorCode $resolvedErrorCode -Tool $Tool })
+    }
     if ($script:ScopeForgeContext) { $script:ScopeForgeContext.Errors.Add($record) }
     Write-ReconLog -Level ERROR -Message ("[{0}] {1}{2}" -f $Phase, $Message, $(if ($Target) { " :: $Target" } else { '' }))
 }
@@ -745,7 +790,7 @@ function Get-PassiveSubdomains {
             Add-Content -LiteralPath $RawOutputPath -Value ($rawLines -join [Environment]::NewLine) -Encoding utf8
             Add-Content -LiteralPath $RawOutputPath -Value [Environment]::NewLine -Encoding utf8
         }
-        if ($result.ExitCode -ne 0) { Add-ErrorRecord -Phase 'PassiveDiscovery' -Target $RootDomain -Message 'subfinder returned a non-zero exit code.' -Details $result.StdErr }
+        if ($result.ExitCode -ne 0) { Add-ErrorRecord -Phase 'PassiveDiscovery' -Target $RootDomain -Message 'subfinder returned a non-zero exit code.' -Details $result.StdErr -Tool 'subfinder' -ExitCode $result.ExitCode -ErrorCode 'ToolExitCode' }
         return @($rawLines | ForEach-Object { $_.Trim().TrimEnd('.').ToLowerInvariant() } | Where-Object { $_ -and (Test-ValidDnsName -Name $_) } | Select-Object -Unique)
     } finally {
         Remove-Item -LiteralPath $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
@@ -779,7 +824,7 @@ function Get-HistoricalUrls {
         }
 
         if ($result.ExitCode -ne 0) {
-            Add-ErrorRecord -Phase 'HistoricalDiscovery' -Target $Target -Message 'gau returned a non-zero exit code.' -Details $result.StdErr
+            Add-ErrorRecord -Phase 'HistoricalDiscovery' -Target $Target -Message 'gau returned a non-zero exit code.' -Details $result.StdErr -Tool 'gau' -ExitCode $result.ExitCode -ErrorCode 'ToolExitCode'
         }
 
         $urls = $rawLines |
@@ -822,7 +867,7 @@ function Get-WaybackUrls {
         }
 
         if ($result.ExitCode -ne 0) {
-            Add-ErrorRecord -Phase 'HistoricalDiscovery' -Target $Target -Message 'waybackurls returned a non-zero exit code.' -Details $result.StdErr
+            Add-ErrorRecord -Phase 'HistoricalDiscovery' -Target $Target -Message 'waybackurls returned a non-zero exit code.' -Details $result.StdErr -Tool 'waybackurls' -ExitCode $result.ExitCode -ErrorCode 'ToolExitCode'
         }
 
         return @(
@@ -898,7 +943,7 @@ $targets | & $ToolPath @args
 
         $result = Invoke-ExternalCommand -FilePath $pwshPath -Arguments @('-NoLogo', '-NoProfile', '-File', $driverFile, '-InputFile', $targetFile, '-ToolPath', $HakrawlerPath, '-ArgumentsFile', $argumentsFile) -TimeoutSeconds ([Math]::Max($TimeoutSeconds * 6, 60)) -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
         if ($result.ExitCode -ne 0) {
-            Add-ErrorRecord -Phase 'SupplementalCrawl' -Message 'hakrawler returned a non-zero exit code.' -Details $result.StdErr
+            Add-ErrorRecord -Phase 'SupplementalCrawl' -Message 'hakrawler returned a non-zero exit code.' -Details $result.StdErr -Tool 'hakrawler' -ExitCode $result.ExitCode -ErrorCode 'ToolExitCode'
         }
 
         $rawLines = if (Test-Path -LiteralPath $stdoutFile) { Get-Content -LiteralPath $stdoutFile -Encoding utf8 } else { @() }
@@ -1007,7 +1052,7 @@ function Invoke-HttpProbe {
 
         $result = Invoke-ExternalCommand -FilePath $HttpxPath -Arguments $arguments -TimeoutSeconds ([Math]::Max($TimeoutSeconds * 4, 60)) -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
         if (Test-Path -LiteralPath $stdoutFile) { Copy-Item -LiteralPath $stdoutFile -Destination $RawOutputPath -Force } else { Set-Content -LiteralPath $RawOutputPath -Value '' -Encoding utf8 }
-        if ($result.ExitCode -ne 0) { Add-ErrorRecord -Phase 'HttpProbe' -Message 'httpx returned a non-zero exit code.' -Details $result.StdErr }
+        if ($result.ExitCode -ne 0) { Add-ErrorRecord -Phase 'HttpProbe' -Message 'httpx returned a non-zero exit code.' -Details $result.StdErr -Tool 'httpx' -ExitCode $result.ExitCode -ErrorCode 'ToolExitCode' }
 
         $liveTargets = [System.Collections.Generic.List[object]]::new()
         $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -1015,7 +1060,7 @@ function Invoke-HttpProbe {
 
         foreach ($line in $lines) {
             if ([string]::IsNullOrWhiteSpace($line)) { continue }
-            try { $raw = $line | ConvertFrom-Json -Depth 100 } catch { Add-ErrorRecord -Phase 'HttpProbe' -Message 'Failed to parse httpx JSON line.' -Details $line; continue }
+            try { $raw = $line | ConvertFrom-Json -Depth 100 } catch { Add-ErrorRecord -Phase 'HttpProbe' -Message 'Failed to parse httpx JSON line.' -Details $line -Tool 'httpx' -ErrorCode 'ParseError'; continue }
 
             $finalUrl = [string](Get-ObjectValue -InputObject $raw -Names @('url'))
             $inputValue = [string](Get-ObjectValue -InputObject $raw -Names @('input'))
@@ -1163,7 +1208,7 @@ function Invoke-KatanaCrawl {
 
         try {
             $result = Invoke-ExternalCommand -FilePath $KatanaPath -Arguments $arguments -TimeoutSeconds ([Math]::Max($TimeoutSeconds * 10, 90)) -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
-            if ($result.ExitCode -ne 0) { Add-ErrorRecord -Phase 'Crawl' -Target $definition.SeedUrl -Message 'katana returned a non-zero exit code.' -Details $result.StdErr }
+            if ($result.ExitCode -ne 0) { Add-ErrorRecord -Phase 'Crawl' -Target $definition.SeedUrl -Message 'katana returned a non-zero exit code.' -Details $result.StdErr -Tool 'katana' -ExitCode $result.ExitCode -ErrorCode 'ToolExitCode' }
             $rawLines = if (Test-Path -LiteralPath $stdoutFile) { Get-Content -LiteralPath $stdoutFile -Encoding utf8 } else { @() }
             if ($rawLines.Count -gt 0) {
                 Add-Content -LiteralPath $RawOutputPath -Value ($rawLines -join [Environment]::NewLine) -Encoding utf8
@@ -1172,7 +1217,7 @@ function Invoke-KatanaCrawl {
 
             foreach ($line in $rawLines) {
                 if ([string]::IsNullOrWhiteSpace($line)) { continue }
-                try { $raw = $line | ConvertFrom-Json -Depth 100 } catch { Add-ErrorRecord -Phase 'Crawl' -Target $definition.SeedUrl -Message 'Failed to parse katana JSON line.' -Details $line; continue }
+                try { $raw = $line | ConvertFrom-Json -Depth 100 } catch { Add-ErrorRecord -Phase 'Crawl' -Target $definition.SeedUrl -Message 'Failed to parse katana JSON line.' -Details $line -Tool 'katana' -ErrorCode 'ParseError'; continue }
                 $url = [string](Get-ObjectValue -InputObject $raw -Names @('url', 'endpoint', 'request.endpoint'))
                 if ([string]::IsNullOrWhiteSpace($url)) { continue }
                 $uri = $null
@@ -1188,7 +1233,7 @@ function Invoke-KatanaCrawl {
                 $results.Add([pscustomobject]@{ Url = $url; Host = $resolvedHost; Scheme = $uri.Scheme.ToLowerInvariant(); Path = $path; Query = $uri.Query; ScopeId = $scopeItem.Id; ScopeType = $scopeItem.Type; ScopeValue = $scopeItem.NormalizedValue; SeedUrl = $definition.SeedUrl; Source = 'katana'; StatusCode = [int](Get-ObjectValue -InputObject $raw -Names @('status_code', 'status-code', 'response.status_code') -Default 0); ContentType = [string](Get-ObjectValue -InputObject $raw -Names @('content_type', 'content-type', 'response.headers.content-type') -Default '') })
             }
         } catch {
-            Add-ErrorRecord -Phase 'Crawl' -Target $definition.SeedUrl -Message $_.Exception.Message
+            Add-ErrorRecord -Phase 'Crawl' -Target $definition.SeedUrl -Message $_.Exception.Message -Tool 'katana' -ErrorCode $(if ($_.Exception.Message -like 'Command timed out*') { 'ToolTimeout' } else { 'RuntimeError' })
         } finally {
             Remove-Item -LiteralPath $stdoutFile, $stderrFile, $inscopeFile, $outscopeFile -Force -ErrorAction SilentlyContinue
         }
@@ -1236,6 +1281,18 @@ function Merge-ReconResults {
             Count    = $_.Count
         }
     }
+    $errorPhaseCounts = $Errors | Group-Object -Property Phase | Where-Object { $_.Name } | Sort-Object -Property @{ Expression = 'Count'; Descending = $true }, Name | ForEach-Object {
+        [pscustomobject]@{
+            Phase = $_.Name
+            Count = $_.Count
+        }
+    }
+    $errorToolCounts = $Errors | Where-Object { $_.Tool } | Group-Object -Property Tool | Sort-Object -Property @{ Expression = 'Count'; Descending = $true }, Name | ForEach-Object {
+        [pscustomobject]@{
+            Tool  = $_.Name
+            Count = $_.Count
+        }
+    }
 
     [pscustomobject]@{
         ProgramName            = $ProgramName
@@ -1257,6 +1314,8 @@ function Merge-ReconResults {
         TopInterestingCategories = $interestingCategoryCounts
         TopInterestingFamilies = $interestingFamilyCounts
         InterestingPriorityDistribution = $interestingPriorityCounts
+        ErrorPhaseDistribution = $errorPhaseCounts
+        ErrorToolDistribution  = $errorToolCounts
     }
 }
 
@@ -1414,6 +1473,53 @@ function Get-InterestingFamilySummary {
     )
 }
 
+function Get-SuggestedReviewAreas {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$InterestingUrls,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$LiveTargets,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$Errors
+    )
+
+    $suggestions = [System.Collections.Generic.List[object]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    function Add-Suggestion {
+        param([string]$Key, [string]$Area, [string]$Reason)
+        if ($seen.Add($Key)) {
+            $suggestions.Add([pscustomobject]@{ Area = $Area; Reason = $Reason }) | Out-Null
+        }
+    }
+
+    if ($InterestingUrls | Where-Object { $_.Categories -contains 'Auth' -or $_.Categories -contains 'Protected' -or $_.PrimaryFamily -eq 'Access' }) {
+        Add-Suggestion -Key 'access' -Area 'Auth and session flows' -Reason 'Login, callback, SSO, or protected routes were surfaced.'
+    }
+    if ($InterestingUrls | Where-Object { $_.Categories -contains 'Admin' -or $_.PrimaryFamily -eq 'Administrative' }) {
+        Add-Suggestion -Key 'admin' -Area 'Admin and portal surfaces' -Reason 'Administrative dashboards or staff-facing routes were detected.'
+    }
+    if ($InterestingUrls | Where-Object { $_.Categories -contains 'Files' -or $_.PrimaryFamily -eq 'Files' }) {
+        Add-Suggestion -Key 'files' -Area 'Upload and file workflows' -Reason 'Import, export, media, or document handling routes were ranked.'
+    }
+    if ($InterestingUrls | Where-Object { $_.Categories -contains 'API' -or $_.PrimaryFamily -eq 'API' }) {
+        Add-Suggestion -Key 'api' -Area 'API schemas and versioned endpoints' -Reason 'Swagger, GraphQL, or API paths were surfaced.'
+    }
+    if ($InterestingUrls | Where-Object { $_.Categories -contains 'Config' -or $_.Categories -contains 'Debug' -or $_.Categories -contains 'Infra' -or $_.PrimaryFamily -eq 'Operations' }) {
+        Add-Suggestion -Key 'ops' -Area 'Operational and debug exposure' -Reason 'Config, metrics, debug, or health-check style routes were ranked.'
+    }
+    if ($LiveTargets | Where-Object { $_.StatusCode -in 401, 403 }) {
+        Add-Suggestion -Key 'protected' -Area 'Protected endpoints' -Reason '401/403 live endpoints are present for access-control triage.'
+    }
+    if ($Errors.Count -gt 0) {
+        Add-Suggestion -Key 'errors' -Area 'Retry noisy tools' -Reason 'Non-fatal runtime errors were captured; review logs before broadening the run.'
+    }
+
+    if ($suggestions.Count -eq 0) {
+        Add-Suggestion -Key 'general' -Area 'General manual review' -Reason 'Prioritize confirmed live routes and compare them with program policy before deeper testing.'
+    }
+
+    return @($suggestions)
+}
+
 function Export-TriageMarkdownReport {
     [CmdletBinding()]
     param(
@@ -1421,6 +1527,8 @@ function Export-TriageMarkdownReport {
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$InterestingUrls,
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$InterestingFamilies,
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$LiveTargets,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$Exclusions,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$Errors,
         [Parameter(Mandatory)][pscustomobject]$Layout
     )
 
@@ -1481,7 +1589,7 @@ function Export-TriageMarkdownReport {
     if (@($InterestingUrls).Count -eq 0) {
         $lines.Add('- No interesting URLs were ranked for this run.') | Out-Null
     } else {
-        foreach ($item in ($InterestingUrls | Select-Object -First 25)) {
+        foreach ($item in ($InterestingUrls | Select-Object -First 20)) {
             $lines.Add(("### [{0}/{1}] {2}" -f $item.Priority, $item.Score, $item.Url)) | Out-Null
             $lines.Add(("- Host: {0}" -f $item.Host)) | Out-Null
             $lines.Add(("- Status: {0}" -f $item.StatusCode)) | Out-Null
@@ -1511,11 +1619,39 @@ function Export-TriageMarkdownReport {
     }
     $lines.Add('') | Out-Null
 
-    $lines.Add('## Suggested Manual Review') | Out-Null
+    $lines.Add('## Exclusion Summary') | Out-Null
     $lines.Add('') | Out-Null
-    $lines.Add('- Review auth, admin, API documentation, file upload, and debug surfaces first.') | Out-Null
-    $lines.Add('- Compare interesting URLs against program policy before deeper manual testing.') | Out-Null
-    $lines.Add('- Re-check exclusions if noisy environments such as staging or sandbox are still visible.') | Out-Null
+    if (@($Exclusions).Count -eq 0) {
+        $lines.Add('- No exclusions were recorded for this run.') | Out-Null
+    } else {
+        foreach ($group in ($Exclusions | Group-Object -Property Token | Sort-Object -Property @{ Expression = 'Count'; Descending = $true }, Name | Select-Object -First 10)) {
+            $sample = $group.Group | Select-Object -First 1
+            $phases = @($group.Group | Group-Object -Property Phase | Sort-Object Count -Descending | Select-Object -First 3 | ForEach-Object { "{0}:{1}" -f $_.Name, $_.Count })
+            $phaseText = if ($phases.Count -gt 0) { $phases -join ', ' } else { 'n/a' }
+            $lines.Add(("- token={0}: {1} hit(s), phases={2}, sample={3}" -f $group.Name, $group.Count, $phaseText, $sample.Target)) | Out-Null
+        }
+    }
+    $lines.Add('') | Out-Null
+
+    $lines.Add('## Error Summary') | Out-Null
+    $lines.Add('') | Out-Null
+    if (@($Errors).Count -eq 0) {
+        $lines.Add('- No non-fatal runtime errors were captured for this run.') | Out-Null
+    } else {
+        foreach ($group in ($Errors | Group-Object -Property Phase | Sort-Object Count -Descending | Select-Object -First 8)) {
+            $sample = $group.Group | Select-Object -First 1
+            $toolText = if ($sample.Tool) { $sample.Tool } else { 'n/a' }
+            $codeText = if ($sample.ErrorCode) { $sample.ErrorCode } else { 'n/a' }
+            $lines.Add(("- {0}: {1} issue(s), tool={2}, code={3}" -f $group.Name, $group.Count, $toolText, $codeText)) | Out-Null
+        }
+    }
+    $lines.Add('') | Out-Null
+
+    $lines.Add('## Suggested Test Areas') | Out-Null
+    $lines.Add('') | Out-Null
+    foreach ($suggestion in (Get-SuggestedReviewAreas -InterestingUrls $InterestingUrls -LiveTargets $LiveTargets -Errors $Errors)) {
+        $lines.Add(("- {0}: {1}" -f $suggestion.Area, $suggestion.Reason)) | Out-Null
+    }
     $lines.Add('') | Out-Null
 
     Set-Content -LiteralPath $Layout.TriageMarkdown -Value ($lines -join [Environment]::NewLine) -Encoding utf8
@@ -1563,7 +1699,7 @@ function Export-ReconReport {
     if ($null -eq $interestingFamilies) { $interestingFamilies = @() }
     Write-JsonFile -Path $Layout.InterestingUrlsJson -Data $InterestingUrls
     Write-JsonFile -Path $Layout.InterestingFamiliesJson -Data $interestingFamilies
-    Export-TriageMarkdownReport -Summary $Summary -InterestingUrls $InterestingUrls -InterestingFamilies $interestingFamilies -LiveTargets $LiveTargets -Layout $Layout
+    Export-TriageMarkdownReport -Summary $Summary -InterestingUrls $InterestingUrls -InterestingFamilies $interestingFamilies -LiveTargets $LiveTargets -Exclusions $Exclusions -Errors $Errors -Layout $Layout
 
     if (-not $ExportHtml) { return }
 
@@ -1580,19 +1716,37 @@ function Export-ReconReport {
         return $Rows
     }
 
+    function Get-HtmlUrlCell {
+        param([Parameter(Mandatory)][string]$Url)
+
+        return ("<div class=""url-cell""><a href=""{0}"" target=""_blank"" rel=""noreferrer"">{0}</a><button type=""button"" class=""copy-btn"" data-copy=""{0}"">Copy</button></div>" -f (ConvertTo-HtmlSafe $Url))
+    }
+
     $scopeRows = ($ScopeItems | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Type) $(ConvertTo-HtmlSafe $_.NormalizedValue) $(ConvertTo-HtmlSafe ($_.Exclusions -join ' '))""><td>$(ConvertTo-HtmlSafe $_.Id)</td><td>$(ConvertTo-HtmlSafe $_.Type)</td><td>$(ConvertTo-HtmlSafe $_.NormalizedValue)</td><td>$(ConvertTo-HtmlSafe ($_.Exclusions -join ', '))</td></tr>" }) -join [Environment]::NewLine
     $excludedRows = ($Exclusions | Select-Object -First 500 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.ScopeId) $(ConvertTo-HtmlSafe $_.Target) $(ConvertTo-HtmlSafe $_.Token)""><td>$(ConvertTo-HtmlSafe $_.Phase)</td><td>$(ConvertTo-HtmlSafe $_.ScopeId)</td><td>$(ConvertTo-HtmlSafe $_.Target)</td><td>$(ConvertTo-HtmlSafe $_.Token)</td><td>$(ConvertTo-HtmlSafe $_.MatchedOn)</td></tr>" }) -join [Environment]::NewLine
-    $liveRows = ($LiveTargets | Select-Object -First 1000 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe ($_.Technologies -join ' '))""><td>$(ConvertTo-HtmlSafe $_.Host)</td><td><a href=""$(ConvertTo-HtmlSafe $_.Url)"" target=""_blank"" rel=""noreferrer"">$(ConvertTo-HtmlSafe $_.Url)</a></td><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(ConvertTo-HtmlSafe $_.Title)</td><td>$(ConvertTo-HtmlSafe ($_.Technologies -join ', '))</td></tr>" }) -join [Environment]::NewLine
-    $urlRows = ($DiscoveredUrls | Select-Object -First 2000 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe $_.ScopeId)""><td>$(ConvertTo-HtmlSafe $_.Host)</td><td><a href=""$(ConvertTo-HtmlSafe $_.Url)"" target=""_blank"" rel=""noreferrer"">$(ConvertTo-HtmlSafe $_.Url)</a></td><td>$(ConvertTo-HtmlSafe $_.ScopeId)</td><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(ConvertTo-HtmlSafe $_.Source)</td></tr>" }) -join [Environment]::NewLine
-    $interestingRows = ($InterestingUrls | Select-Object -First 250 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe $_.PrimaryFamily) $(ConvertTo-HtmlSafe $_.Priority) $(ConvertTo-HtmlSafe ($_.Categories -join ' '))""><td>$(ConvertTo-HtmlSafe $_.Priority)</td><td>$(ConvertTo-HtmlSafe $_.Score)</td><td>$(ConvertTo-HtmlSafe $_.PrimaryFamily)</td><td><a href=""$(ConvertTo-HtmlSafe $_.Url)"" target=""_blank"" rel=""noreferrer"">$(ConvertTo-HtmlSafe $_.Url)</a></td><td>$(ConvertTo-HtmlSafe ($_.Categories -join ', '))</td><td>$(ConvertTo-HtmlSafe ($_.Reasons -join ', '))</td></tr>" }) -join [Environment]::NewLine
-    $protectedRows = ($LiveTargets | Where-Object { $_.StatusCode -in 401, 403 } | Select-Object -First 250 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) protected""><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td><a href=""$(ConvertTo-HtmlSafe $_.Url)"" target=""_blank"" rel=""noreferrer"">$(ConvertTo-HtmlSafe $_.Url)</a></td><td>$(ConvertTo-HtmlSafe $_.Title)</td><td>$(ConvertTo-HtmlSafe ($_.Technologies -join ', '))</td></tr>" }) -join [Environment]::NewLine
-    $errorRows = ($Errors | Select-Object -First 500 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Phase) $(ConvertTo-HtmlSafe $_.Target) $(ConvertTo-HtmlSafe $_.Message)""><td>$(ConvertTo-HtmlSafe $_.Phase)</td><td>$(ConvertTo-HtmlSafe $_.Target)</td><td>$(ConvertTo-HtmlSafe $_.Message)</td><td>$(ConvertTo-HtmlSafe $_.Details)</td></tr>" }) -join [Environment]::NewLine
+    $liveRows = ($LiveTargets | Select-Object -First 1000 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe ($_.Technologies -join ' '))""><td>$(ConvertTo-HtmlSafe $_.Host)</td><td>$(Get-HtmlUrlCell -Url $_.Url)</td><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(ConvertTo-HtmlSafe $_.Title)</td><td>$(ConvertTo-HtmlSafe ($_.Technologies -join ', '))</td></tr>" }) -join [Environment]::NewLine
+    $urlRows = ($DiscoveredUrls | Select-Object -First 2000 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe $_.ScopeId)""><td>$(ConvertTo-HtmlSafe $_.Host)</td><td>$(Get-HtmlUrlCell -Url $_.Url)</td><td>$(ConvertTo-HtmlSafe $_.ScopeId)</td><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(ConvertTo-HtmlSafe $_.Source)</td></tr>" }) -join [Environment]::NewLine
+    $interestingRows = ($InterestingUrls | Select-Object -First 250 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe $_.PrimaryFamily) $(ConvertTo-HtmlSafe $_.Priority) $(ConvertTo-HtmlSafe ($_.Categories -join ' '))""><td><span class=""priority-badge priority-$(ConvertTo-HtmlSafe $_.Priority.ToLowerInvariant())"">$(ConvertTo-HtmlSafe $_.Priority)</span></td><td>$(ConvertTo-HtmlSafe $_.Score)</td><td>$(ConvertTo-HtmlSafe $_.PrimaryFamily)</td><td>$(Get-HtmlUrlCell -Url $_.Url)</td><td>$(ConvertTo-HtmlSafe ($_.Categories -join ', '))</td><td>$(ConvertTo-HtmlSafe ($_.Reasons -join ', '))</td></tr>" }) -join [Environment]::NewLine
+    $protectedRows = ($LiveTargets | Where-Object { $_.StatusCode -in 401, 403 } | Select-Object -First 250 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) protected""><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(Get-HtmlUrlCell -Url $_.Url)</td><td>$(ConvertTo-HtmlSafe $_.Title)</td><td>$(ConvertTo-HtmlSafe ($_.Technologies -join ', '))</td></tr>" }) -join [Environment]::NewLine
+    $errorRows = ($Errors | Select-Object -First 500 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Phase) $(ConvertTo-HtmlSafe $_.Tool) $(ConvertTo-HtmlSafe $_.Target) $(ConvertTo-HtmlSafe $_.Message)""><td>$(ConvertTo-HtmlSafe $_.Phase)</td><td>$(ConvertTo-HtmlSafe $_.Tool)</td><td>$(ConvertTo-HtmlSafe $_.ErrorCode)</td><td>$(ConvertTo-HtmlSafe $_.Message)</td><td>$(ConvertTo-HtmlSafe $_.Recommendation)</td></tr>" }) -join [Environment]::NewLine
     $statusBars = ($Summary.StatusCodeDistribution | ForEach-Object { "<div class=""mini-row""><span>HTTP $(ConvertTo-HtmlSafe $_.StatusCode)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
     $technologyBars = ($Summary.TopTechnologies | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Technology)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
     $subdomainBars = ($Summary.TopSubdomains | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Host)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
     $interestingBars = ($Summary.TopInterestingCategories | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Category)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
     $familyBars = ($Summary.TopInterestingFamilies | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Family)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
     $priorityBars = ($Summary.InterestingPriorityDistribution | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Priority)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
+    $errorPhaseBars = ($Summary.ErrorPhaseDistribution | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Phase)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
+    $exclusionBars = (
+        $Exclusions |
+        Group-Object -Property Token |
+        Sort-Object -Property @{ Expression = 'Count'; Descending = $true }, Name |
+        Select-Object -First 6 |
+        ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Name)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }
+    ) -join [Environment]::NewLine
+    if ([string]::IsNullOrWhiteSpace($exclusionBars)) {
+        $exclusionBars = '<div class="mini-row"><span>No exclusions recorded</span><strong>0</strong></div>'
+    }
+    $suggestedAreaRows = ((Get-SuggestedReviewAreas -InterestingUrls $InterestingUrls -LiveTargets $LiveTargets -Errors $Errors) | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Area)</span><strong>$(ConvertTo-HtmlSafe $_.Reason)</strong></div>" }) -join [Environment]::NewLine
     $familyRows = ($interestingFamilies | Select-Object -First 100 | ForEach-Object {
         $priorityText = if ($_.Priorities) { ($_.Priorities | ForEach-Object { "{0}:{1}" -f $_.Priority, $_.Count }) -join ', ' } else { '' }
         $topUrlText = if ($_.TopUrls) {
@@ -1609,7 +1763,7 @@ function Export-ReconReport {
     $urlRows = Get-HtmlTableBodyOrEmpty -Rows $urlRows -ColumnCount 5 -Message 'No URLs were discovered for this run.'
     $interestingRows = Get-HtmlTableBodyOrEmpty -Rows $interestingRows -ColumnCount 6 -Message 'No interesting URLs were ranked for this run.'
     $protectedRows = Get-HtmlTableBodyOrEmpty -Rows $protectedRows -ColumnCount 4 -Message 'No 401/403 live targets were captured for this run.'
-    $errorRows = Get-HtmlTableBodyOrEmpty -Rows $errorRows -ColumnCount 4 -Message 'No non-fatal errors were captured for this run.'
+    $errorRows = Get-HtmlTableBodyOrEmpty -Rows $errorRows -ColumnCount 5 -Message 'No non-fatal errors were captured for this run.'
     $familyRows = Get-HtmlTableBodyOrEmpty -Rows $familyRows -ColumnCount 6 -Message 'No interesting families were generated for this run.'
     $spotlightSections = $(
         foreach ($familyStat in ($Summary.TopInterestingFamilies | Select-Object -First 4)) {
@@ -1634,21 +1788,21 @@ function Export-ReconReport {
     $html = @"
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>ScopeForge Report - $(ConvertTo-HtmlSafe $Summary.ProgramName)</title><style>
-:root{--bg:#0a1016;--panel:#111c25;--panel2:#162633;--text:#edf4f8;--muted:#9eb4c2;--accent:#51d0b1;--border:rgba(255,255,255,.08);--shadow:0 24px 80px rgba(0,0,0,.35)}*{box-sizing:border-box}body{margin:0;font-family:"Segoe UI","Helvetica Neue",sans-serif;background:radial-gradient(circle at top right,rgba(81,208,177,.15),transparent 28%),radial-gradient(circle at top left,rgba(109,184,255,.12),transparent 22%),linear-gradient(180deg,#091018 0%,#0b141b 100%);color:var(--text)}.wrap{max-width:1500px;margin:0 auto;padding:32px 20px 60px}.hero,section,.card{background:rgba(17,28,37,.9);border:1px solid var(--border);box-shadow:var(--shadow)}.hero{padding:24px;border-radius:22px;margin-bottom:24px}.hero h1{margin:0 0 8px;font-size:30px}.hero p,.hint,.mini-row,.label,th{color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin:24px 0}.card{padding:18px;border-radius:18px}.value{margin-top:10px;font-size:28px;font-weight:700}.two-col{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:24px}.mini-row{display:flex;justify-content:space-between;gap:16px;padding:10px 0;border-bottom:1px solid var(--border)}.mini-row strong{color:var(--text)}.search{width:100%;margin:0 0 16px;padding:14px 16px;border:1px solid var(--border);border-radius:14px;background:rgba(10,16,22,.8);color:var(--text)}section{margin-bottom:24px;padding:18px;border-radius:18px}table{width:100%;border-collapse:collapse}th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top;font-size:14px}td.empty-state{text-align:center;font-style:italic;color:var(--muted)}th{font-size:11px;text-transform:uppercase;letter-spacing:.08em}a{color:#6db8ff;text-decoration:none}@media(max-width:720px){.wrap{padding:20px 12px 40px}.hero h1{font-size:24px}}</style></head>
+:root{--bg:#0a1016;--panel:#111c25;--panel2:#162633;--text:#edf4f8;--muted:#9eb4c2;--accent:#51d0b1;--accent2:#6db8ff;--border:rgba(255,255,255,.08);--shadow:0 24px 80px rgba(0,0,0,.35)}*{box-sizing:border-box}body{margin:0;font-family:"Segoe UI","Helvetica Neue",sans-serif;background:radial-gradient(circle at top right,rgba(81,208,177,.15),transparent 28%),radial-gradient(circle at top left,rgba(109,184,255,.12),transparent 22%),linear-gradient(180deg,#091018 0%,#0b141b 100%);color:var(--text)}.wrap{max-width:1500px;margin:0 auto;padding:32px 20px 60px}.hero,.card,.report-section{background:rgba(17,28,37,.9);border:1px solid var(--border);box-shadow:var(--shadow)}.hero{padding:24px;border-radius:22px;margin-bottom:24px}.hero h1{margin:0 0 8px;font-size:30px}.hero p,.hint,.mini-row,.label,th,summary small{color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin:24px 0}.card{padding:18px;border-radius:18px}.value{margin-top:10px;font-size:28px;font-weight:700}.two-col{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:24px}.mini-row{display:flex;justify-content:space-between;gap:16px;padding:10px 0;border-bottom:1px solid var(--border)}.mini-row strong{color:var(--text);font-weight:600}.search{width:100%;margin:0 0 16px;padding:14px 16px;border:1px solid var(--border);border-radius:14px;background:rgba(10,16,22,.8);color:var(--text)}details.report-section{margin-bottom:18px;border-radius:18px;overflow:hidden}details.report-section>summary{cursor:pointer;list-style:none;padding:18px 20px;background:rgba(22,38,51,.82);display:flex;justify-content:space-between;gap:16px;align-items:center}details.report-section>summary::-webkit-details-marker{display:none}.section-body{padding:18px}table{width:100%;border-collapse:collapse}th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top;font-size:14px}td.empty-state{text-align:center;font-style:italic;color:var(--muted)}th{font-size:11px;text-transform:uppercase;letter-spacing:.08em}th button{all:unset;cursor:pointer;color:inherit}a{color:var(--accent2);text-decoration:none}.url-cell{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.copy-btn{border:1px solid var(--border);background:rgba(10,16,22,.7);color:var(--text);border-radius:999px;padding:4px 10px;font-size:11px;cursor:pointer}.priority-badge{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;padding:4px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}.priority-critical{background:#ff6b6b;color:#240808}.priority-high{background:#ffb454;color:#2f1b00}.priority-medium{background:#ffe066;color:#2d2800}.priority-low{background:#7bd88f;color:#0d2415}@media (prefers-color-scheme: light){:root{--bg:#f3f7fb;--panel:#ffffff;--panel2:#eff5fb;--text:#10202c;--muted:#5d7384;--border:rgba(16,32,44,.12);--shadow:0 18px 50px rgba(31,54,79,.14)}body{background:linear-gradient(180deg,#eef5fb 0%,#f7fafc 100%)}.copy-btn{background:#fff}}@media(max-width:720px){.wrap{padding:20px 12px 40px}.hero h1{font-size:24px}.url-cell{flex-direction:column;align-items:flex-start}}</style></head>
 <body><div class="wrap"><div class="hero"><h1>ScopeForge Recon Report</h1><p>Program: $(ConvertTo-HtmlSafe $Summary.ProgramName) | Generated: $(ConvertTo-HtmlSafe $Summary.GeneratedAtUtc) | PowerShell $(ConvertTo-HtmlSafe $Summary.PowerShellVersion)</p></div>
 <div class="grid"><div class="card"><div class="label">Scope Items</div><div class="value">$(ConvertTo-HtmlSafe $Summary.ScopeItemCount)</div></div><div class="card"><div class="label">Excluded</div><div class="value">$(ConvertTo-HtmlSafe $Summary.ExcludedItemCount)</div></div><div class="card"><div class="label">Hosts Found</div><div class="value">$(ConvertTo-HtmlSafe $Summary.DiscoveredHostCount)</div></div><div class="card"><div class="label">Live Hosts</div><div class="value">$(ConvertTo-HtmlSafe $Summary.LiveHostCount)</div></div><div class="card"><div class="label">Live Targets</div><div class="value">$(ConvertTo-HtmlSafe $Summary.LiveTargetCount)</div></div><div class="card"><div class="label">URLs Found</div><div class="value">$(ConvertTo-HtmlSafe $Summary.DiscoveredUrlCount)</div></div><div class="card"><div class="label">Interesting</div><div class="value">$(ConvertTo-HtmlSafe $Summary.InterestingUrlCount)</div></div></div>
-<div class="two-col"><section><h2>HTTP Codes</h2>$statusBars</section><section><h2>Top Technologies</h2>$technologyBars</section><section><h2>Top Subdomains</h2>$subdomainBars</section><section><h2>Interesting Families</h2>$familyBars</section><section><h2>Interesting Priorities</h2>$priorityBars</section><section><h2>Interesting Categories</h2>$interestingBars</section></div>
-<div class="two-col">$spotlightSections</div>
+<div class="two-col"><section class="card"><h2>HTTP Codes</h2>$statusBars</section><section class="card"><h2>Top Technologies</h2>$technologyBars</section><section class="card"><h2>Top Subdomains</h2>$subdomainBars</section><section class="card"><h2>Interesting Families</h2>$familyBars</section><section class="card"><h2>Interesting Priorities</h2>$priorityBars</section><section class="card"><h2>Interesting Categories</h2>$interestingBars</section><section class="card"><h2>Error Phases</h2>$errorPhaseBars</section><section class="card"><h2>Exclusion Tokens</h2>$exclusionBars</section></div>
+<div class="two-col"><section class="card"><h2>Next Actions</h2>$suggestedAreaRows</section>$spotlightSections</div>
 <input id="globalSearch" class="search" type="search" placeholder="Filter all tables..." />
-<section><h2>In Scope</h2><p class="hint">Normalized scope after validation and wildcard parsing.</p><table data-filter-table="true"><thead><tr><th>ID</th><th>Type</th><th>Value</th><th>Exclusions</th></tr></thead><tbody>$scopeRows</tbody></table></section>
-<section><h2>Excluded</h2><p class="hint">Assets removed because they matched exclusion strings before probe or after crawl filtering.</p><table data-filter-table="true"><thead><tr><th>Phase</th><th>Scope</th><th>Target</th><th>Token</th><th>Matched On</th></tr></thead><tbody>$excludedRows</tbody></table></section>
-<section><h2>Live Hosts</h2><p class="hint">Reachable HTTP(S) targets retained after in-scope validation.</p><table data-filter-table="true"><thead><tr><th>Host</th><th>URL</th><th>Status</th><th>Title</th><th>Technologies</th></tr></thead><tbody>$liveRows</tbody></table></section>
-<section><h2>Interesting Families</h2><p class="hint">Primary families used to group triage targets for manual review.</p><table data-filter-table="true"><thead><tr><th>Family</th><th>Count</th><th>Max Score</th><th>Priorities</th><th>Top Categories</th><th>Sample URLs</th></tr></thead><tbody>$familyRows</tbody></table></section>
-<section><h2>Protected Endpoints</h2><p class="hint">Live endpoints returning 401 or 403, often useful for manual access-control triage.</p><table data-filter-table="true"><thead><tr><th>Status</th><th>URL</th><th>Title</th><th>Technologies</th></tr></thead><tbody>$protectedRows</tbody></table></section>
-<section><h2>Interesting Pages</h2><p class="hint">Heuristically ranked URLs grouped by family and priority to accelerate manual bug bounty review.</p><table data-filter-table="true"><thead><tr><th>Priority</th><th>Score</th><th>Family</th><th>URL</th><th>Categories</th><th>Reasons</th></tr></thead><tbody>$interestingRows</tbody></table></section>
-<section><h2>Discovered URLs</h2><p class="hint">Unique endpoints collected from katana and seed URLs.</p><table data-filter-table="true"><thead><tr><th>Host</th><th>URL</th><th>Scope</th><th>Status</th><th>Source</th></tr></thead><tbody>$urlRows</tbody></table></section>
-<section><h2>Errors</h2><p class="hint">Non-fatal errors captured during execution.</p><table data-filter-table="true"><thead><tr><th>Phase</th><th>Target</th><th>Message</th><th>Details</th></tr></thead><tbody>$errorRows</tbody></table></section></div>
-<script>const input=document.getElementById('globalSearch');const tables=Array.from(document.querySelectorAll('[data-filter-table="true"]'));function applyFilter(){const query=input.value.trim().toLowerCase();tables.forEach(table=>{table.querySelectorAll('tbody tr').forEach(row=>{const haystack=(row.dataset.search||row.textContent||'').toLowerCase();row.style.display=!query||haystack.includes(query)?'':'none';});});}input.addEventListener('input',applyFilter);</script></body></html>
+<details open class="report-section"><summary><span>In Scope</span><small>Normalized scope after validation and wildcard parsing.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">ID</button></th><th><button type="button">Type</button></th><th><button type="button">Value</button></th><th><button type="button">Exclusions</button></th></tr></thead><tbody>$scopeRows</tbody></table></div></details>
+<details open class="report-section"><summary><span>Excluded</span><small>Assets removed because they matched exclusion strings before probe or after crawl filtering.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Phase</button></th><th><button type="button">Scope</button></th><th><button type="button">Target</button></th><th><button type="button">Token</button></th><th><button type="button">Matched On</button></th></tr></thead><tbody>$excludedRows</tbody></table></div></details>
+<details open class="report-section"><summary><span>Live Targets</span><small>Reachable HTTP(S) targets retained after in-scope validation.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Host</button></th><th><button type="button">URL</button></th><th><button type="button">Status</button></th><th><button type="button">Title</button></th><th><button type="button">Technologies</button></th></tr></thead><tbody>$liveRows</tbody></table></div></details>
+<details open class="report-section"><summary><span>Interesting Families</span><small>Primary families used to group triage targets for manual review.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Family</button></th><th><button type="button">Count</button></th><th><button type="button">Max Score</button></th><th><button type="button">Priorities</button></th><th><button type="button">Top Categories</button></th><th><button type="button">Sample URLs</button></th></tr></thead><tbody>$familyRows</tbody></table></div></details>
+<details open class="report-section"><summary><span>Protected Endpoints</span><small>Live endpoints returning 401 or 403.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Status</button></th><th><button type="button">URL</button></th><th><button type="button">Title</button></th><th><button type="button">Technologies</button></th></tr></thead><tbody>$protectedRows</tbody></table></div></details>
+<details open class="report-section"><summary><span>Interesting Pages</span><small>Heuristically ranked URLs grouped by family and priority.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Priority</button></th><th><button type="button">Score</button></th><th><button type="button">Family</button></th><th><button type="button">URL</button></th><th><button type="button">Categories</button></th><th><button type="button">Reasons</button></th></tr></thead><tbody>$interestingRows</tbody></table></div></details>
+<details open class="report-section"><summary><span>Discovered URLs</span><small>Unique endpoints collected from katana and seeds.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Host</button></th><th><button type="button">URL</button></th><th><button type="button">Scope</button></th><th><button type="button">Status</button></th><th><button type="button">Source</button></th></tr></thead><tbody>$urlRows</tbody></table></div></details>
+<details open class="report-section"><summary><span>Errors</span><small>Non-fatal errors captured during execution.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Phase</button></th><th><button type="button">Tool</button></th><th><button type="button">Code</button></th><th><button type="button">Message</button></th><th><button type="button">Recommendation</button></th></tr></thead><tbody>$errorRows</tbody></table></div></details></div>
+<script>const input=document.getElementById('globalSearch');const tables=Array.from(document.querySelectorAll('[data-filter-table="true"]'));function applyFilter(){const query=input.value.trim().toLowerCase();tables.forEach(table=>{table.querySelectorAll('tbody tr').forEach(row=>{const haystack=(row.dataset.search||row.textContent||'').toLowerCase();row.style.display=!query||haystack.includes(query)?'':'none';});});}function wireSort(table){const headers=Array.from(table.querySelectorAll('thead th button'));headers.forEach((button,index)=>{button.addEventListener('click',()=>{const tbody=table.querySelector('tbody');const rows=Array.from(tbody.querySelectorAll('tr'));const ascending=button.dataset.sortDir!=='asc';headers.forEach(header=>{header.dataset.sortDir='';});button.dataset.sortDir=ascending?'asc':'desc';rows.sort((a,b)=>{const left=(a.children[index]?.innerText||'').trim();const right=(b.children[index]?.innerText||'').trim();const leftNumber=Number(left);const rightNumber=Number(right);const comparison=!Number.isNaN(leftNumber)&&!Number.isNaN(rightNumber)?leftNumber-rightNumber:left.localeCompare(right,undefined,{numeric:true,sensitivity:'base'});return ascending?comparison:-comparison;});rows.forEach(row=>tbody.appendChild(row));});});}document.querySelectorAll('[data-sort-table="true"]').forEach(wireSort);document.querySelectorAll('.copy-btn').forEach(button=>{button.addEventListener('click',async()=>{const value=button.dataset.copy||'';const previous=button.textContent;try{if(navigator.clipboard&&value){await navigator.clipboard.writeText(value);button.textContent='Copied';setTimeout(()=>button.textContent=previous,1200);}}catch(_){button.textContent=previous;}});});input.addEventListener('input',applyFilter);applyFilter();</script></body></html>
 "@
     Set-Content -LiteralPath $Layout.ReportHtml -Value $html -Encoding utf8
 }
@@ -1961,7 +2115,7 @@ function Invoke-BugBountyRecon {
         }
         return $result
     } catch {
-        Add-ErrorRecord -Phase 'Runtime' -Message $_.Exception.Message -Details $_.ScriptStackTrace
+        Add-ErrorRecord -Phase 'Runtime' -Message $_.Exception.Message -Details $_.ScriptStackTrace -ErrorCode 'RuntimeError'
         throw
     } finally {
         if ($script:ScopeForgeContext -and -not $script:ScopeForgeContext.Quiet) { Write-Progress -Id 1 -Activity 'ScopeForge' -Completed }
