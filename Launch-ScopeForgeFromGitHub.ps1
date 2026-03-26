@@ -30,6 +30,17 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Write-BootstrapVerbose {
+    param(
+        [Parameter(Mandatory)][string]$Message,
+        [string]$Color = 'DarkGray'
+    )
+
+    if ($VerbosePreference -eq 'Continue') {
+        Write-Host ("  > {0}" -f $Message) -ForegroundColor $Color
+    }
+}
+
 function Get-BootstrapFilesToFetch {
     return @(
         'ScopeForge.ps1',
@@ -44,6 +55,20 @@ function Get-BootstrapManifestPath {
     param([Parameter(Mandatory)][string]$BootstrapRoot)
 
     return (Join-Path $BootstrapRoot 'bootstrap-manifest.json')
+}
+
+function Read-BootstrapManifest {
+    param([Parameter(Mandatory)][string]$BootstrapRoot)
+
+    $manifestPath = Get-BootstrapManifestPath -BootstrapRoot $BootstrapRoot
+    if (-not (Test-Path -LiteralPath $manifestPath)) { return $null }
+
+    try {
+        return (Get-Content -LiteralPath $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json -Depth 10)
+    } catch {
+        Write-Warning ("Bootstrap manifest is unreadable at {0}: {1}" -f $manifestPath, $_.Exception.Message)
+        return $null
+    }
 }
 
 function Get-BootstrapFileEntries {
@@ -99,6 +124,139 @@ function Test-BootstrapNeedsRefresh {
     return ($lastWriteUtc -lt [DateTime]::UtcNow.AddHours(-1 * $AutoRefreshHours))
 }
 
+function Get-BootstrapRemoteVersionKey {
+    param(
+        [Parameter(Mandatory)][string]$RepositoryOwner,
+        [Parameter(Mandatory)][string]$RepositoryName,
+        [Parameter(Mandatory)][string]$Branch
+    )
+
+    $checkedAtUtc = [DateTime]::UtcNow
+    $uri = "https://api.github.com/repos/$RepositoryOwner/$RepositoryName/commits/$Branch"
+    Write-BootstrapVerbose -Message ("Checking upstream version key via {0}" -f $uri)
+
+    try {
+        $response = Invoke-RestMethod -Uri $uri -Headers @{
+            'User-Agent' = 'ScopeForge-Bootstrap/1.0'
+            'Accept'     = 'application/vnd.github+json'
+        } -Method Get -TimeoutSec 20
+
+        $key = [string]$response.sha
+        if ([string]::IsNullOrWhiteSpace($key)) {
+            throw 'GitHub API returned no commit sha.'
+        }
+
+        Write-BootstrapVerbose -Message ("Upstream version key: {0}" -f $key.Substring(0, [Math]::Min($key.Length, 12))) -Color 'DarkCyan'
+        return [pscustomobject]@{
+            Success      = $true
+            Key          = $key
+            CheckedAtUtc = $checkedAtUtc
+            Status       = 'Remote version key loaded from GitHub.'
+            Source       = 'github-commit'
+            ErrorMessage = $null
+        }
+    } catch {
+        Write-BootstrapVerbose -Message ("Upstream version check failed: {0}" -f $_.Exception.Message) -Color 'DarkYellow'
+        return [pscustomobject]@{
+            Success      = $false
+            Key          = $null
+            CheckedAtUtc = $checkedAtUtc
+            Status       = 'Remote version key unavailable.'
+            Source       = 'github-commit'
+            ErrorMessage = $_.Exception.Message
+        }
+    }
+}
+
+function Get-BootstrapRefreshPlan {
+    param(
+        [Parameter(Mandatory)][string]$BootstrapRoot,
+        [Parameter(Mandatory)][string]$RepositoryOwner,
+        [Parameter(Mandatory)][string]$RepositoryName,
+        [Parameter(Mandatory)][string]$Branch,
+        [Parameter(Mandatory)][string[]]$FilesToFetch,
+        [Parameter(Mandatory)][bool]$ForceRefresh,
+        [ValidateRange(0, 168)][int]$AutoRefreshHours = 24
+    )
+
+    $manifest = Read-BootstrapManifest -BootstrapRoot $BootstrapRoot
+    $appliedVersionKey = if ($manifest -and $manifest.AppliedVersionKey) { [string]$manifest.AppliedVersionKey } else { $null }
+    $fileEntries = @(Get-BootstrapFileEntries -BootstrapRoot $BootstrapRoot -FilesToFetch $FilesToFetch)
+    $missingFiles = @($fileEntries | Where-Object { -not $_.Exists } | Select-Object -ExpandProperty RelativePath)
+    $fallbackRefreshNeeded = Test-BootstrapNeedsRefresh -BootstrapRoot $BootstrapRoot -FilesToFetch $FilesToFetch -AutoRefreshHours $AutoRefreshHours
+    $remoteVersion = Get-BootstrapRemoteVersionKey -RepositoryOwner $RepositoryOwner -RepositoryName $RepositoryName -Branch $Branch
+
+    if ($ForceRefresh) {
+        return [pscustomobject]@{
+            WillRefresh        = $true
+            RefreshReason      = 'Forced refresh requested.'
+            RemoteVersionKey   = $remoteVersion.Key
+            AppliedVersionKey  = $appliedVersionKey
+            VersionCheckStatus = $(if ($remoteVersion.Success) { 'Remote version key loaded from GitHub.' } else { "Remote version key unavailable: $($remoteVersion.ErrorMessage)" })
+            CheckedAtUtc       = $remoteVersion.CheckedAtUtc
+            MissingFiles       = @($missingFiles)
+        }
+    }
+
+    if ($remoteVersion.Success) {
+        if ($missingFiles.Count -gt 0) {
+            return [pscustomobject]@{
+                WillRefresh        = $true
+                RefreshReason      = ('Bootstrap cache is incomplete; refreshing missing file(s): {0}' -f ($missingFiles -join ', '))
+                RemoteVersionKey   = $remoteVersion.Key
+                AppliedVersionKey  = $appliedVersionKey
+                VersionCheckStatus = 'Remote version key loaded from GitHub.'
+                CheckedAtUtc       = $remoteVersion.CheckedAtUtc
+                MissingFiles       = @($missingFiles)
+            }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($appliedVersionKey)) {
+            return [pscustomobject]@{
+                WillRefresh        = $true
+                RefreshReason      = 'Bootstrap cache has no applied version key yet; refreshing once to stamp the local cache.'
+                RemoteVersionKey   = $remoteVersion.Key
+                AppliedVersionKey  = $null
+                VersionCheckStatus = 'Remote version key loaded from GitHub.'
+                CheckedAtUtc       = $remoteVersion.CheckedAtUtc
+                MissingFiles       = @()
+            }
+        }
+
+        if ($appliedVersionKey -ne $remoteVersion.Key) {
+            return [pscustomobject]@{
+                WillRefresh        = $true
+                RefreshReason      = 'A newer upstream version key was detected; refreshing the bootstrap cache.'
+                RemoteVersionKey   = $remoteVersion.Key
+                AppliedVersionKey  = $appliedVersionKey
+                VersionCheckStatus = 'Remote version key differs from the local cache.'
+                CheckedAtUtc       = $remoteVersion.CheckedAtUtc
+                MissingFiles       = @()
+            }
+        }
+
+        return [pscustomobject]@{
+            WillRefresh        = $false
+            RefreshReason      = 'Bootstrap cache already matches the upstream version key.'
+            RemoteVersionKey   = $remoteVersion.Key
+            AppliedVersionKey  = $appliedVersionKey
+            VersionCheckStatus = 'Remote version key matches the local cache.'
+            CheckedAtUtc       = $remoteVersion.CheckedAtUtc
+            MissingFiles       = @()
+        }
+    }
+
+    return [pscustomobject]@{
+        WillRefresh        = [bool]$fallbackRefreshNeeded
+        RefreshReason      = $(if ($fallbackRefreshNeeded) { "Remote version check failed; fallback refresh enabled because the cache is missing or older than $AutoRefreshHours hour(s)." } else { 'Remote version check failed; reusing the cached bootstrap files.' })
+        RemoteVersionKey   = $null
+        AppliedVersionKey  = $appliedVersionKey
+        VersionCheckStatus = ("Remote version key unavailable: {0}" -f $remoteVersion.ErrorMessage)
+        CheckedAtUtc       = $remoteVersion.CheckedAtUtc
+        MissingFiles       = @($missingFiles)
+    }
+}
+
 function Show-BootstrapStatusPanel {
     param(
         [Parameter(Mandatory)][string]$BootstrapRoot,
@@ -109,6 +267,11 @@ function Show-BootstrapStatusPanel {
         [AllowNull()][datetime]$UpdatedUtc,
         [Parameter(Mandatory)][bool]$WillRefresh,
         [Parameter(Mandatory)][bool]$ForcedRefresh,
+        [Parameter(Mandatory)][string]$RefreshReason,
+        [AllowNull()][string]$RemoteVersionKey,
+        [AllowNull()][string]$AppliedVersionKey,
+        [Parameter(Mandatory)][string]$VersionCheckStatus,
+        [AllowNull()][datetime]$CheckedAtUtc,
         [ValidateRange(0, 168)][int]$AutoRefreshHours = 24
     )
 
@@ -126,8 +289,16 @@ function Show-BootstrapStatusPanel {
     Write-Host ("  CacheRoot         : {0}" -f $BootstrapRoot) -ForegroundColor Gray
     Write-Host ("  Launcher          : {0}" -f $LauncherPath) -ForegroundColor Gray
     Write-Host ("  Updated           : {0}" -f $(if ($UpdatedUtc) { $UpdatedUtc.ToString('u') } else { 'not downloaded yet' })) -ForegroundColor Gray
+    Write-Host ("  VersionCheck      : {0}" -f $VersionCheckStatus) -ForegroundColor Gray
+    Write-Host ("  RemoteKey         : {0}" -f $(if ($RemoteVersionKey) { $RemoteVersionKey.Substring(0, [Math]::Min($RemoteVersionKey.Length, 12)) } else { 'unavailable' })) -ForegroundColor Gray
+    Write-Host ("  AppliedKey        : {0}" -f $(if ($AppliedVersionKey) { $AppliedVersionKey.Substring(0, [Math]::Min($AppliedVersionKey.Length, 12)) } else { 'not stamped yet' })) -ForegroundColor Gray
+    Write-Host ("  Checked           : {0}" -f $(if ($CheckedAtUtc) { $CheckedAtUtc.ToString('u') } else { 'not checked' })) -ForegroundColor Gray
     Write-Host ("  Status            : {0}" -f $statusText) -ForegroundColor $(if ($WillRefresh) { 'Yellow' } else { 'Green' })
+    Write-Host ("  Reason            : {0}" -f $RefreshReason) -ForegroundColor Gray
     Write-Host "  Refresh hint      : relance avec -Update ou -ForceRefresh pour retélécharger immédiatement le launcher et le runtime." -ForegroundColor DarkGray
+    if ($VerbosePreference -eq 'Continue') {
+        Write-Host ("  FallbackHours     : {0}" -f $AutoRefreshHours) -ForegroundColor DarkGray
+    }
 }
 
 function Write-BootstrapManifest {
@@ -137,18 +308,28 @@ function Write-BootstrapManifest {
         [Parameter(Mandatory)][string]$RepositoryName,
         [Parameter(Mandatory)][string]$Branch,
         [Parameter(Mandatory)][string[]]$FilesToFetch,
-        [Parameter(Mandatory)][datetime]$LastRefreshUtc
+        [Parameter(Mandatory)][datetime]$LastRefreshUtc,
+        [AllowNull()][datetime]$LastCheckedUtc,
+        [AllowNull()][string]$AppliedVersionKey,
+        [AllowNull()][string]$RemoteVersionKey,
+        [AllowNull()][string]$VersionCheckStatus,
+        [AllowNull()][string]$RefreshReason
     )
 
     $manifestPath = Get-BootstrapManifestPath -BootstrapRoot $BootstrapRoot
     $manifest = [ordered]@{
-        ManifestVersion = 1
+        ManifestVersion = 2
         RepositoryOwner = $RepositoryOwner
         RepositoryName  = $RepositoryName
         Branch          = $Branch
         BootstrapRoot   = $BootstrapRoot
         LastRefreshUtc  = $LastRefreshUtc.ToString('o')
+        LastCheckedUtc  = $(if ($LastCheckedUtc) { $LastCheckedUtc.ToString('o') } else { $null })
         LauncherPath    = (Join-Path $BootstrapRoot 'Launch-ScopeForge.ps1')
+        AppliedVersionKey = $AppliedVersionKey
+        RemoteVersionKey  = $RemoteVersionKey
+        VersionCheckStatus = $VersionCheckStatus
+        RefreshReason      = $RefreshReason
         Files           = @(
             foreach ($entry in (Get-BootstrapFileEntries -BootstrapRoot $BootstrapRoot -FilesToFetch $FilesToFetch)) {
                 [ordered]@{
@@ -203,10 +384,10 @@ function Invoke-ScopeForgeBootstrap {
     $baseRaw = "https://raw.githubusercontent.com/$RepositoryOwner/$RepositoryName/$Branch"
     $launcherPath = Join-Path $BootstrapRoot 'Launch-ScopeForge.ps1'
     $cacheUpdatedUtc = Get-BootstrapCacheLastWriteTimeUtc -BootstrapRoot $BootstrapRoot -FilesToFetch $filesToFetch
-    $autoRefreshNeeded = Test-BootstrapNeedsRefresh -BootstrapRoot $BootstrapRoot -FilesToFetch $filesToFetch -AutoRefreshHours $AutoRefreshHours
-    $refreshNow = ([bool]$ForceRefresh) -or $autoRefreshNeeded
+    $refreshPlan = Get-BootstrapRefreshPlan -BootstrapRoot $BootstrapRoot -RepositoryOwner $RepositoryOwner -RepositoryName $RepositoryName -Branch $Branch -FilesToFetch $filesToFetch -ForceRefresh:([bool]$ForceRefresh) -AutoRefreshHours $AutoRefreshHours
+    $refreshNow = [bool]$refreshPlan.WillRefresh
 
-    Show-BootstrapStatusPanel -BootstrapRoot $BootstrapRoot -RepositoryOwner $RepositoryOwner -RepositoryName $RepositoryName -Branch $Branch -LauncherPath $launcherPath -UpdatedUtc $cacheUpdatedUtc -WillRefresh:$refreshNow -ForcedRefresh:([bool]$ForceRefresh) -AutoRefreshHours $AutoRefreshHours
+    Show-BootstrapStatusPanel -BootstrapRoot $BootstrapRoot -RepositoryOwner $RepositoryOwner -RepositoryName $RepositoryName -Branch $Branch -LauncherPath $launcherPath -UpdatedUtc $cacheUpdatedUtc -WillRefresh:$refreshNow -ForcedRefresh:([bool]$ForceRefresh) -RefreshReason $refreshPlan.RefreshReason -RemoteVersionKey $refreshPlan.RemoteVersionKey -AppliedVersionKey $refreshPlan.AppliedVersionKey -VersionCheckStatus $refreshPlan.VersionCheckStatus -CheckedAtUtc $refreshPlan.CheckedAtUtc -AutoRefreshHours $AutoRefreshHours
 
     foreach ($relativePath in $filesToFetch) {
         $targetPath = Join-Path $BootstrapRoot $relativePath
@@ -216,6 +397,7 @@ function Invoke-ScopeForgeBootstrap {
         }
 
         if ((-not $refreshNow) -and (Test-Path -LiteralPath $targetPath)) {
+            Write-BootstrapVerbose -Message ("Using cached file: {0}" -f $relativePath)
             continue
         }
 
@@ -224,9 +406,12 @@ function Invoke-ScopeForgeBootstrap {
             throw "Refusing unexpected bootstrap source: $uri"
         }
 
-        Write-Host ("Downloading {0}" -f $relativePath) -ForegroundColor Cyan
+        $actionLabel = if (Test-Path -LiteralPath $targetPath) { 'Updating' } else { 'Downloading' }
+        Write-Host ("{0} {1}" -f $actionLabel, $relativePath) -ForegroundColor Cyan
+        Write-BootstrapVerbose -Message ("Source: {0}" -f $uri.AbsoluteUri)
         try {
             Invoke-WebRequest -Uri $uri.AbsoluteUri -Headers @{ 'User-Agent' = 'ScopeForge-Bootstrap/1.0' } -OutFile $targetPath -TimeoutSec 60
+            Write-BootstrapVerbose -Message ("Saved to: {0}" -f $targetPath) -Color 'DarkCyan'
         } catch {
             if ($ForceRefresh) {
                 throw
@@ -240,14 +425,24 @@ function Invoke-ScopeForgeBootstrap {
     }
 
     $refreshTimestampUtc = if ($refreshNow) { [DateTime]::UtcNow } elseif ($cacheUpdatedUtc) { $cacheUpdatedUtc } else { [DateTime]::UtcNow }
-    $bootstrapManifestPath = Write-BootstrapManifest -BootstrapRoot $BootstrapRoot -RepositoryOwner $RepositoryOwner -RepositoryName $RepositoryName -Branch $Branch -FilesToFetch $filesToFetch -LastRefreshUtc $refreshTimestampUtc
+    $appliedVersionKey = if ($refreshPlan.RemoteVersionKey) {
+        $refreshPlan.RemoteVersionKey
+    } elseif ($refreshNow) {
+        $null
+    } else {
+        $refreshPlan.AppliedVersionKey
+    }
+    $bootstrapManifestPath = Write-BootstrapManifest -BootstrapRoot $BootstrapRoot -RepositoryOwner $RepositoryOwner -RepositoryName $RepositoryName -Branch $Branch -FilesToFetch $filesToFetch -LastRefreshUtc $refreshTimestampUtc -LastCheckedUtc $refreshPlan.CheckedAtUtc -AppliedVersionKey $appliedVersionKey -RemoteVersionKey $refreshPlan.RemoteVersionKey -VersionCheckStatus $refreshPlan.VersionCheckStatus -RefreshReason $refreshPlan.RefreshReason
 
     $env:SCOPEFORGE_BOOTSTRAP_ROOT = $BootstrapRoot
     $env:SCOPEFORGE_BOOTSTRAP_SOURCE = $baseRaw
     $env:SCOPEFORGE_BOOTSTRAP_UPDATED_AT = $refreshTimestampUtc.ToString('o')
-    $env:SCOPEFORGE_BOOTSTRAP_REFRESH_REASON = $(if ($ForceRefresh) { 'forced by -Update/-ForceRefresh' } elseif ($refreshNow) { "auto-refresh after $AutoRefreshHours hour(s)" } else { 'cached bootstrap reused' })
+    $env:SCOPEFORGE_BOOTSTRAP_REFRESH_REASON = $refreshPlan.RefreshReason
     $env:SCOPEFORGE_BOOTSTRAP_MANIFEST = $bootstrapManifestPath
     $env:SCOPEFORGE_BOOTSTRAP_LAUNCHER = $launcherPath
+    $env:SCOPEFORGE_BOOTSTRAP_REMOTE_VERSION_KEY = $(if ($refreshPlan.RemoteVersionKey) { $refreshPlan.RemoteVersionKey } else { '' })
+    $env:SCOPEFORGE_BOOTSTRAP_APPLIED_VERSION_KEY = $(if ($appliedVersionKey) { $appliedVersionKey } else { '' })
+    $env:SCOPEFORGE_BOOTSTRAP_VERSION_CHECK_STATUS = $refreshPlan.VersionCheckStatus
 
     if ($env:OS -eq 'Windows_NT') {
         foreach ($scriptPath in @(

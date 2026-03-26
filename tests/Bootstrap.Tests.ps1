@@ -53,11 +53,80 @@ Describe 'ScopeForge bootstrap refresh' {
             Set-Content -LiteralPath $targetPath -Encoding utf8 -Value 'cached'
         }
 
-        $manifestPath = Write-BootstrapManifest -BootstrapRoot $bootstrapRoot -RepositoryOwner 'Z3PHIRE' -RepositoryName 'ScopeForge' -Branch 'main' -FilesToFetch $filesToFetch -LastRefreshUtc ([DateTime]::UtcNow)
+        $manifestPath = Write-BootstrapManifest -BootstrapRoot $bootstrapRoot -RepositoryOwner 'Z3PHIRE' -RepositoryName 'ScopeForge' -Branch 'main' -FilesToFetch $filesToFetch -LastRefreshUtc ([DateTime]::UtcNow) -LastCheckedUtc ([DateTime]::UtcNow) -AppliedVersionKey 'abc123' -RemoteVersionKey 'def456' -VersionCheckStatus 'Remote version key differs from the local cache.' -RefreshReason 'A newer upstream version key was detected; refreshing the bootstrap cache.'
         if (-not (Test-Path -LiteralPath $manifestPath)) { throw 'Expected bootstrap-manifest.json to be written.' }
 
         $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json -Depth 10
         if ($manifest.RepositoryName -ne 'ScopeForge') { throw 'Expected manifest to retain repository metadata.' }
         if (@($manifest.Files).Count -ne $filesToFetch.Count) { throw 'Expected manifest to describe each cached bootstrap file.' }
+        if ($manifest.AppliedVersionKey -ne 'abc123') { throw 'Expected manifest to retain the applied version key.' }
+        if ($manifest.RemoteVersionKey -ne 'def456') { throw 'Expected manifest to retain the remote version key.' }
+    }
+
+    It 'refreshes when the upstream version key changes' {
+        Mock Read-BootstrapManifest {
+            [pscustomobject]@{
+                AppliedVersionKey = 'old-version'
+            }
+        }
+        Mock Get-BootstrapFileEntries {
+            @(
+                [pscustomobject]@{
+                    RelativePath = 'Launch-ScopeForge.ps1'
+                    FullPath     = 'C:\Temp\Launch-ScopeForge.ps1'
+                    Exists       = $true
+                }
+            )
+        }
+        Mock Test-BootstrapNeedsRefresh { $false }
+        Mock Get-BootstrapRemoteVersionKey {
+            [pscustomobject]@{
+                Success      = $true
+                Key          = 'new-version'
+                CheckedAtUtc = [DateTime]::UtcNow
+                Status       = 'Remote version key loaded from GitHub.'
+                Source       = 'github-commit'
+                ErrorMessage = $null
+            }
+        }
+
+        $plan = Get-BootstrapRefreshPlan -BootstrapRoot (Join-Path $TestDrive 'bootstrap-plan') -RepositoryOwner 'Z3PHIRE' -RepositoryName 'ScopeForge' -Branch 'main' -FilesToFetch @('Launch-ScopeForge.ps1') -ForceRefresh:$false -AutoRefreshHours 24
+
+        if (-not $plan.WillRefresh) { throw 'Expected a refresh when the remote version key changes.' }
+        if ($plan.RemoteVersionKey -ne 'new-version') { throw 'Expected the remote version key to be surfaced in the plan.' }
+        if ($plan.RefreshReason -notlike '*newer upstream version key*') { throw 'Expected a clear refresh reason when a newer upstream version exists.' }
+    }
+
+    It 'reuses the cache when the upstream version key matches' {
+        Mock Read-BootstrapManifest {
+            [pscustomobject]@{
+                AppliedVersionKey = 'same-version'
+            }
+        }
+        Mock Get-BootstrapFileEntries {
+            @(
+                [pscustomobject]@{
+                    RelativePath = 'Launch-ScopeForge.ps1'
+                    FullPath     = 'C:\Temp\Launch-ScopeForge.ps1'
+                    Exists       = $true
+                }
+            )
+        }
+        Mock Test-BootstrapNeedsRefresh { $false }
+        Mock Get-BootstrapRemoteVersionKey {
+            [pscustomobject]@{
+                Success      = $true
+                Key          = 'same-version'
+                CheckedAtUtc = [DateTime]::UtcNow
+                Status       = 'Remote version key loaded from GitHub.'
+                Source       = 'github-commit'
+                ErrorMessage = $null
+            }
+        }
+
+        $plan = Get-BootstrapRefreshPlan -BootstrapRoot (Join-Path $TestDrive 'bootstrap-plan-match') -RepositoryOwner 'Z3PHIRE' -RepositoryName 'ScopeForge' -Branch 'main' -FilesToFetch @('Launch-ScopeForge.ps1') -ForceRefresh:$false -AutoRefreshHours 24
+
+        if ($plan.WillRefresh) { throw 'Expected the cache to be reused when the version key matches.' }
+        if ($plan.VersionCheckStatus -notlike '*matches the local cache*') { throw 'Expected the plan to explain that the version key matches.' }
     }
 }
