@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pwsh:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse scripts
+        shell: pwsh
+        run: |
+          $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\Launch-ScopeForge.ps1), [ref]$null, [ref]$null)
+          $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\ScopeForge.ps1), [ref]$null, [ref]$null)
+
+      - name: Run Pester
+        shell: pwsh
+        run: |
+          if (-not (Get-Module -ListAvailable -Name Pester)) {
+            Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck
+          }
+          $invokePester = Get-Command Invoke-Pester
+          $pesterParams = @{ PassThru = $true }
+          if ($invokePester.Parameters.ContainsKey('Path')) {
+            $pesterParams.Path = '.\tests\Launcher.Tests.ps1'
+          } else {
+            $pesterParams.Script = '.\tests\Launcher.Tests.ps1'
+          }
+          $result = Invoke-Pester @pesterParams
+          $failedCount = if ($null -ne $result.FailedCount) { [int]$result.FailedCount } else { 0 }
+          if ($failedCount -gt 0) {
+            throw "Pester failures: $failedCount"
+          }

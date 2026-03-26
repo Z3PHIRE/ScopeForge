@@ -348,9 +348,20 @@ function Show-RunSummaryDashboard {
 function Get-LauncherInvokeParams {
     param([Parameter(Mandatory)][hashtable]$RunConfig)
     $invokeParams = @{}
-    foreach ($name in @('ScopeFile', 'ProgramName', 'OutputDir', 'Depth', 'UniqueUserAgent', 'Threads', 'TimeoutSeconds', 'EnableGau', 'EnableWaybackUrls', 'EnableHakrawler', 'NoInstall', 'Quiet', 'IncludeApex', 'RespectSchemeOnly', 'Resume')) {
+    foreach ($name in @('ScopeFile', 'ProgramName', 'OutputDir', 'Depth', 'UniqueUserAgent', 'Threads', 'TimeoutSeconds', 'EnableGau', 'EnableWaybackUrls', 'EnableHakrawler')) {
         if ($RunConfig.ContainsKey($name)) {
             $invokeParams[$name] = $RunConfig[$name]
+        }
+    }
+    foreach ($name in @('NoInstall', 'Quiet', 'IncludeApex', 'RespectSchemeOnly', 'Resume')) {
+        if (-not $RunConfig.ContainsKey($name)) { continue }
+        $value = $RunConfig[$name]
+        if ($value -isnot [bool] -and $value -isnot [System.Management.Automation.SwitchParameter]) {
+            $typeName = if ($null -eq $value) { 'null' } else { $value.GetType().FullName }
+            throw ("Le champ '{0}' du launcher doit deja etre un booléen avant l'appel recon. Valeur recue: {1} (type: {2})" -f $name, $value, $typeName)
+        }
+        if ([bool]$value) {
+            $invokeParams[$name] = $true
         }
     }
     return $invokeParams
@@ -560,24 +571,53 @@ function Get-LauncherDocumentProperty {
 function ConvertTo-LauncherBoolean {
     param(
         [Parameter(Mandatory)][AllowNull()]$Value,
+        [string]$Name = 'value',
         [bool]$Default = $false
     )
 
     if ($null -eq $Value) { return $Default }
     if ($Value -is [bool]) { return $Value }
-
-    $text = [string]$Value
-    if ([string]::IsNullOrWhiteSpace($text)) { return $Default }
-
-    switch ($text.Trim().ToLowerInvariant()) {
-        'true' { return $true }
-        'false' { return $false }
-        '1' { return $true }
-        '0' { return $false }
-        default {
-            throw "La valeur booléenne '$Value' est invalide. Utilise true ou false."
+    if ($Value -is [System.Management.Automation.SwitchParameter]) { return [bool]$Value }
+    if ($Value -is [sbyte] -or $Value -is [byte] -or $Value -is [int16] -or $Value -is [uint16] -or $Value -is [int32] -or $Value -is [uint32] -or $Value -is [int64] -or $Value -is [uint64]) {
+        switch ([int64]$Value) {
+            0 { return $false }
+            1 { return $true }
+            default {
+                throw ("Champ '{0}' invalide dans 02-run-settings.json: utiliser true/false sans guillemets. Exemple: `"{0}`": false. Valeur recue: {1}" -f $Name, $Value)
+            }
         }
     }
+
+    if ($Value -is [string]) {
+        $text = $Value.Trim()
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            throw ("Champ '{0}' invalide dans 02-run-settings.json: utiliser true/false sans guillemets. Exemple: `"{0}`": false. Valeur recue: chaine vide" -f $Name)
+        }
+
+        switch ($text.ToLowerInvariant()) {
+            'true' {
+                Write-Warning ("Format legacy pour '{0}' dans 02-run-settings.json: utilise true/false sans guillemets." -f $Name)
+                return $true
+            }
+            'false' {
+                Write-Warning ("Format legacy pour '{0}' dans 02-run-settings.json: utilise true/false sans guillemets." -f $Name)
+                return $false
+            }
+            '1' {
+                Write-Warning ("Format legacy pour '{0}' dans 02-run-settings.json: utilise true/false sans guillemets." -f $Name)
+                return $true
+            }
+            '0' {
+                Write-Warning ("Format legacy pour '{0}' dans 02-run-settings.json: utilise true/false sans guillemets." -f $Name)
+                return $false
+            }
+            default {
+                throw ("Champ '{0}' invalide dans 02-run-settings.json: utiliser true/false sans guillemets. Exemple: `"{0}`": false. Valeur recue: `"{1}`"" -f $Name, $Value)
+            }
+        }
+    }
+
+    throw ("Champ '{0}' invalide dans 02-run-settings.json: utiliser true/false sans guillemets. Exemple: `"{0}`": false. Type recu: {1}" -f $Name, $Value.GetType().FullName)
 }
 
 function New-LauncherDocumentSet {
@@ -593,6 +633,7 @@ function New-LauncherDocumentSet {
         [bool]$EnableWaybackUrls,
         [bool]$EnableHakrawler,
         [bool]$NoInstall,
+        [bool]$Quiet,
         [bool]$IncludeApex,
         [bool]$RespectSchemeOnly,
         [bool]$Resume,
@@ -662,6 +703,7 @@ function New-LauncherDocumentSet {
         enableWaybackUrls = $EnableWaybackUrls
         enableHakrawler   = $EnableHakrawler
         noInstall         = $NoInstall
+        quiet             = $Quiet
         resume            = $Resume
         openReportOnFinish = $OpenReportOnFinish
     }
@@ -685,6 +727,7 @@ Valeurs utiles dans 02-run-settings.json:
 - preset: safe | balanced | deep
 - profile: webapp | api | wide-assets
 - enableGau / enableWaybackUrls / enableHakrawler: true ou false
+- Les champs booléens (quiet, noInstall, resume, includeApex, respectSchemeOnly, openReportOnFinish) doivent rester en JSON natif true / false, sans guillemets.
 - openReportOnFinish: true pour ouvrir automatiquement le rapport HTML a la fin
 
 Conseils:
@@ -727,7 +770,7 @@ function Build-DocumentRunConfig {
         [bool]$OpenReportOnFinish
     )
 
-    $documentSet = New-LauncherDocumentSet -InitialScopeFile $InitialScopeFile -ProgramName $ProgramName -OutputDir $OutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -EnableGau $EnableGau -EnableWaybackUrls $EnableWaybackUrls -EnableHakrawler $EnableHakrawler -NoInstall $NoInstall -IncludeApex $IncludeApex -RespectSchemeOnly $RespectSchemeOnly -Resume $Resume -OpenReportOnFinish $OpenReportOnFinish
+    $documentSet = New-LauncherDocumentSet -InitialScopeFile $InitialScopeFile -ProgramName $ProgramName -OutputDir $OutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -EnableGau $EnableGau -EnableWaybackUrls $EnableWaybackUrls -EnableHakrawler $EnableHakrawler -NoInstall $NoInstall -Quiet $Quiet -IncludeApex $IncludeApex -RespectSchemeOnly $RespectSchemeOnly -Resume $Resume -OpenReportOnFinish $OpenReportOnFinish
 
     Write-LauncherSection -Title 'Mode documents'
     Write-Host ("Les documents de configuration ont ete crees ici : {0}" -f $documentSet.RootPath) -ForegroundColor Cyan
@@ -803,14 +846,15 @@ function Build-DocumentRunConfig {
                 $uniqueUserAgentValue = "researcher-" + ([Guid]::NewGuid().ToString('N').Substring(0, 8))
             }
 
-            $includeApexValue = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'includeApex' -Default $IncludeApex) -Default $IncludeApex
-            $localRespectSchemeOnly = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'respectSchemeOnly' -Default $localRespectSchemeOnly) -Default $localRespectSchemeOnly
-            $localEnableGau = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'enableGau' -Default $localEnableGau) -Default $localEnableGau
-            $localEnableWaybackUrls = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'enableWaybackUrls' -Default $localEnableWaybackUrls) -Default $localEnableWaybackUrls
-            $localEnableHakrawler = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'enableHakrawler' -Default $localEnableHakrawler) -Default $localEnableHakrawler
-            $localNoInstall = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'noInstall' -Default $NoInstall) -Default $NoInstall
-            $localResume = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'resume' -Default $localResume) -Default $localResume
-            $localOpenReportOnFinish = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'openReportOnFinish' -Default $OpenReportOnFinish) -Default $OpenReportOnFinish
+            $localQuiet = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'quiet' -Default $Quiet) -Default $Quiet -Name 'quiet'
+            $includeApexValue = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'includeApex' -Default $IncludeApex) -Default $IncludeApex -Name 'includeApex'
+            $localRespectSchemeOnly = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'respectSchemeOnly' -Default $localRespectSchemeOnly) -Default $localRespectSchemeOnly -Name 'respectSchemeOnly'
+            $localEnableGau = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'enableGau' -Default $localEnableGau) -Default $localEnableGau -Name 'enableGau'
+            $localEnableWaybackUrls = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'enableWaybackUrls' -Default $localEnableWaybackUrls) -Default $localEnableWaybackUrls -Name 'enableWaybackUrls'
+            $localEnableHakrawler = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'enableHakrawler' -Default $localEnableHakrawler) -Default $localEnableHakrawler -Name 'enableHakrawler'
+            $localNoInstall = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'noInstall' -Default $NoInstall) -Default $NoInstall -Name 'noInstall'
+            $localResume = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'resume' -Default $localResume) -Default $localResume -Name 'resume'
+            $localOpenReportOnFinish = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'openReportOnFinish' -Default $OpenReportOnFinish) -Default $OpenReportOnFinish -Name 'openReportOnFinish'
 
             $scopePreview = Read-ScopeFile -Path $documentSet.ScopePath -IncludeApex:$includeApexValue
 
@@ -831,7 +875,7 @@ function Build-DocumentRunConfig {
                 EnableWaybackUrls      = $localEnableWaybackUrls
                 EnableHakrawler        = $localEnableHakrawler
                 NoInstall              = $localNoInstall
-                Quiet                  = $Quiet
+                Quiet                  = $localQuiet
                 IncludeApex            = $includeApexValue
                 RespectSchemeOnly      = $localRespectSchemeOnly
                 Resume                 = $localResume

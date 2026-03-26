@@ -157,6 +157,7 @@ Le dossier `output/` contient :
 - `-RespectSchemeOnly` : force le respect strict du schéma explicite
 - `-ExportHtml`, `-ExportCsv`, `-ExportJson` : contrôle des exports de rapport
 - `-Resume` : réutilise les sorties normalisées d'une exécution précédente quand le scope est identique
+- Dans `02-run-settings.json`, les champs booléens doivent être des valeurs JSON `true` / `false` sans guillemets.
 
 ## Lanceur visuel
 
