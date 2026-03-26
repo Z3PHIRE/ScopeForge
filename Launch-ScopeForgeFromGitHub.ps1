@@ -61,7 +61,7 @@ foreach ($relativePath in $filesToFetch) {
     Invoke-WebRequest -Uri $uri.AbsoluteUri -Headers @{ 'User-Agent' = 'ScopeForge-Bootstrap/1.0' } -OutFile $targetPath -TimeoutSec 60
 }
 
-if ($IsWindows) {
+if ($env:OS -eq 'Windows_NT') {
     foreach ($scriptPath in @(
             (Join-Path $BootstrapRoot 'ScopeForge.ps1'),
             (Join-Path $BootstrapRoot 'Launch-ScopeForge.ps1'),
