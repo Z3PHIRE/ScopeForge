@@ -282,4 +282,121 @@ Describe 'ScopeForge launcher boolean handling' {
             Show-ErrorSummaryPanel -Result $result
         }
     }
+
+    Context 'Run manifest and rerun helpers' {
+        BeforeEach {
+            Mock Get-LauncherStorageRoot { Join-Path $TestDrive 'storage' }
+            Mock Read-ScopeFile {
+                @([pscustomobject]@{
+                    Id              = 'scope-001'
+                    Type            = 'Domain'
+                    NormalizedValue = 'example.com'
+                    Exclusions      = @()
+                })
+            }
+            Mock Get-LauncherRepoVersionDescriptor {
+                [pscustomobject]@{
+                    Source    = 'git'
+                    GitCommit = 'abc1234'
+                }
+            }
+            Mock Get-LauncherToolSnapshot {
+                @([pscustomobject]@{
+                    Name       = 'httpx'
+                    Binary     = 'httpx.exe'
+                    BinaryPath = 'C:\Tools\httpx.exe'
+                    Version    = 'httpx 1.7.0'
+                })
+            }
+        }
+
+        It 'writes a run manifest plus frozen inputs and registers it in the catalog' {
+            $outputDir = Join-Path $TestDrive 'output'
+            $scopeFile = Join-Path $TestDrive 'scope.json'
+            Set-Content -LiteralPath $scopeFile -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+
+            $runConfig = @{
+                RunId               = 'run-001'
+                ScopeFile           = $scopeFile
+                ProgramName         = 'demo'
+                OutputDir           = $outputDir
+                Depth               = 3
+                UniqueUserAgent     = 'ua-test'
+                Threads             = 10
+                TimeoutSeconds      = 30
+                EnableGau           = $true
+                EnableWaybackUrls   = $true
+                EnableHakrawler     = $true
+                NoInstall           = $false
+                Quiet               = $false
+                IncludeApex         = $false
+                RespectSchemeOnly   = $false
+                Resume              = $false
+                OpenReportOnFinish  = $true
+            }
+
+            $summary = [pscustomobject]@{
+                ScopeItemCount          = 1
+                ExcludedItemCount       = 0
+                DiscoveredHostCount     = 2
+                LiveHostCount           = 1
+                LiveTargetCount         = 1
+                DiscoveredUrlCount      = 2
+                InterestingUrlCount     = 1
+                ProtectedInterestingCount = 1
+                ErrorCount              = 0
+            }
+            $result = [pscustomobject]@{
+                ProgramName = 'demo'
+                OutputDir   = $outputDir
+                Summary     = $summary
+            }
+
+            $manifest = Save-LauncherRunManifest -RunConfig $runConfig -Result $result -RunStartedAtUtc '2026-03-26T12:00:00Z' -RunEndedAtUtc '2026-03-26T12:05:00Z'
+
+            if (-not (Test-Path -LiteralPath (Get-LauncherRunManifestPath -OutputDir $outputDir))) { throw 'Expected run-manifest.json to exist.' }
+            if (-not (Test-Path -LiteralPath (Get-LauncherFrozenScopePath -OutputDir $outputDir))) { throw 'Expected frozen scope file to exist.' }
+            if (-not (Test-Path -LiteralPath (Get-LauncherFrozenSettingsPath -OutputDir $outputDir))) { throw 'Expected frozen settings file to exist.' }
+            if (-not (Test-Path -LiteralPath $manifest.CatalogPath)) { throw 'Expected a catalog copy of the manifest to exist.' }
+            if ($manifest.RepoVersion.GitCommit -ne 'abc1234') { throw 'Expected manifest to capture repo version metadata.' }
+            if ($manifest.ToolSnapshot[0].Version -ne 'httpx 1.7.0') { throw 'Expected manifest to capture tool snapshot metadata.' }
+        }
+
+        It 'creates a rerun config with a fresh output directory and frozen scope' {
+            $frozenScopeFile = Join-Path $TestDrive 'scope-frozen.json'
+            Set-Content -LiteralPath $frozenScopeFile -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+
+            $manifest = [pscustomobject]@{
+                RunId           = 'run-parent'
+                ProgramName     = 'demo'
+                OutputDir       = 'C:\Previous\Run'
+                FrozenScopeFile = $frozenScopeFile
+                ManifestPath    = (Join-Path $TestDrive 'run-manifest.json')
+                RunSettings     = [pscustomobject]@{
+                    ProgramName         = 'demo'
+                    Depth               = 3
+                    UniqueUserAgent     = 'ua-test'
+                    Threads             = 10
+                    TimeoutSeconds      = 30
+                    EnableGau           = $true
+                    EnableWaybackUrls   = $false
+                    EnableHakrawler     = $true
+                    NoInstall           = $false
+                    Quiet               = $false
+                    IncludeApex         = $false
+                    RespectSchemeOnly   = $true
+                    Resume              = $false
+                    OpenReportOnFinish  = $true
+                }
+            }
+
+            $rerunConfig = New-LauncherRerunConfigFromManifest -Manifest $manifest
+
+            if ($rerunConfig.OutputDir -eq $manifest.OutputDir) { throw 'Expected rerun output directory to be new.' }
+            if ($rerunConfig.ParentRunId -ne 'run-parent') { throw 'Expected rerun config to keep parent run id.' }
+            if ($rerunConfig.ScopeFile -ne $frozenScopeFile) { throw 'Expected rerun config to use the frozen scope file.' }
+            if ($rerunConfig.RespectSchemeOnly -ne $true) { throw 'Expected rerun config to preserve boolean settings.' }
+            if ($rerunConfig.Quiet.GetType().FullName -ne 'System.Boolean') { throw 'Expected rerun Quiet to stay a native boolean.' }
+        }
+    }
 }

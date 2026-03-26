@@ -1,4 +1,5 @@
 [CmdletBinding()]
+[CmdletBinding()]
 param(
     [string]$ScopeFile,
     [int]$Depth = 3,

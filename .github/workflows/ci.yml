@@ -14,6 +14,7 @@ jobs:
         shell: pwsh
         run: |
           $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\Launch-ScopeForge.ps1), [ref]$null, [ref]$null)
+          $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\Launch-ScopeForgeFromGitHub.ps1), [ref]$null, [ref]$null)
           $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\ScopeForge.ps1), [ref]$null, [ref]$null)
 
       - name: Run Pester

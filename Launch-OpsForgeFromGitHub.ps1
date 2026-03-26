@@ -4,7 +4,7 @@ param(
     [string]$RepositoryName = 'OpsForge',
     [string]$Branch = 'main',
     [string]$BootstrapRoot,
-    [switch]$ForceRefresh,
+    [Alias('Update')][switch]$ForceRefresh,
     [string]$ScopeFile,
     [string]$ProgramName,
     [string]$OutputDir,
@@ -21,6 +21,7 @@ param(
     [switch]$RespectSchemeOnly,
     [switch]$Resume,
     [switch]$ConsoleMode,
+    [switch]$RerunPrevious,
     [bool]$OpenReportOnFinish = $true,
     [switch]$NonInteractive
 )
@@ -29,7 +30,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 if (-not $BootstrapRoot) {
-    $BootstrapRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'ScopeForge-Bootstrap'
+    $BootstrapRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("{0}-Bootstrap" -f $RepositoryName)
 }
 
 $baseRaw = "https://raw.githubusercontent.com/$RepositoryOwner/$RepositoryName/$Branch"
@@ -96,10 +97,14 @@ foreach ($name in @('ScopeFile', 'ProgramName', 'OutputDir', 'Depth', 'UniqueUse
     }
 }
 
-foreach ($name in @('NoInstall', 'Quiet', 'IncludeApex', 'RespectSchemeOnly', 'Resume', 'ConsoleMode', 'NonInteractive')) {
+foreach ($name in @('NoInstall', 'Quiet', 'IncludeApex', 'RespectSchemeOnly', 'Resume', 'ConsoleMode', 'RerunPrevious', 'NonInteractive')) {
     if ($PSBoundParameters.ContainsKey($name) -and $PSBoundParameters[$name]) {
         $launcherArgs += "-$name"
     }
+}
+
+if ($VerbosePreference -eq 'Continue') {
+    $launcherArgs += '-Verbose'
 }
 
 & $pwshCommand.Source @launcherArgs

@@ -16,6 +16,8 @@ param(
     [switch]$RespectSchemeOnly,
     [switch]$Resume,
     [switch]$ConsoleMode,
+    [switch]$RerunPrevious,
+    [string]$RerunManifestPath,
     [bool]$OpenReportOnFinish = $true,
     [switch]$NonInteractive
 )
@@ -237,8 +239,13 @@ function Write-LauncherKeyValue {
     )
 
     $displayValue = if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) { '-' } else { [string]$Value }
-    $format = "  {0,-$Padding}: {1}"
-    Write-Host ($format -f $Key, $displayValue) -ForegroundColor $Color
+    $prefix = ("  {0,-$Padding}: " -f $Key)
+    $valueWidth = [Math]::Max((Get-LauncherConsoleWidth) - $prefix.Length - 2, 24)
+    $wrappedLines = @(Split-LauncherWrappedText -Value $displayValue -Width $valueWidth)
+    for ($lineIndex = 0; $lineIndex -lt $wrappedLines.Count; $lineIndex++) {
+        $linePrefix = if ($lineIndex -eq 0) { $prefix } else { ''.PadRight($prefix.Length, ' ') }
+        Write-Host ($linePrefix + $wrappedLines[$lineIndex]) -ForegroundColor $Color
+    }
 }
 
 function Write-LauncherLink {
@@ -742,10 +749,65 @@ function Show-OutputPaths {
     Write-Host '  Quick actions' -ForegroundColor Cyan
     Write-LauncherLink -Label 'Open report.html' -Path (Join-Path $Result.OutputDir 'reports/report.html')
     Write-LauncherLink -Label 'Open triage.md' -Path (Join-Path $Result.OutputDir 'reports/triage.md')
+    Write-LauncherLink -Label 'Open run-manifest.json' -Path (Join-Path $Result.OutputDir 'reports/run-manifest.json')
+    Write-LauncherLink -Label 'Open scope-frozen.json' -Path (Join-Path $Result.OutputDir 'reports/scope-frozen.json')
+    Write-LauncherLink -Label 'Open run-settings-frozen.json' -Path (Join-Path $Result.OutputDir 'reports/run-settings-frozen.json')
     Write-LauncherLink -Label 'Open interesting_urls.json' -Path (Join-Path $Result.OutputDir 'normalized/interesting_urls.json')
     Write-LauncherLink -Label 'Open interesting_families.json' -Path (Join-Path $Result.OutputDir 'normalized/interesting_families.json')
     Write-LauncherLink -Label 'Open errors.log' -Path (Join-Path $Result.OutputDir 'logs/errors.log')
     Write-LauncherLink -Label 'Open tools.log' -Path (Join-Path $Result.OutputDir 'logs/tools.log')
+}
+
+function Show-LauncherInvokeDebugPanel {
+    param(
+        [Parameter(Mandatory)][hashtable]$RunConfig,
+        [Parameter(Mandatory)][hashtable]$InvokeParams
+    )
+
+    if ($VerbosePreference -ne 'Continue') { return }
+
+    $switchNames = @('NoInstall', 'Quiet', 'IncludeApex', 'RespectSchemeOnly', 'ExportHtml', 'ExportCsv', 'ExportJson', 'Resume')
+    $rows = @(
+        foreach ($name in @('EnableGau', 'EnableWaybackUrls', 'EnableHakrawler') + $switchNames) {
+            $runValue = if ($RunConfig.ContainsKey($name)) { $RunConfig[$name] } else { $null }
+            $runType = if ($null -eq $runValue) { '-' } else { $runValue.GetType().Name }
+            $invokeValue = if ($InvokeParams.ContainsKey($name)) { $InvokeParams[$name] } elseif ($switchNames -contains $name) { '<omitted>' } else { '-' }
+            $invokeType = if ($InvokeParams.ContainsKey($name)) { $InvokeParams[$name].GetType().Name } else { '-' }
+            [pscustomobject]@{
+                Field      = $name
+                RunType    = $runType
+                RunValue   = $(if ($null -eq $runValue) { '-' } else { (ConvertTo-LauncherCellText -Value $runValue) })
+                InvokeType = $invokeType
+                InvokeValue = $(if ($null -eq $invokeValue) { '-' } else { (ConvertTo-LauncherCellText -Value $invokeValue) })
+            }
+        }
+    )
+
+    Write-LauncherSection -Title 'Invoke debug'
+    Write-LauncherTable -Rows $rows -Columns @('Field', 'RunType', 'RunValue', 'InvokeType', 'InvokeValue') -Widths @{ Field = 18; RunType = 12; RunValue = 14; InvokeType = 12; InvokeValue = 14 }
+}
+
+function Show-NextActionsPanel {
+    param([Parameter(Mandatory)][pscustomobject]$Result)
+
+    $protectedCount = @($Result.LiveTargets | Where-Object { $_.StatusCode -in 401, 403 }).Count
+    $topCategory = $Result.Summary.TopInterestingCategories | Select-Object -First 1
+    $topFamily = $Result.Summary.TopInterestingFamilies | Select-Object -First 1
+
+    Write-LauncherSection -Title 'Next actions'
+    if ($protectedCount -gt 0) {
+        Write-Host ("  Revoir les endpoints proteges: {0} cible(s) 401/403." -f $protectedCount) -ForegroundColor Yellow
+    }
+    if ($topCategory) {
+        Write-Host ("  Priorite categorie: {0} ({1})" -f $topCategory.Category, $topCategory.Count) -ForegroundColor Gray
+    }
+    if ($topFamily) {
+        Write-Host ("  Priorite famille  : {0} ({1})" -f $topFamily.Family, $topFamily.Count) -ForegroundColor Gray
+    }
+    if ($Result.Errors -and $Result.Errors.Count -gt 0) {
+        Write-Host "  Verifie errors.log et tools.log avant d'elargir le run." -ForegroundColor Yellow
+    }
+    Write-Host ("  Rapport HTML      : {0}" -f (Join-Path $Result.OutputDir 'reports/report.html')) -ForegroundColor Green
 }
 
 function Get-LauncherErrorRecommendation {
@@ -769,7 +831,7 @@ function Show-ErrorSummaryPanel {
     Write-Host ("  Total erreurs non fatales: {0}" -f $Result.Errors.Count) -ForegroundColor Yellow
     $groupRows = @(
         $Result.Errors |
-        Group-Object -Property @{ Expression = { $_.Phase } }, @{ Expression = { if ($_.Tool) { $_.Tool } else { '-' } } } |
+        Group-Object -Property Phase, Tool |
         Sort-Object -Property Count -Descending |
         Select-Object -First 8 |
         ForEach-Object {
@@ -786,7 +848,7 @@ function Show-ErrorSummaryPanel {
     }
     $groupedRows = @(
         $Result.Errors |
-        Group-Object -Property { '{0}|{1}' -f $_.Phase, $(if ($_.Tool) { $_.Tool } else { '-' }) } |
+        Group-Object -Property Phase, Tool |
         Sort-Object Count -Descending |
         ForEach-Object {
             $sample = $_.Group | Select-Object -First 1
@@ -846,11 +908,419 @@ function Get-LauncherStorageRoot {
 }
 
 function Get-LauncherDefaultOutputDir {
+    $runsRoot = Get-LauncherRunsRoot
+    return (Get-LauncherUniqueRunDirectory)
+}
+
+function Get-LauncherRunsRoot {
     $runsRoot = Join-Path (Get-LauncherStorageRoot) 'runs'
     if (-not (Test-Path -LiteralPath $runsRoot)) {
         $null = New-Item -ItemType Directory -Path $runsRoot -Force
     }
-    return (Join-Path $runsRoot ([DateTime]::Now.ToString('yyyyMMdd-HHmmss')))
+    return $runsRoot
+}
+
+function Get-LauncherRunCatalogRoot {
+    $catalogRoot = Join-Path (Get-LauncherRunsRoot) '_catalog'
+    if (-not (Test-Path -LiteralPath $catalogRoot)) {
+        $null = New-Item -ItemType Directory -Path $catalogRoot -Force
+    }
+    return $catalogRoot
+}
+
+function Get-LauncherUniqueRunDirectory {
+    param([string]$Suffix = '')
+
+    $runsRoot = Get-LauncherRunsRoot
+    $baseName = [DateTime]::Now.ToString('yyyyMMdd-HHmmss')
+    $candidatePath = Join-Path $runsRoot ($baseName + $Suffix)
+    $counter = 1
+    while (Test-Path -LiteralPath $candidatePath) {
+        $candidatePath = Join-Path $runsRoot ("{0}{1}-{2}" -f $baseName, $Suffix, $counter)
+        $counter++
+    }
+    return $candidatePath
+}
+
+function Get-LauncherRunManifestPath {
+    param([Parameter(Mandatory)][string]$OutputDir)
+    return (Join-Path $OutputDir 'reports/run-manifest.json')
+}
+
+function Get-LauncherFrozenScopePath {
+    param([Parameter(Mandatory)][string]$OutputDir)
+    return (Join-Path $OutputDir 'reports/scope-frozen.json')
+}
+
+function Get-LauncherFrozenSettingsPath {
+    param([Parameter(Mandatory)][string]$OutputDir)
+    return (Join-Path $OutputDir 'reports/run-settings-frozen.json')
+}
+
+function Get-LauncherVersionInfo {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    $item = Get-Item -LiteralPath $Path
+    return [pscustomobject]@{
+        Path             = $item.FullName
+        LastWriteTime    = $item.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')
+        LastWriteTimeUtc = $item.LastWriteTimeUtc.ToString('o')
+    }
+}
+
+function Test-LauncherBootstrapContext {
+    if ($env:SCOPEFORGE_BOOTSTRAP_ROOT) { return $true }
+    $tempRoot = [System.IO.Path]::GetTempPath()
+    return $PSScriptRoot.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) -and $PSScriptRoot.Contains('-Bootstrap')
+}
+
+function Show-LauncherVersionPanel {
+    $launcherInfo = Get-LauncherVersionInfo -Path $PSCommandPath
+    $engineInfo = Get-LauncherVersionInfo -Path (Join-Path $PSScriptRoot 'ScopeForge.ps1')
+
+    Write-LauncherSection -Title 'Version'
+    if ($launcherInfo) {
+        Write-LauncherKeyValue -Key 'LauncherPath' -Value $launcherInfo.Path
+        Write-LauncherKeyValue -Key 'LauncherUpdated' -Value $launcherInfo.LastWriteTime
+    }
+    if ($engineInfo) {
+        Write-LauncherKeyValue -Key 'EnginePath' -Value $engineInfo.Path
+        Write-LauncherKeyValue -Key 'EngineUpdated' -Value $engineInfo.LastWriteTime
+    }
+    if (Test-LauncherBootstrapContext) {
+        Write-Host ''
+        Write-Host '  Bootstrap' -ForegroundColor Cyan
+        Write-LauncherKeyValue -Key 'BootstrapRoot' -Value $(if ($env:SCOPEFORGE_BOOTSTRAP_ROOT) { $env:SCOPEFORGE_BOOTSTRAP_ROOT } else { $PSScriptRoot })
+        Write-LauncherKeyValue -Key 'BootstrapSource' -Value $(if ($env:SCOPEFORGE_BOOTSTRAP_SOURCE) { $env:SCOPEFORGE_BOOTSTRAP_SOURCE } else { 'cached temp bootstrap detected' })
+        Write-LauncherKeyValue -Key 'BootstrapUpdated' -Value $(if ($env:SCOPEFORGE_BOOTSTRAP_UPDATED_AT) { $env:SCOPEFORGE_BOOTSTRAP_UPDATED_AT } else { $(if ($launcherInfo) { $launcherInfo.LastWriteTimeUtc } else { '-' }) })
+        Write-LauncherKeyValue -Key 'BootstrapStatus' -Value $(if ($env:SCOPEFORGE_BOOTSTRAP_REFRESH_REASON) { $env:SCOPEFORGE_BOOTSTRAP_REFRESH_REASON } else { 'cached bootstrap reused' })
+        Write-Host '  Refresh hint     : relance le bootstrap avec -Update pour forcer le refresh.' -ForegroundColor Yellow
+    }
+}
+
+function Get-LauncherRunSettingsSnapshot {
+    param([Parameter(Mandatory)][hashtable]$RunConfig)
+
+    $snapshot = [ordered]@{}
+    foreach ($name in @('PresetName', 'PresetDescription', 'ProfileName', 'ProfileDescription', 'ProfileSourceExplanation', 'ProgramName', 'OutputDir', 'Depth', 'UniqueUserAgent', 'Threads', 'TimeoutSeconds', 'EnableGau', 'EnableWaybackUrls', 'EnableHakrawler', 'NoInstall', 'Quiet', 'IncludeApex', 'RespectSchemeOnly', 'Resume', 'OpenReportOnFinish')) {
+        if ($RunConfig.ContainsKey($name)) {
+            $snapshot[$name] = $RunConfig[$name]
+        }
+    }
+    return [pscustomobject]$snapshot
+}
+
+function Get-LauncherToolSnapshot {
+    param([Parameter(Mandatory)][string]$OutputDir)
+
+    $binRoot = Join-Path $OutputDir 'tools/bin'
+    if (-not (Test-Path -LiteralPath $binRoot)) { return @() }
+
+    function Get-LauncherToolVersionText {
+        param([Parameter(Mandatory)][string]$BinaryPath)
+
+        foreach ($arguments in @(@('--version'), @('-version'), @('version'))) {
+            try {
+                $output = & $BinaryPath @arguments 2>&1
+                $firstLine = @($output | Where-Object { $_ } | Select-Object -First 1)
+                if ($firstLine.Count -gt 0) {
+                    return ([string]$firstLine[0]).Trim()
+                }
+            } catch {
+            }
+        }
+        return $null
+    }
+
+    return @(
+        foreach ($toolName in @('subfinder', 'httpx', 'katana', 'gau', 'waybackurls', 'hakrawler')) {
+            $candidate = Get-ChildItem -LiteralPath $binRoot -File | Where-Object { $_.BaseName -eq $toolName -or $_.BaseName -like "$toolName.*" } | Sort-Object Name | Select-Object -First 1
+            if ($candidate) {
+                $versionInfo = $candidate.VersionInfo
+                [pscustomobject]@{
+                    Name             = $toolName
+                    Binary           = $candidate.Name
+                    BinaryPath       = $candidate.FullName
+                    ProductVersion   = $(if ($versionInfo -and $versionInfo.ProductVersion) { $versionInfo.ProductVersion } else { $null })
+                    FileVersion      = $(if ($versionInfo -and $versionInfo.FileVersion) { $versionInfo.FileVersion } else { $null })
+                    Version          = Get-LauncherToolVersionText -BinaryPath $candidate.FullName
+                    LastWriteTimeUtc = $candidate.LastWriteTimeUtc.ToString('o')
+                }
+            }
+        }
+    )
+}
+
+function Get-LauncherRepoVersionDescriptor {
+    $gitCommand = Get-Command -Name 'git' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($gitCommand) {
+        try {
+            $commit = (& $gitCommand.Source -C $PSScriptRoot rev-parse --short HEAD 2>$null | Select-Object -First 1)
+            if ($commit) {
+                return [pscustomobject]@{
+                    Source    = 'git'
+                    GitCommit = ([string]$commit).Trim()
+                }
+            }
+        } catch {
+        }
+    }
+
+    return [pscustomobject]@{
+        Source    = 'file-timestamp'
+        GitCommit = $null
+    }
+}
+
+function Save-LauncherRunManifest {
+    param(
+        [Parameter(Mandatory)][hashtable]$RunConfig,
+        [Parameter(Mandatory)][pscustomobject]$Result,
+        [Parameter(Mandatory)][string]$RunStartedAtUtc,
+        [Parameter(Mandatory)][string]$RunEndedAtUtc
+    )
+
+    $manifestPath = Get-LauncherRunManifestPath -OutputDir $Result.OutputDir
+    $frozenScopePath = Get-LauncherFrozenScopePath -OutputDir $Result.OutputDir
+    $frozenSettingsPath = Get-LauncherFrozenSettingsPath -OutputDir $Result.OutputDir
+    $reportsDirectory = Split-Path -Parent $manifestPath
+    if (-not (Test-Path -LiteralPath $reportsDirectory)) {
+        $null = New-Item -ItemType Directory -Path $reportsDirectory -Force
+    }
+
+    if ($RunConfig.ContainsKey('ScopeFile') -and $RunConfig.ScopeFile -and (Test-Path -LiteralPath $RunConfig.ScopeFile)) {
+        Set-Content -LiteralPath $frozenScopePath -Value (Get-Content -LiteralPath $RunConfig.ScopeFile -Raw -Encoding utf8) -Encoding utf8
+    } elseif ($RunConfig.ContainsKey('ScopePreview')) {
+        Set-Content -LiteralPath $frozenScopePath -Value ($RunConfig.ScopePreview | ConvertTo-Json -Depth 50) -Encoding utf8
+    }
+
+    $settingsSnapshot = Get-LauncherRunSettingsSnapshot -RunConfig $RunConfig
+    Set-Content -LiteralPath $frozenSettingsPath -Value ($settingsSnapshot | ConvertTo-Json -Depth 20) -Encoding utf8
+
+    $launcherInfo = Get-LauncherVersionInfo -Path $PSCommandPath
+    $engineInfo = Get-LauncherVersionInfo -Path (Join-Path $PSScriptRoot 'ScopeForge.ps1')
+    $repoVersion = Get-LauncherRepoVersionDescriptor
+    $runId = if ($RunConfig.ContainsKey('RunId') -and $RunConfig.RunId) { [string]$RunConfig.RunId } else { [Guid]::NewGuid().ToString('N') }
+    $summary = $Result.Summary
+
+    $manifest = [ordered]@{
+        ManifestVersion    = 1
+        RunId             = $runId
+        ParentRunId       = $(if ($RunConfig.ContainsKey('ParentRunId')) { $RunConfig.ParentRunId } else { $null })
+        ProgramName       = $Result.ProgramName
+        StartTimeUtc      = $RunStartedAtUtc
+        EndTimeUtc        = $RunEndedAtUtc
+        OutputDir         = $Result.OutputDir
+        OriginalScopeFile = $(if ($RunConfig.ContainsKey('ScopeFile')) { $RunConfig.ScopeFile } else { $null })
+        FrozenScopeFile   = $frozenScopePath
+        FrozenSettingsFile = $frozenSettingsPath
+        RunSettings       = $settingsSnapshot
+        Summary           = [ordered]@{
+            ScopeItemCount        = $summary.ScopeItemCount
+            ExcludedItemCount     = $summary.ExcludedItemCount
+            DiscoveredHostCount   = $summary.DiscoveredHostCount
+            LiveHostCount         = $summary.LiveHostCount
+            LiveTargetCount       = $summary.LiveTargetCount
+            DiscoveredUrlCount    = $summary.DiscoveredUrlCount
+            InterestingUrlCount   = $summary.InterestingUrlCount
+            ProtectedInterestingCount = $summary.ProtectedInterestingCount
+            ErrorCount            = $summary.ErrorCount
+        }
+        RepoVersion       = [ordered]@{
+            Source              = $repoVersion.Source
+            GitCommit           = $repoVersion.GitCommit
+            LauncherPath        = $(if ($launcherInfo) { $launcherInfo.Path } else { $null })
+            LauncherUpdatedUtc  = $(if ($launcherInfo) { $launcherInfo.LastWriteTimeUtc } else { $null })
+            EnginePath          = $(if ($engineInfo) { $engineInfo.Path } else { $null })
+            EngineUpdatedUtc    = $(if ($engineInfo) { $engineInfo.LastWriteTimeUtc } else { $null })
+        }
+        ToolSnapshot      = @(Get-LauncherToolSnapshot -OutputDir $Result.OutputDir)
+        Reports           = [ordered]@{
+            ManifestPath = $manifestPath
+            ReportHtml   = Join-Path $Result.OutputDir 'reports/report.html'
+            TriageMarkdown = Join-Path $Result.OutputDir 'reports/triage.md'
+            SummaryJson  = Join-Path $Result.OutputDir 'reports/summary.json'
+        }
+    }
+
+    Set-Content -LiteralPath $manifestPath -Value ($manifest | ConvertTo-Json -Depth 50) -Encoding utf8
+    $catalogPath = Join-Path (Get-LauncherRunCatalogRoot) ("{0}.json" -f $runId)
+    Set-Content -LiteralPath $catalogPath -Value ($manifest | ConvertTo-Json -Depth 50) -Encoding utf8
+    $manifest['CatalogPath'] = $catalogPath
+    return [pscustomobject]$manifest
+}
+
+function Read-LauncherStoredRunManifest {
+    param([Parameter(Mandatory)][string]$ManifestPath)
+
+    if (-not (Test-Path -LiteralPath $ManifestPath)) {
+        throw "Manifest introuvable: $ManifestPath"
+    }
+
+    $manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding utf8 | ConvertFrom-Json -Depth 50
+    $manifest | Add-Member -NotePropertyName ManifestPath -NotePropertyValue $ManifestPath -Force
+    return $manifest
+}
+
+function Get-LauncherStoredRuns {
+    $catalogRoot = Get-LauncherRunCatalogRoot
+    $catalogFiles = @(Get-ChildItem -LiteralPath $catalogRoot -Filter *.json -File -ErrorAction SilentlyContinue)
+    $manifests = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($file in $catalogFiles) {
+        try {
+            $manifest = Get-Content -LiteralPath $file.FullName -Raw -Encoding utf8 | ConvertFrom-Json -Depth 50
+            $manifest | Add-Member -NotePropertyName ManifestPath -NotePropertyValue $file.FullName -Force
+            $manifests.Add($manifest) | Out-Null
+        } catch {
+        }
+    }
+
+    if ($manifests.Count -eq 0) {
+        foreach ($runDirectory in (Get-ChildItem -LiteralPath (Get-LauncherRunsRoot) -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne '_catalog' })) {
+            $manifestPath = Join-Path $runDirectory.FullName 'reports/run-manifest.json'
+            if (-not (Test-Path -LiteralPath $manifestPath)) { continue }
+            try {
+                $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json -Depth 50
+                $manifest | Add-Member -NotePropertyName ManifestPath -NotePropertyValue $manifestPath -Force
+                $manifests.Add($manifest) | Out-Null
+            } catch {
+            }
+        }
+    }
+
+    return @(
+        $manifests |
+        Sort-Object -Property @{ Expression = { [DateTimeOffset](if ($_.EndTimeUtc) { $_.EndTimeUtc } else { '1970-01-01T00:00:00Z' }) }; Descending = $true }
+    )
+}
+
+function Show-LauncherStoredRuns {
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Runs)
+
+    if (-not $Runs -or $Runs.Count -eq 0) {
+        Write-LauncherSection -Title 'Relancer un run'
+        Write-Host 'Aucun run précédent détecté dans le stockage ScopeForge.' -ForegroundColor Yellow
+        return
+    }
+
+    $rows = @()
+    for ($index = 0; $index -lt $Runs.Count; $index++) {
+        $run = $Runs[$index]
+        $rows += [pscustomobject]@{
+            Index      = ($index + 1)
+            Date       = $(if ($run.EndTimeUtc) { ([DateTimeOffset]$run.EndTimeUtc).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss') } else { '-' })
+            Program    = $(if ($run.ProgramName) { $run.ProgramName } else { '-' })
+            OutputDir  = $(if ($run.OutputDir) { $run.OutputDir } else { '-' })
+            Interesting = $(if ($run.Summary -and $run.Summary.InterestingUrlCount -ne $null) { $run.Summary.InterestingUrlCount } else { 0 })
+            Errors     = $(if ($run.Summary -and $run.Summary.ErrorCount -ne $null) { $run.Summary.ErrorCount } else { 0 })
+            Report     = $(if ($run.Reports -and $run.Reports.ReportHtml) { $run.Reports.ReportHtml } else { '-' })
+        }
+    }
+
+    Write-LauncherSection -Title 'Relancer un run'
+    Write-LauncherTable -Rows $rows -Columns @('Index', 'Date', 'Program', 'OutputDir', 'Interesting', 'Errors', 'Report') -Widths @{ Index = 6; Date = 19; Program = 18; OutputDir = 32; Interesting = 11; Errors = 8; Report = 32 }
+}
+
+function Select-LauncherStoredRun {
+    $runs = @(Get-LauncherStoredRuns)
+    Show-LauncherStoredRuns -Runs $runs
+    if ($runs.Count -eq 0) { return $null }
+
+    $allowedChoices = @('0') + @(1..$runs.Count | ForEach-Object { [string]$_ })
+    $choice = Read-LauncherChoice -Prompt "Choisis un run a relancer (0=annuler)" -Allowed $allowedChoices -Default '0'
+    if ($choice -eq '0') { return $null }
+    return $runs[[int]$choice - 1]
+}
+
+function New-LauncherRerunConfigFromManifest {
+    param(
+        [Parameter(Mandatory)][pscustomobject]$Manifest,
+        [switch]$ReviewInDocuments
+    )
+
+    $settings = if ($Manifest.RunSettings) { $Manifest.RunSettings } else { [pscustomobject]@{} }
+    $newOutputDir = Get-LauncherUniqueRunDirectory -Suffix '-rerun'
+    $scopeFile = if ($Manifest.FrozenScopeFile -and (Test-Path -LiteralPath $Manifest.FrozenScopeFile)) { $Manifest.FrozenScopeFile } elseif ($Manifest.OriginalScopeFile -and (Test-Path -LiteralPath $Manifest.OriginalScopeFile)) { $Manifest.OriginalScopeFile } else { $null }
+    if (-not $scopeFile) {
+        throw "Impossible de relancer ce run: scope figé introuvable pour $($Manifest.ProgramName)."
+    }
+
+    $programName = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'ProgramName' -Default $Manifest.ProgramName)
+    $depth = ConvertTo-LauncherInteger -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'Depth' -Default 3) -Name 'depth' -Default 3 -Minimum 1 -Maximum 20
+    $threads = ConvertTo-LauncherInteger -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'Threads' -Default 10) -Name 'threads' -Default 10 -Minimum 1 -Maximum 200
+    $timeoutSeconds = ConvertTo-LauncherInteger -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'TimeoutSeconds' -Default 30) -Name 'timeoutSeconds' -Default 30 -Minimum 5 -Maximum 600
+    $enableGau = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'EnableGau' -Default $true) -Name 'enableGau' -Default $true
+    $enableWaybackUrls = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'EnableWaybackUrls' -Default $true) -Name 'enableWaybackUrls' -Default $true
+    $enableHakrawler = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'EnableHakrawler' -Default $true) -Name 'enableHakrawler' -Default $true
+    $noInstall = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'NoInstall' -Default $false) -Name 'noInstall' -Default $false
+    $quiet = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'Quiet' -Default $false) -Name 'quiet' -Default $false
+    $includeApex = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'IncludeApex' -Default $false) -Name 'includeApex' -Default $false
+    $respectSchemeOnly = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'RespectSchemeOnly' -Default $false) -Name 'respectSchemeOnly' -Default $false
+    $resume = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'Resume' -Default $false) -Name 'resume' -Default $false
+    $openReportOnFinish = ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $settings -Name 'OpenReportOnFinish' -Default $true) -Name 'openReportOnFinish' -Default $true
+    $uniqueUserAgent = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'UniqueUserAgent' -Default '')
+
+    if ($ReviewInDocuments) {
+        $reviewedConfig = Build-DocumentRunConfig -InitialScopeFile $scopeFile -ProgramName $programName -OutputDir $newOutputDir -Depth $depth -UniqueUserAgent $uniqueUserAgent -Threads $threads -TimeoutSeconds $timeoutSeconds -EnableGau $enableGau -EnableWaybackUrls $enableWaybackUrls -EnableHakrawler $enableHakrawler -NoInstall $noInstall -Quiet $quiet -IncludeApex $includeApex -RespectSchemeOnly $respectSchemeOnly -Resume $resume -OpenReportOnFinish $openReportOnFinish
+        $reviewedConfig['ParentRunId'] = $Manifest.RunId
+        $reviewedConfig['RerunSourceManifest'] = $Manifest.ManifestPath
+        return $reviewedConfig
+    }
+
+    $scopePreview = Read-ScopeFile -Path $scopeFile -IncludeApex:$includeApex
+    return @{
+        PresetName             = Get-LauncherDocumentProperty -InputObject $settings -Name 'PresetName' -Default ''
+        PresetDescription      = Get-LauncherDocumentProperty -InputObject $settings -Name 'PresetDescription' -Default ''
+        ProfileName            = Get-LauncherDocumentProperty -InputObject $settings -Name 'ProfileName' -Default ''
+        ProfileDescription     = Get-LauncherDocumentProperty -InputObject $settings -Name 'ProfileDescription' -Default ''
+        ProfileSourceExplanation = Get-LauncherDocumentProperty -InputObject $settings -Name 'ProfileSourceExplanation' -Default ''
+        ScopeFile              = $scopeFile
+        ProgramName            = $programName
+        OutputDir              = $newOutputDir
+        Depth                  = $depth
+        UniqueUserAgent        = $uniqueUserAgent
+        Threads                = $threads
+        TimeoutSeconds         = $timeoutSeconds
+        EnableGau              = $enableGau
+        EnableWaybackUrls      = $enableWaybackUrls
+        EnableHakrawler        = $enableHakrawler
+        NoInstall              = $noInstall
+        Quiet                  = $quiet
+        IncludeApex            = $includeApex
+        RespectSchemeOnly      = $respectSchemeOnly
+        Resume                 = $resume
+        OpenReportOnFinish     = $openReportOnFinish
+        ParentRunId            = $Manifest.RunId
+        RerunSourceManifest    = $Manifest.ManifestPath
+        ScopePreview           = $scopePreview
+    }
+}
+
+function Select-LauncherStartupAction {
+    param(
+        [bool]$ConsoleModeDefault = $false,
+        [bool]$AllowRerun = $false
+    )
+
+    if ($ConsoleModeDefault) { return 'console' }
+
+    Write-LauncherSection -Title 'Mode'
+    Write-Host '1. Nouveau run (documents)' -ForegroundColor Gray
+    if ($AllowRerun) {
+        Write-Host '2. Relancer un ancien run' -ForegroundColor Gray
+    }
+    Write-Host '3. Assistant console' -ForegroundColor Gray
+
+    $allowedChoices = @('1', '3')
+    if ($AllowRerun) { $allowedChoices += '2' }
+    $choice = Read-LauncherChoice -Prompt 'Choix' -Allowed $allowedChoices -Default '1'
+    switch ($choice) {
+        '2' { return 'rerun' }
+        '3' { return 'console' }
+        default { return 'documents' }
+    }
 }
 
 function Get-LauncherEditorDefinition {
@@ -1482,7 +1952,7 @@ function Build-InteractiveRunConfig {
         EnableWaybackUrls = $localEnableWaybackUrls
         EnableHakrawler   = $localEnableHakrawler
         NoInstall         = $localNoInstall
-        Quiet             = $Quiet
+        Quiet             = [bool]$Quiet
         IncludeApex       = $localIncludeApex
         RespectSchemeOnly = $localRespectSchemeOnly
         Resume            = $localResume
@@ -1509,6 +1979,8 @@ function Start-ScopeForgeLauncher {
         [switch]$RespectSchemeOnly,
         [switch]$Resume,
         [switch]$ConsoleMode,
+        [switch]$RerunPrevious,
+        [string]$RerunManifestPath,
         [bool]$OpenReportOnFinish = $true,
         [switch]$NonInteractive
     )
@@ -1516,6 +1988,10 @@ function Start-ScopeForgeLauncher {
     $scopeForgePath = Join-Path $PSScriptRoot 'ScopeForge.ps1'
     if (-not (Test-Path -LiteralPath $scopeForgePath)) { throw "ScopeForge.ps1 introuvable à côté du launcher: $scopeForgePath" }
     . $scopeForgePath
+
+    if ($NonInteractive -and $RerunPrevious -and -not $RerunManifestPath) {
+        throw 'Le mode -RerunPrevious nécessite une sélection interactive ou un -RerunManifestPath explicite.'
+    }
 
     $runConfig = @{
         ScopeFile         = $ScopeFile
@@ -1534,19 +2010,48 @@ function Start-ScopeForgeLauncher {
         RespectSchemeOnly = [bool]$RespectSchemeOnly
         Resume            = [bool]$Resume
         OpenReportOnFinish = $OpenReportOnFinish
+        RunId             = [Guid]::NewGuid().ToString('N')
+    }
+
+    if ($NonInteractive -and $RerunManifestPath) {
+        $runConfig = New-LauncherRerunConfigFromManifest -Manifest (Read-LauncherStoredRunManifest -ManifestPath $RerunManifestPath) -ReviewInDocuments:$false
+        if (-not $runConfig.ContainsKey('RunId')) {
+            $runConfig['RunId'] = [Guid]::NewGuid().ToString('N')
+        }
     }
 
     if (-not $NonInteractive) {
         Write-LauncherBanner
-        if ($ConsoleMode) {
-            $runConfig = Build-InteractiveRunConfig -InitialScopeFile $ScopeFile -ProgramName $ProgramName -OutputDir $OutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -EnableGau $EnableGau -EnableWaybackUrls $EnableWaybackUrls -EnableHakrawler $EnableHakrawler -NoInstall ([bool]$NoInstall) -Quiet ([bool]$Quiet) -IncludeApex ([bool]$IncludeApex) -RespectSchemeOnly ([bool]$RespectSchemeOnly) -Resume ([bool]$Resume) -OpenReportOnFinish $OpenReportOnFinish
+        Show-LauncherVersionPanel
+
+        $startupAction = if ($RerunManifestPath -or $RerunPrevious) {
+            'rerun'
         } else {
-            $runConfig = Build-DocumentRunConfig -InitialScopeFile $ScopeFile -ProgramName $ProgramName -OutputDir $OutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -EnableGau $EnableGau -EnableWaybackUrls $EnableWaybackUrls -EnableHakrawler $EnableHakrawler -NoInstall ([bool]$NoInstall) -Quiet ([bool]$Quiet) -IncludeApex ([bool]$IncludeApex) -RespectSchemeOnly ([bool]$RespectSchemeOnly) -Resume ([bool]$Resume) -OpenReportOnFinish $OpenReportOnFinish
+            Select-LauncherStartupAction -ConsoleModeDefault:$ConsoleMode -AllowRerun:([bool](@(Get-LauncherStoredRuns).Count -gt 0))
         }
+
+        switch ($startupAction) {
+            'console' {
+                $runConfig = Build-InteractiveRunConfig -InitialScopeFile $ScopeFile -ProgramName $ProgramName -OutputDir $OutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -EnableGau $EnableGau -EnableWaybackUrls $EnableWaybackUrls -EnableHakrawler $EnableHakrawler -NoInstall ([bool]$NoInstall) -Quiet ([bool]$Quiet) -IncludeApex ([bool]$IncludeApex) -RespectSchemeOnly ([bool]$RespectSchemeOnly) -Resume ([bool]$Resume) -OpenReportOnFinish $OpenReportOnFinish
+            }
+            'rerun' {
+                $selectedRun = if ($RerunManifestPath) { Read-LauncherStoredRunManifest -ManifestPath $RerunManifestPath } else { Select-LauncherStoredRun }
+                if (-not $selectedRun) { return }
+                $reviewInDocuments = if ($RerunManifestPath -and $NonInteractive) { $false } else { Read-LauncherYesNo -Prompt 'Rouvrir les documents avant la relance ?' -Default $false }
+                $runConfig = New-LauncherRerunConfigFromManifest -Manifest $selectedRun -ReviewInDocuments:$reviewInDocuments
+                if (-not $runConfig.ContainsKey('RunId')) {
+                    $runConfig['RunId'] = [Guid]::NewGuid().ToString('N')
+                }
+            }
+            default {
+                $runConfig = Build-DocumentRunConfig -InitialScopeFile $ScopeFile -ProgramName $ProgramName -OutputDir $OutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -EnableGau $EnableGau -EnableWaybackUrls $EnableWaybackUrls -EnableHakrawler $EnableHakrawler -NoInstall ([bool]$NoInstall) -Quiet ([bool]$Quiet) -IncludeApex ([bool]$IncludeApex) -RespectSchemeOnly ([bool]$RespectSchemeOnly) -Resume ([bool]$Resume) -OpenReportOnFinish $OpenReportOnFinish
+            }
+        }
+
         $scopePreview = if ($runConfig.ContainsKey('ScopePreview')) { $runConfig.ScopePreview } else { Read-ScopeFile -Path $runConfig.ScopeFile -IncludeApex:([bool]$runConfig.IncludeApex) }
         Show-ScopePreview -ScopeItems $scopePreview
         Show-LauncherConfigPreview -RunConfig $runConfig
-        if ($ConsoleMode) {
+        if ($startupAction -in @('console', 'rerun') -and -not ($RerunManifestPath -and $NonInteractive)) {
             if (-not (Read-LauncherYesNo -Prompt 'Confirmer le lancement ?' -Default $true)) { return }
         } else {
             Write-Host ''
@@ -1554,9 +2059,38 @@ function Start-ScopeForgeLauncher {
         }
     }
 
-    $invokeParams = Get-LauncherInvokeParams -RunConfig $runConfig
-    $result = Invoke-BugBountyRecon @invokeParams
+    $runStartedAtUtc = [DateTimeOffset]::UtcNow.ToString('o')
+    try {
+        $invokeParams = Get-LauncherInvokeParams -RunConfig $runConfig
+        Show-LauncherInvokeDebugPanel -RunConfig $runConfig -InvokeParams $invokeParams
+        $result = Invoke-BugBountyRecon @invokeParams
+    } catch {
+        $configIssues = @(Get-LauncherConfigIssues -Exception $_.Exception)
+        if ($configIssues.Count -gt 0) {
+            Show-LauncherConfigIssues -Issues $configIssues
+            if (Test-LauncherBootstrapContext) {
+                Write-Host 'Relance le bootstrap avec -Update si tu veux écraser une copie locale potentiellement obsolète.' -ForegroundColor Yellow
+            }
+            return
+        }
+
+        if ($_.Exception.Message -like "*parameter 'Quiet'*" -and $_.Exception.Message -like "*System.String*") {
+            Show-LauncherConfigIssues -Issues @(
+                New-LauncherConfigIssue -Field 'quiet' -Value 'System.String' -Problem 'Un launcher obsolète ou un appel interne invalide a tenté d''envoyer une chaîne vers un bool/switch.' -Example '"quiet": false'
+            )
+            if (Test-LauncherBootstrapContext) {
+                Write-Host 'Relance le bootstrap avec -Update pour retélécharger Launch-ScopeForge.ps1 et ScopeForge.ps1.' -ForegroundColor Yellow
+            }
+            return
+        }
+
+        throw
+    }
+
+    $runManifest = Save-LauncherRunManifest -RunConfig $runConfig -Result $result -RunStartedAtUtc $runStartedAtUtc -RunEndedAtUtc ([DateTimeOffset]::UtcNow.ToString('o'))
+    $result | Add-Member -NotePropertyName RunManifest -NotePropertyValue $runManifest -Force
     Show-RunSummaryDashboard -Result $result
+    Show-NextActionsPanel -Result $result
     Show-InterestingSummary -Result $result
     Show-ErrorSummaryPanel -Result $result
     Show-OutputPaths -Result $result
