@@ -580,6 +580,29 @@ Describe 'ScopeForge launcher boolean handling' {
             if ($items[0].scope_path -ne (Resolve-LauncherScopePath -Path $missingScope)) { throw 'Expected the latest scope update to move to the top of the recent list.' }
         }
 
+        It 'promotes a newly updated recent scope ahead of stale future-dated metadata' {
+            $existingScope = Join-Path $script:fileWorkspace.Active ("{0}-future-existing.json" -f $script:testScopePrefix)
+            $newScope = Join-Path $script:fileWorkspace.Incoming ("{0}-future-new.json" -f $script:testScopePrefix)
+            $null = New-Item -ItemType Directory -Path $script:fileWorkspace.Active -Force
+            $null = New-Item -ItemType Directory -Path $script:fileWorkspace.Incoming -Force
+            Set-Content -LiteralPath $existingScope -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+            Set-Content -LiteralPath $newScope -Encoding utf8 -Value '[{"type":"Domain","value":"new.example.com","exclusions":[]}]'
+
+            $futureTimestamp = '2099-01-01T00:00:00.0000000Z'
+            $futureRecord = New-LauncherRecentScopeRecord -ScopePath $existingScope -DisplayName 'future-existing' -LastOutputDir 'C:\Runs\future' -LastUsedUtc $futureTimestamp
+            $null = Write-LauncherRecentScopes -Items @($futureRecord)
+
+            $null = Update-LauncherRecentScopes -ScopePath $newScope -LastOutputDir 'C:\Runs\new' -DisplayName 'future-new'
+            $items = @(Read-LauncherRecentScopes)
+            $newItem = $items | Where-Object { $_.scope_path -eq (Resolve-LauncherScopePath -Path $newScope) } | Select-Object -First 1
+
+            if (-not $newItem) { throw 'Expected the newly updated scope to be present in recent scopes.' }
+            if ($items[0].scope_path -ne (Resolve-LauncherScopePath -Path $newScope)) { throw 'Expected the newest update to take precedence over older persisted metadata.' }
+            if ([DateTimeOffset]$newItem.last_used_utc -le [DateTimeOffset]$futureTimestamp) {
+                throw 'Expected the new recent-scope update to receive a strictly newer timestamp than the previous top entry.'
+            }
+        }
+
         It 'seeds built-in templates and help files that stay compatible with the scope parser' {
             $templates = @(Get-LauncherScopeTemplateFiles)
             if ($templates.Count -lt 3) { throw 'Expected the built-in minimal, standard and advanced templates to be available.' }
@@ -727,6 +750,34 @@ Describe 'ScopeForge launcher boolean handling' {
             if ($plan.InitialScopeFile -ne (Resolve-LauncherScopePath -Path $activeScope)) { throw 'Expected the selected scope to be preserved for console mode.' }
             if ($plan.OutputDir -ne '.\output\guided') { throw 'Expected the planned output directory to be preserved for console mode.' }
         }
+
+        It 'recovers from a missing selected scope before entering assistant console' {
+            $missingScope = Join-Path $script:fileWorkspace.Active ("{0}-missing-console.json" -f $script:testScopePrefix)
+            $recentScope = Join-Path $script:fileWorkspace.Active ("{0}-recent-console.json" -f $script:testScopePrefix)
+            Set-Content -LiteralPath $recentScope -Encoding utf8 -Value '[{"type":"Domain","value":"recent.example.com","exclusions":[]}]'
+            $null = Update-LauncherRecentScopes -ScopePath $recentScope -LastOutputDir 'C:\Runs\recent-console' -DisplayName 'recent-console'
+
+            $script:guidedChoices = @('12', '2', '12')
+            Mock Show-LauncherScopeSelection { }
+            Mock Write-Host { }
+            Mock Select-LauncherRecentScope {
+                (Read-LauncherRecentScopes | Select-Object -First 1)
+            }
+            Mock Read-LauncherChoice {
+                $current = $script:guidedChoices[0]
+                if ($script:guidedChoices.Count -gt 1) {
+                    $script:guidedChoices = @($script:guidedChoices[1..($script:guidedChoices.Count - 1)])
+                } else {
+                    $script:guidedChoices = @()
+                }
+                return $current
+            }
+
+            $plan = Select-LauncherGuidedStartupPlan -InitialScopeFile $missingScope -OutputDir '.\output\guided' -AllowRerun:$false
+
+            if ($plan.Action -ne 'console') { throw 'Expected recovery to return to assistant console once a valid scope is reselected.' }
+            if ($plan.InitialScopeFile -ne (Resolve-LauncherScopePath -Path $recentScope)) { throw 'Expected recovery to replace the missing selected scope with the chosen recent scope.' }
+        }
     }
 
     Context 'Saved session persistence and launcher logging' {
@@ -870,6 +921,59 @@ Describe 'ScopeForge launcher boolean handling' {
             if ($plan.SessionRoot -ne $session.session_root) { throw 'Expected the selected session root to be preserved.' }
             if ($plan.LoggingMode -ne 'verbose') { throw 'Expected the session logging mode to be reused.' }
             if ($plan.ManagedScopeFile -ne (Resolve-LauncherScopePath -Path $scopePath)) { throw 'Expected active managed scopes to stay editable in place when reopening a session.' }
+        }
+
+        It 'blocks a saved-session launch when the stored scope is missing and recovers to a valid recent scope' {
+            $sessionRoot = Get-LauncherUniqueSessionDirectory
+            $missingScope = Join-Path $script:fileWorkspace.Active 'missing-session-scope.json'
+            $recentScope = Join-Path $script:fileWorkspace.Active 'recovered-session-scope.json'
+            Set-Content -LiteralPath $recentScope -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+            $null = Update-LauncherRecentScopes -ScopePath $recentScope -LastOutputDir 'C:\Runs\recovered-session' -DisplayName 'recovered-session'
+
+            $session = Update-LauncherSessionMetadata -SessionRoot $sessionRoot -Values @{
+                display_name = 'session-missing-scope'
+                scope_path   = $missingScope
+                logging_mode = 'verbose'
+                note         = 'SESSION'
+            }
+
+            $script:guidedChoices = @('4', '2', '11')
+            Mock Show-LauncherScopeSelection { }
+            Mock Manage-LauncherSavedSessions { [pscustomobject]@{ Action = 'launch'; Session = $session } }
+            Mock Select-LauncherRecentScope {
+                (Read-LauncherRecentScopes | Select-Object -First 1)
+            }
+            Mock Read-LauncherChoice {
+                $current = $script:guidedChoices[0]
+                if ($script:guidedChoices.Count -gt 1) {
+                    $script:guidedChoices = @($script:guidedChoices[1..($script:guidedChoices.Count - 1)])
+                } else {
+                    $script:guidedChoices = @()
+                }
+                return $current
+            }
+
+            $plan = Select-LauncherGuidedStartupPlan -InitialScopeFile '' -OutputDir '.\output\guided' -AllowRerun:$false
+
+            if ($plan.Action -ne 'documents') { throw 'Expected recovery to fall back to a normal documents run after blocking the broken saved session.' }
+            if ($plan.InitialScopeFile -ne (Resolve-LauncherScopePath -Path $recentScope)) { throw 'Expected recovery to keep the newly selected recent scope.' }
+        }
+
+        It 'rejects a missing non-interactive scope before runtime handoff' {
+            $missingScope = Join-Path $TestDrive 'missing-scope.json'
+            $runConfig = @{
+                ScopeFile               = $missingScope
+                LauncherSelectedScopePath = $missingScope
+            }
+
+            try {
+                Confirm-LauncherScopeFileAvailable -RunConfig $runConfig | Out-Null
+                throw 'Expected a missing scope to stop the launcher before runtime handoff.'
+            } catch {
+                if ($_.Exception.Message -notlike ("*Scope file not found: {0}*" -f (Resolve-LauncherScopePath -Path $missingScope))) {
+                    throw
+                }
+            }
         }
 
     }

@@ -24,6 +24,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:ScopeForgeContext = $null
+$script:ScopeForgeToolHelpCache = @{}
 
 function Resolve-AbsolutePath {
     [CmdletBinding()]
@@ -49,6 +50,85 @@ function Get-PlatformInfo {
         Architecture = $arch
         Description  = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription
     }
+}
+
+function Get-CompressedArchiveKind {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ArchivePath)
+
+    if ($ArchivePath -match '(?i)\.zip$') { return 'zip' }
+    if ($ArchivePath -match '(?i)(?:\.tar\.gz|\.tgz)$') { return 'tar-gzip' }
+    return 'unsupported'
+}
+
+function Test-ReleaseAssetNameTokenMatch {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$AssetName,
+        [Parameter(Mandatory)][string[]]$Aliases
+    )
+
+    $tokens = @(
+        $AssetName.ToLowerInvariant() -split '[^a-z0-9]+' |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    foreach ($alias in $Aliases) {
+        if ($tokens -contains $alias.ToLowerInvariant()) { return $true }
+    }
+    return $false
+}
+
+function Select-ToolReleaseAsset {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ToolName,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$ReleaseAssets,
+        [Parameter(Mandatory)][pscustomobject]$PlatformInfo
+    )
+
+    $platformAliases = switch ($PlatformInfo.Os) {
+        'windows' { @('windows', 'win') }
+        'linux' { @('linux') }
+        'darwin' { @('darwin', 'macos', 'mac') }
+        default { throw "Unsupported bootstrap platform: $($PlatformInfo.Os)" }
+    }
+    $archAliases = switch ($PlatformInfo.Architecture) {
+        'amd64' { @('amd64', 'x86_64', 'x64') }
+        'arm64' { @('arm64', 'aarch64') }
+        '386' { @('386', 'x86', 'i386') }
+        default { @($PlatformInfo.Architecture) }
+    }
+
+    return @(
+        $ReleaseAssets |
+        Where-Object {
+            $assetName = [string]$_.name
+            (Test-ReleaseAssetNameTokenMatch -AssetName $assetName -Aliases @($ToolName)) -and
+            (Test-ReleaseAssetNameTokenMatch -AssetName $assetName -Aliases $platformAliases) -and
+            (Test-ReleaseAssetNameTokenMatch -AssetName $assetName -Aliases $archAliases)
+        } |
+        Select-Object -First 1
+    )[0]
+}
+
+function Get-ToolBootstrapFailureSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ToolName,
+        [Parameter(Mandatory)][string]$FailureMessage
+    )
+
+    if ($FailureMessage -match '(?i)(api\.github\.com|githubusercontent\.com|github\.com:443|proxy|offline|firewall|timed out|timeout|No such host|Name or service not known|Unable to connect|connection.*failed)') {
+        return ("Optional tool '{0}' is unavailable: GitHub download failed or is blocked (offline mode, firewall, or proxy issue). Related enrichment will be skipped. Details: {1}" -f $ToolName, $FailureMessage)
+    }
+    if ($FailureMessage -match '(?i)Unsupported archive format') {
+        return ("Optional tool '{0}' is unavailable: downloaded archive format is unsupported in the current runtime. Related enrichment will be skipped. Details: {1}" -f $ToolName, $FailureMessage)
+    }
+    if ($FailureMessage -match '(?i)Unable to select a release asset') {
+        return ("Optional tool '{0}' is unavailable: no release asset matched the detected platform. Related enrichment will be skipped. Details: {1}" -f $ToolName, $FailureMessage)
+    }
+
+    return ("Optional tool '{0}' is unavailable: {1}. Related enrichment will be skipped." -f $ToolName, $FailureMessage)
 }
 
 function Get-OutputLayout {
@@ -264,21 +344,90 @@ function Invoke-ExternalCommand {
     return $result
 }
 
+function Invoke-ExternalCommandArgumentSafe {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [string[]]$Arguments = @(),
+        [string]$WorkingDirectory = (Get-Location).Path,
+        [ValidateRange(1, 3600)][int]$TimeoutSeconds = 60,
+        [switch]$IgnoreExitCode
+    )
+
+    $resolvedFilePath = if (Test-Path -LiteralPath $FilePath) {
+        (Resolve-Path -LiteralPath $FilePath).Path
+    } else {
+        $command = Get-Command -Name $FilePath -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $command) { throw "Executable not found: $FilePath" }
+        $command.Source
+    }
+
+    $filteredArguments = @($Arguments | Where-Object { $null -ne $_ -and $_ -ne '' })
+    $displayArguments = ($filteredArguments | ForEach-Object { if ($_ -match '\s') { '"{0}"' -f $_ } else { $_ } }) -join ' '
+    Write-ReconLog -Level TOOL -Message ("EXEC {0} {1}" -f $resolvedFilePath, $displayArguments)
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $resolvedFilePath
+    $startInfo.WorkingDirectory = $WorkingDirectory
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    foreach ($argument in $filteredArguments) {
+        $null = $startInfo.ArgumentList.Add([string]$argument)
+    }
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $null = $process.Start()
+
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        try { $process.Kill($true) } catch { try { $process.Kill() } catch {} }
+        throw "Command timed out after $TimeoutSeconds seconds: $resolvedFilePath"
+    }
+
+    $process.WaitForExit()
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
+
+    if ($stderr) { Write-ReconLog -Level TOOL -Message ($stderr.Trim()) }
+    if (($process.ExitCode -ne 0) -and -not $IgnoreExitCode) { throw "Command failed with exit code $($process.ExitCode): $resolvedFilePath" }
+
+    return [pscustomobject]@{
+        ExitCode  = $process.ExitCode
+        StdOut    = $stdout
+        StdErr    = $stderr
+        FilePath  = $resolvedFilePath
+        Arguments = $filteredArguments
+    }
+}
+
 function Get-ToolHelpText {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$ToolPath, [int]$TimeoutSeconds = 15)
 
+    $cacheKey = try { [System.IO.Path]::GetFullPath($ToolPath) } catch { $ToolPath }
+    if ($script:ScopeForgeToolHelpCache.ContainsKey($cacheKey)) {
+        return $script:ScopeForgeToolHelpCache[$cacheKey]
+    }
+
+    $helpText = ''
     try {
         $result = Invoke-ExternalCommand -FilePath $ToolPath -Arguments @('-h') -TimeoutSeconds $TimeoutSeconds -IgnoreExitCode
-        return ('{0}`n{1}' -f $result.StdOut, $result.StdErr)
+        $helpText = ('{0}`n{1}' -f $result.StdOut, $result.StdErr)
     } catch {
         try {
             $result = Invoke-ExternalCommand -FilePath $ToolPath -Arguments @('--help') -TimeoutSeconds $TimeoutSeconds -IgnoreExitCode
-            return ('{0}`n{1}' -f $result.StdOut, $result.StdErr)
+            $helpText = ('{0}`n{1}' -f $result.StdOut, $result.StdErr)
         } catch {
-            return ''
+            $helpText = ''
         }
     }
+
+    $script:ScopeForgeToolHelpCache[$cacheKey] = $helpText
+    return $helpText
 }
 
 function Test-ToolFlagSupport {
@@ -293,12 +442,22 @@ function Expand-CompressedArchive {
     param([Parameter(Mandatory)][string]$ArchivePath, [Parameter(Mandatory)][string]$DestinationPath)
 
     if (-not (Test-Path -LiteralPath $DestinationPath)) { $null = New-Item -ItemType Directory -Path $DestinationPath -Force }
-    if ($ArchivePath -match '\.zip$') { [System.IO.Compression.ZipFile]::ExtractToDirectory($ArchivePath, $DestinationPath, $true); return }
-    if ($ArchivePath -match '\.tar\.gz$') {
+    $archiveKind = Get-CompressedArchiveKind -ArchivePath $ArchivePath
+    if ($archiveKind -eq 'zip') {
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($ArchivePath, $DestinationPath, $true)
+        return [pscustomobject]@{
+            ArchiveKind = 'zip'
+            Extractor   = 'System.IO.Compression.ZipFile'
+        }
+    }
+    if ($archiveKind -eq 'tar-gzip') {
         $tarCommand = Get-Command -Name 'tar' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $tarCommand) { throw 'Unable to extract tar.gz archive because tar is not available.' }
-        $null = Invoke-ExternalCommand -FilePath $tarCommand.Source -Arguments @('-xzf', $ArchivePath, '-C', $DestinationPath) -TimeoutSeconds 120
-        return
+        $null = Invoke-ExternalCommandArgumentSafe -FilePath $tarCommand.Source -Arguments @('-xzf', $ArchivePath, '-C', $DestinationPath) -TimeoutSeconds 120
+        return [pscustomobject]@{
+            ArchiveKind = 'tar-gzip'
+            Extractor   = $tarCommand.Source
+        }
     }
     throw "Unsupported archive format: $ArchivePath"
 }
@@ -315,42 +474,29 @@ function Install-ExternalTool {
     )
 
     $headers = @{ 'User-Agent' = 'ScopeForge/1.0'; 'Accept' = 'application/vnd.github+json' }
+    Write-ReconLog -Level TOOL -Message ("BOOTSTRAP {0}: detected os={1} arch={2}" -f $ToolName, $PlatformInfo.Os, $PlatformInfo.Architecture)
     $release = Invoke-RestMethod -Uri ("https://api.github.com/repos/$Repository/releases/latest") -Headers $headers -Method Get -TimeoutSec $TimeoutSeconds
     if (-not $release.assets) { throw "Unable to find release assets for $ToolName." }
 
-    $platformAliases = switch ($PlatformInfo.Os) {
-        'windows' { @('windows', 'win') }
-        'linux' { @('linux') }
-        'darwin' { @('darwin', 'macos', 'mac') }
-        default { throw "Unsupported bootstrap platform: $($PlatformInfo.Os)" }
-    }
-    $archAliases = switch ($PlatformInfo.Architecture) {
-        'amd64' { @('amd64', 'x86_64') }
-        'arm64' { @('arm64', 'aarch64') }
-        '386' { @('386', 'x86') }
-        default { @($PlatformInfo.Architecture) }
-    }
-
-    $asset = $release.assets | Where-Object {
-        $name = [string]$_.name
-        ($name -match "(?i)$([regex]::Escape($ToolName))") -and
-        ($platformAliases | Where-Object { $name -match "(?i)$([regex]::Escape($_))" }) -and
-        ($archAliases | Where-Object { $name -match "(?i)$([regex]::Escape($_))" })
-    } | Select-Object -First 1
+    $asset = Select-ToolReleaseAsset -ToolName $ToolName -ReleaseAssets @($release.assets) -PlatformInfo $PlatformInfo
     if (-not $asset) { throw "Unable to select a release asset for $ToolName." }
+    Write-ReconLog -Level TOOL -Message ("BOOTSTRAP {0}: selected asset={1}" -f $ToolName, [string]$asset.name)
 
     $downloadUri = [Uri]([string]$asset.browser_download_url)
     if ($downloadUri.Scheme -ne 'https' -or $downloadUri.Host -notmatch '(^|\.)(github\.com|githubusercontent\.com)$') { throw "Refusing unexpected download host for ${ToolName}: $downloadUri" }
 
     $archivePath = Join-Path $Layout.ToolsDownloads $asset.name
     $extractPath = Join-Path $Layout.ToolsExtracted ("{0}-{1}" -f $ToolName, [Guid]::NewGuid().ToString('N'))
+    Write-ReconLog -Level TOOL -Message ("BOOTSTRAP {0}: download path={1}" -f $ToolName, $archivePath)
     Invoke-WebRequest -Uri $downloadUri.AbsoluteUri -Headers @{ 'User-Agent' = 'ScopeForge/1.0' } -OutFile $archivePath -TimeoutSec $TimeoutSeconds
 
     $downloadedInfo = Get-Item -LiteralPath $archivePath
     if ($downloadedInfo.Length -le 0) { throw "Downloaded archive for $ToolName is empty." }
     if ($asset.size -and ([int64]$asset.size -ne [int64]$downloadedInfo.Length)) { throw "Downloaded archive size mismatch for $ToolName." }
+    Write-ReconLog -Level TOOL -Message ("BOOTSTRAP {0}: downloaded bytes={1}" -f $ToolName, $downloadedInfo.Length)
 
-    Expand-CompressedArchive -ArchivePath $archivePath -DestinationPath $extractPath
+    $extractionInfo = Expand-CompressedArchive -ArchivePath $archivePath -DestinationPath $extractPath
+    Write-ReconLog -Level TOOL -Message ("BOOTSTRAP {0}: archive={1} extractor={2} destination={3}" -f $ToolName, $extractionInfo.ArchiveKind, $extractionInfo.Extractor, $extractPath)
     $binaryName = if ($IsWindows) { "$BinaryName.exe" } else { $BinaryName }
     $binary = Get-ChildItem -Path $extractPath -Recurse -File | Where-Object { $_.Name -ieq $binaryName } | Select-Object -First 1
     if (-not $binary) { throw "Unable to locate extracted binary for $ToolName." }
@@ -362,7 +508,11 @@ function Install-ExternalTool {
         if ($chmod) { $null = Invoke-ExternalCommand -FilePath $chmod.Source -Arguments @('755', $destination) -TimeoutSeconds 15 }
     }
 
-    return (Resolve-Path -LiteralPath $destination).Path
+    $resolvedDestination = (Resolve-Path -LiteralPath $destination).Path
+    $validationHelp = Get-ToolHelpText -ToolPath $resolvedDestination
+    $validationStatus = if ([string]::IsNullOrWhiteSpace($validationHelp)) { 'no-help-output' } else { 'ok' }
+    Write-ReconLog -Level TOOL -Message ("BOOTSTRAP {0}: validation={1} binary={2}" -f $ToolName, $validationStatus, $resolvedDestination)
+    return $resolvedDestination
 }
 
 function Ensure-ReconTools {
@@ -396,22 +546,32 @@ function Ensure-ReconTools {
             continue
         }
         $toolPath = Resolve-ToolPath -Name $tool.Name -ToolsBin $Layout.ToolsBin
+        $toolSource = if ($toolPath) { 'cached' } else { $null }
         if (-not $toolPath) {
             if ($tool.Required) {
                 if ($NoInstall) { throw "Required tool '$($tool.Name)' not found and -NoInstall was specified." }
                 $toolPath = Install-ExternalTool -ToolName $tool.Name -Repository $tool.Repository -BinaryName $tool.BinaryName -PlatformInfo $platformInfo -Layout $Layout -TimeoutSeconds $TimeoutSeconds
+                $toolSource = 'downloaded'
             } elseif (-not $NoInstall) {
                 try {
                     $toolPath = Install-ExternalTool -ToolName $tool.Name -Repository $tool.Repository -BinaryName $tool.BinaryName -PlatformInfo $platformInfo -Layout $Layout -TimeoutSeconds $TimeoutSeconds
+                    $toolSource = 'downloaded'
                 } catch {
-                    Write-ReconLog -Level WARN -Message "Optional tool '$($tool.Name)' is unavailable: $($_.Exception.Message)"
+                    Write-ReconLog -Level WARN -Message (Get-ToolBootstrapFailureSummary -ToolName $tool.Name -FailureMessage $_.Exception.Message)
                     $toolPath = $null
                 }
             } else {
                 Write-ReconLog -Level WARN -Message "Optional tool '$($tool.Name)' not found. Related enrichment will be skipped."
             }
         }
-        $resolvedTools[$tool.Name] = if ($toolPath) { [pscustomobject]@{ Path = $toolPath; HelpText = Get-ToolHelpText -ToolPath $toolPath } } else { $null }
+        $resolvedTools[$tool.Name] = if ($toolPath) {
+            $helpText = Get-ToolHelpText -ToolPath $toolPath
+            $validationStatus = if ([string]::IsNullOrWhiteSpace($helpText)) { 'no-help-output' } else { 'ok' }
+            Write-ReconLog -Level TOOL -Message ("BOOTSTRAP {0}: source={1} path={2} validation={3}" -f $tool.Name, $(if ($toolSource) { $toolSource } else { 'resolved' }), $toolPath, $validationStatus)
+            [pscustomobject]@{ Path = $toolPath; HelpText = $helpText }
+        } else {
+            $null
+        }
     }
 
     [pscustomobject]@{
@@ -750,10 +910,10 @@ function Add-ExclusionRecord {
 
 function New-HostInventoryRecord {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Host)
+    param([Parameter(Mandatory)][string]$TargetHost)
 
     return [ordered]@{
-        Host           = $Host
+        Host           = $TargetHost
         Discovery      = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         SourceScopeIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         SourceTypes    = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -764,12 +924,12 @@ function New-HostInventoryRecord {
 
 function Get-OrCreateHostInventoryRecord {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][hashtable]$HostMap, [Parameter(Mandatory)][string]$Host)
+    param([Parameter(Mandatory)][hashtable]$HostMap, [Parameter(Mandatory)][string]$TargetHost)
 
-    if (-not $HostMap.ContainsKey($Host)) {
-        $HostMap[$Host] = New-HostInventoryRecord -Host $Host
+    if (-not $HostMap.ContainsKey($TargetHost)) {
+        $HostMap[$TargetHost] = New-HostInventoryRecord -TargetHost $TargetHost
     }
-    return $HostMap[$Host]
+    return $HostMap[$TargetHost]
 }
 
 function Get-PassiveSubdomains {
@@ -970,8 +1130,8 @@ $targets | & $ToolPath @args
             }
             if (-not $matchedScopeItem) { continue }
 
-            $host = $uri.DnsSafeHost.ToLowerInvariant()
-            $exclusion = Test-ExclusionMatch -ScopeItem $matchedScopeItem -TargetHost $host -Url $candidate -Path $uri.AbsolutePath
+            $resolvedHost = $uri.DnsSafeHost.ToLowerInvariant()
+            $exclusion = Test-ExclusionMatch -ScopeItem $matchedScopeItem -TargetHost $resolvedHost -Url $candidate -Path $uri.AbsolutePath
             if ($exclusion.IsExcluded) {
                 Add-ExclusionRecord -Phase 'SupplementalCrawl' -ScopeItem $matchedScopeItem -Target $candidate -ExclusionResult $exclusion
                 continue
@@ -982,7 +1142,7 @@ $targets | & $ToolPath @args
             $null = $seen.Add($key)
             $results.Add([pscustomobject]@{
                     Url         = $candidate
-                    Host        = $host
+                    Host        = $resolvedHost
                     Scheme      = $uri.Scheme.ToLowerInvariant()
                     Path        = $uri.AbsolutePath
                     Query       = $uri.Query
@@ -1892,7 +2052,7 @@ function Invoke-BugBountyRecon {
                         $targetHost = $scopeItem.Host
                         $exclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $targetHost -Url $scopeItem.StartUrl -Path ([Uri]$scopeItem.StartUrl).AbsolutePath
                         if ($exclusion.IsExcluded) { Add-ExclusionRecord -Phase 'TargetGeneration' -ScopeItem $scopeItem -Target $scopeItem.StartUrl -ExclusionResult $exclusion; continue }
-                        $record = Get-OrCreateHostInventoryRecord -HostMap $hostMap -Host $targetHost
+                        $record = Get-OrCreateHostInventoryRecord -HostMap $hostMap -TargetHost $targetHost
                         $record.Discovery.Add('seed-url') | Out-Null; $record.SourceScopeIds.Add($scopeItem.Id) | Out-Null; $record.SourceTypes.Add($scopeItem.Type) | Out-Null; $record.RootDomains.Add($scopeItem.RootDomain) | Out-Null
                         foreach ($candidateUrl in Get-ProbeCandidateUrls -ScopeItem $scopeItem -RespectSchemeOnly:$RespectSchemeOnly) { $record.CandidateUrls.Add($candidateUrl) | Out-Null }
 
@@ -1930,7 +2090,7 @@ function Invoke-BugBountyRecon {
                         $targetHost = $scopeItem.Host
                         $exclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $targetHost -Url ("https://$targetHost") -Path '/'
                         if ($exclusion.IsExcluded) { Add-ExclusionRecord -Phase 'TargetGeneration' -ScopeItem $scopeItem -Target $targetHost -ExclusionResult $exclusion; continue }
-                        $record = Get-OrCreateHostInventoryRecord -HostMap $hostMap -Host $targetHost
+                        $record = Get-OrCreateHostInventoryRecord -HostMap $hostMap -TargetHost $targetHost
                         $record.Discovery.Add('seed-domain') | Out-Null; $record.SourceScopeIds.Add($scopeItem.Id) | Out-Null; $record.SourceTypes.Add($scopeItem.Type) | Out-Null; $record.RootDomains.Add($scopeItem.RootDomain) | Out-Null
                         foreach ($candidateUrl in Get-ProbeCandidateUrls -ScopeItem $scopeItem -RespectSchemeOnly:$RespectSchemeOnly) { $record.CandidateUrls.Add($candidateUrl) | Out-Null }
 
@@ -2000,7 +2160,7 @@ function Invoke-BugBountyRecon {
                             $probePreview = if ($scopeItem.Scheme) { "{0}://{1}" -f $scopeItem.Scheme, $candidateHost } else { "https://$candidateHost" }
                             $exclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $candidateHost -Url $probePreview -Path '/'
                             if ($exclusion.IsExcluded) { Add-ExclusionRecord -Phase 'TargetGeneration' -ScopeItem $scopeItem -Target $candidateHost -ExclusionResult $exclusion; continue }
-                            $record = Get-OrCreateHostInventoryRecord -HostMap $hostMap -Host $candidateHost
+                            $record = Get-OrCreateHostInventoryRecord -HostMap $hostMap -TargetHost $candidateHost
                             if ($wildcardCache[$scopeItem.RootDomain] -contains $candidateHost) {
                                 $record.Discovery.Add('subfinder') | Out-Null
                             } elseif ($candidateHost -eq $scopeItem.RootDomain) {
