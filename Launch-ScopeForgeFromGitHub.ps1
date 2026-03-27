@@ -264,14 +264,14 @@ function Show-BootstrapStatusPanel {
         [Parameter(Mandatory)][string]$RepositoryName,
         [Parameter(Mandatory)][string]$Branch,
         [Parameter(Mandatory)][string]$LauncherPath,
-        [AllowNull()][datetime]$UpdatedUtc,
+        [Nullable[datetime]]$UpdatedUtc = $null,
         [Parameter(Mandatory)][bool]$WillRefresh,
         [Parameter(Mandatory)][bool]$ForcedRefresh,
         [Parameter(Mandatory)][string]$RefreshReason,
         [AllowNull()][string]$RemoteVersionKey,
         [AllowNull()][string]$AppliedVersionKey,
         [Parameter(Mandatory)][string]$VersionCheckStatus,
-        [AllowNull()][datetime]$CheckedAtUtc,
+        [Nullable[datetime]]$CheckedAtUtc = $null,
         [ValidateRange(0, 168)][int]$AutoRefreshHours = 24
     )
 
@@ -309,7 +309,7 @@ function Write-BootstrapManifest {
         [Parameter(Mandatory)][string]$Branch,
         [Parameter(Mandatory)][string[]]$FilesToFetch,
         [Parameter(Mandatory)][datetime]$LastRefreshUtc,
-        [AllowNull()][datetime]$LastCheckedUtc,
+        [Nullable[datetime]]$LastCheckedUtc = $null,
         [AllowNull()][string]$AppliedVersionKey,
         [AllowNull()][string]$RemoteVersionKey,
         [AllowNull()][string]$VersionCheckStatus,

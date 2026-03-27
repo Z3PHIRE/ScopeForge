@@ -2,6 +2,31 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 . (Join-Path $repoRoot 'Launch-ScopeForgeFromGitHub.ps1')
 
 Describe 'ScopeForge bootstrap refresh' {
+    It 'renders bootstrap status when cache timestamps are unavailable' {
+        Mock Write-Host { }
+
+        Show-BootstrapStatusPanel -BootstrapRoot (Join-Path $TestDrive 'bootstrap-null-status') -RepositoryOwner 'Z3PHIRE' -RepositoryName 'ScopeForge' -Branch 'main' -LauncherPath (Join-Path $TestDrive 'Launch-ScopeForge.ps1') -UpdatedUtc $null -WillRefresh:$true -ForcedRefresh:$false -RefreshReason 'First download' -RemoteVersionKey $null -AppliedVersionKey $null -VersionCheckStatus 'Remote version key unavailable.' -CheckedAtUtc $null -AutoRefreshHours 24
+    }
+
+    It 'writes bootstrap metadata when the last checked timestamp is unavailable' {
+        $bootstrapRoot = Join-Path $TestDrive 'bootstrap-null-manifest'
+        $filesToFetch = Get-BootstrapFilesToFetch
+
+        foreach ($relativePath in $filesToFetch) {
+            $targetPath = Join-Path $bootstrapRoot $relativePath
+            $targetDirectory = Split-Path -Parent $targetPath
+            if (-not (Test-Path -LiteralPath $targetDirectory)) {
+                $null = New-Item -ItemType Directory -Path $targetDirectory -Force
+            }
+            Set-Content -LiteralPath $targetPath -Encoding utf8 -Value 'cached'
+        }
+
+        $manifestPath = Write-BootstrapManifest -BootstrapRoot $bootstrapRoot -RepositoryOwner 'Z3PHIRE' -RepositoryName 'ScopeForge' -Branch 'main' -FilesToFetch $filesToFetch -LastRefreshUtc ([DateTime]::UtcNow) -LastCheckedUtc $null -AppliedVersionKey $null -RemoteVersionKey $null -VersionCheckStatus 'Remote version key unavailable.' -RefreshReason 'Initial cache'
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json -Depth 10
+
+        if ($null -ne $manifest.LastCheckedUtc) { throw 'Expected LastCheckedUtc to remain null when the remote version check has not completed.' }
+    }
+
     It 'requests an auto-refresh when the cached bootstrap is stale' {
         $bootstrapRoot = Join-Path $TestDrive 'bootstrap-stale'
         $filesToFetch = Get-BootstrapFilesToFetch
