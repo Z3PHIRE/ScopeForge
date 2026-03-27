@@ -19,5 +19,6 @@ Workflow simple :
 1. Garde uniquement les items autorises par le programme.
 2. Ajuste les exclusions avec des tokens specifiques.
 3. Sauvegarde le fichier.
-4. Reviens au launcher puis choisis `Lancer avec ce fichier de scope`.
-5. Le resultat sera ecrit dans le dossier de sortie indique par le launcher.
+4. Reviens au launcher puis choisis `Lancer avec le scope ou la session active`.
+5. Lis le resume avant lancement pour verifier le scope, les logs et le dossier de sortie.
+6. Le resultat sera ecrit dans le dossier de sortie indique par le launcher et les details de session resteront disponibles plus tard.

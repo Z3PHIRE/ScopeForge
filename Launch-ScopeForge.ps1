@@ -30,18 +30,41 @@ function Write-LauncherBanner {
         Clear-Host
     } catch {
     }
+    $panelWidth = Get-LauncherPanelWidth
+    $innerWidth = $panelWidth - 4
+    $border = '+' + ''.PadRight($panelWidth - 2, '-') + '+'
+    $logoLines = @(
+        '   _____                      ______',
+        '  / ___/________  ____  ___  / ____/___  _________ ____',
+        '  \__ \/ ___/ __ \/ __ \/ _ \/ /   / __ \/ ___/ __ `/ _ \',
+        ' ___/ / /__/ /_/ / /_/ /  __/ /___/ /_/ / /  / /_/ /  __/',
+        '/____/\___/\____/ .___/\___/\____/\____/_/   \__, /\___/',
+        '               /_/                         /____/'
+    )
+
     Write-Host ''
-    Write-Host '=============================================' -ForegroundColor DarkCyan
-    Write-Host ' ScopeForge Assistant' -ForegroundColor Cyan
-    Write-Host ' Guided recon runner for authorized programs' -ForegroundColor Gray
-    Write-Host '=============================================' -ForegroundColor DarkCyan
+    Write-Host $border -ForegroundColor DarkCyan
+    foreach ($line in $logoLines) {
+        Write-Host ("| {0} |" -f $line.PadRight($innerWidth)) -ForegroundColor Cyan
+    }
+    Write-Host ("| {0} |" -f ''.PadRight($innerWidth)) -ForegroundColor DarkCyan
+    Write-Host ("| {0} |" -f 'ScopeForge Operator Console'.PadRight($innerWidth)) -ForegroundColor Gray
+    Write-Host ("| {0} |" -f 'authorized programs only'.PadRight($innerWidth)) -ForegroundColor DarkGray
+    Write-Host $border -ForegroundColor DarkCyan
     Write-Host ''
 }
 
 function Write-LauncherSection {
     param([Parameter(Mandatory)][string]$Title)
+
+    $panelWidth = Get-LauncherPanelWidth
+    $titleText = (" {0} " -f $Title)
+    if ($titleText.Length -gt ($panelWidth - 2)) {
+        $titleText = $titleText.Substring(0, $panelWidth - 2)
+    }
+    $remaining = [Math]::Max($panelWidth - 2 - $titleText.Length, 0)
     Write-Host ''
-    Write-Host ("[{0}]" -f $Title) -ForegroundColor Cyan
+    Write-Host ('+' + $titleText + ''.PadRight($remaining, '-')) -ForegroundColor DarkCyan
 }
 
 function Get-LauncherConsoleWidth {
@@ -50,6 +73,34 @@ function Get-LauncherConsoleWidth {
     } catch {
         return 120
     }
+}
+
+function Get-LauncherPanelWidth {
+    return [Math]::Max([Math]::Min((Get-LauncherConsoleWidth), 116), 72)
+}
+
+function Get-LauncherStatusColor {
+    param([AllowNull()][string]$Status)
+
+    switch (($Status ?? '').ToUpperInvariant()) {
+        'OK' { return 'Green' }
+        'ARCHIVE' { return 'DarkYellow' }
+        'SUPPRIME' { return 'DarkRed' }
+        'INTROUVABLE' { return 'Yellow' }
+        default { return 'Gray' }
+    }
+}
+
+function Write-LauncherStatusLine {
+    param(
+        [Parameter(Mandatory)][string]$Label,
+        [AllowNull()][string]$Status,
+        [AllowNull()][string]$Details = ''
+    )
+
+    $statusText = if ([string]::IsNullOrWhiteSpace($Status)) { '-' } else { $Status }
+    $suffix = if ([string]::IsNullOrWhiteSpace($Details)) { '' } else { " - $Details" }
+    Write-Host ("  {0,-18}: {1}{2}" -f $Label, $statusText, $suffix) -ForegroundColor (Get-LauncherStatusColor -Status $statusText)
 }
 
 function ConvertTo-LauncherCellText {
@@ -107,16 +158,7 @@ function Write-LauncherKV {
         [ConsoleColor]$Color = [ConsoleColor]::Gray
     )
 
-    Write-Host ("  {0,-24} : {1}" -f $Key, (ConvertTo-LauncherCellText -Value $Value)) -ForegroundColor $Color
-}
-
-function Write-LauncherLink {
-    param(
-        [Parameter(Mandatory)][string]$Label,
-        [Parameter(Mandatory)][string]$Path
-    )
-
-    Write-Host ("  {0,-24} : {1}" -f $Label, $Path) -ForegroundColor Green
+    Write-LauncherKeyValue -Key $Key -Value $Value -Color ([string]$Color)
 }
 
 function Write-LauncherBarList {
@@ -273,6 +315,21 @@ function Write-LauncherBarRow {
     Write-Host ("  {0,-20} {1,5}  {2}" -f $Label, $Count, $bar) -ForegroundColor $Color
 }
 
+function Write-LauncherMenuOption {
+    param(
+        [Parameter(Mandatory)][string]$Number,
+        [Parameter(Mandatory)][string]$Label,
+        [bool]$IsDefault = $false,
+        [AllowNull()][string]$Hint = ''
+    )
+
+    $marker = if ($IsDefault) { '>' } else { ' ' }
+    $defaultTag = if ($IsDefault) { ' [defaut]' } else { '' }
+    $hintSuffix = if ([string]::IsNullOrWhiteSpace($Hint)) { '' } else { " - $Hint" }
+    $color = if ($IsDefault) { 'Green' } else { 'Gray' }
+    Write-Host (" {0} {1,-4} {2}{3}{4}" -f $marker, ($Number + '.'), $Label, $defaultTag, $hintSuffix) -ForegroundColor $color
+}
+
 function New-LauncherConfigIssue {
     param(
         [Parameter(Mandatory)][string]$Field,
@@ -375,15 +432,22 @@ function Select-LauncherIndexedItem {
     if (-not $Rows -or $Rows.Count -eq 0) { return $null }
 
     if ((Get-LauncherInteractionMode) -eq 'visual' -and (Test-LauncherVisualModeSupport)) {
-        $selected = @($Rows | Select-Object $Columns | Out-GridView -Title $Title -PassThru | Select-Object -First 1)
-        if (-not $selected -or $selected.Count -eq 0) { return $null }
-        $selectedIndex = [string]$selected[0].Index
-        return ($Rows | Where-Object { [string]$_.Index -eq $selectedIndex } | Select-Object -First 1)
+        try {
+            $selected = @($Rows | Select-Object $Columns | Out-GridView -Title $Title -PassThru | Select-Object -First 1)
+            if (-not $selected -or $selected.Count -eq 0) { return $null }
+            $selectedIndex = [string]$selected[0].Index
+            return ($Rows | Where-Object { [string]$_.Index -eq $selectedIndex } | Select-Object -First 1)
+        } catch {
+            Write-Host "Le mode visuel n'est pas disponible dans cet hote. Retour au mode console." -ForegroundColor Yellow
+        }
     }
 
     Write-LauncherTable -Rows $Rows -Columns $Columns -Headers $Headers -Widths $Widths
     $allowedChoices = @('0') + @($Rows | ForEach-Object { [string]$_.Index })
     $defaultValue = if ($allowedChoices -contains $DefaultChoice) { $DefaultChoice } else { '0' }
+    if ($defaultValue -ne '0') {
+        Write-Host ("  > Valeur par defaut : {0}" -f $defaultValue) -ForegroundColor DarkGray
+    }
     $choice = Read-LauncherChoice -Prompt $Prompt -Allowed $allowedChoices -Default $defaultValue
     if ($choice -eq '0') { return $null }
     return ($Rows | Where-Object { [string]$_.Index -eq $choice } | Select-Object -First 1)
@@ -809,27 +873,27 @@ function Show-RunSummaryDashboard {
     $summary = $Result.Summary
     $protectedCount = @($Result.LiveTargets | Where-Object { $_.StatusCode -in 401, 403 }).Count
     $metricRows = @(
-        @{ Label = 'Scope items'; Count = [int]$summary.ScopeItemCount },
-        @{ Label = 'Excluded'; Count = [int]$summary.ExcludedItemCount },
-        @{ Label = 'Hosts discovered'; Count = [int]$summary.DiscoveredHostCount },
-        @{ Label = 'Live hosts'; Count = [int]$summary.LiveHostCount },
-        @{ Label = 'Live targets'; Count = [int]$summary.LiveTargetCount },
-        @{ Label = 'URLs discovered'; Count = [int]$summary.DiscoveredUrlCount },
-        @{ Label = 'Interesting URLs'; Count = [int]$summary.InterestingUrlCount },
-        @{ Label = 'Protected 401/403'; Count = [int]$protectedCount },
-        @{ Label = 'Errors'; Count = [int]$summary.ErrorCount }
+        @{ Label = 'Items scope'; Count = [int]$summary.ScopeItemCount },
+        @{ Label = 'Exclus'; Count = [int]$summary.ExcludedItemCount },
+        @{ Label = 'Hosts decouverts'; Count = [int]$summary.DiscoveredHostCount },
+        @{ Label = 'Hosts live'; Count = [int]$summary.LiveHostCount },
+        @{ Label = 'Cibles live'; Count = [int]$summary.LiveTargetCount },
+        @{ Label = 'URLs decouvertes'; Count = [int]$summary.DiscoveredUrlCount },
+        @{ Label = 'URLs interessantes'; Count = [int]$summary.InterestingUrlCount },
+        @{ Label = 'Proteges 401/403'; Count = [int]$protectedCount },
+        @{ Label = 'Erreurs'; Count = [int]$summary.ErrorCount }
     )
     $maxMetricCount = [int](($metricRows | Measure-Object -Property Count -Maximum).Maximum)
     if ($maxMetricCount -lt 1) { $maxMetricCount = 1 }
-    Write-LauncherSection -Title 'Dashboard'
-    Write-Host '  Counters' -ForegroundColor Cyan
+    Write-LauncherSection -Title 'Tableau de bord'
+    Write-Host '  Compteurs' -ForegroundColor Cyan
     foreach ($metric in $metricRows) {
         Write-LauncherBarRow -Label $metric.Label -Count $metric.Count -MaxCount $maxMetricCount -Color 'Gray'
     }
 
     if ($summary.TopTechnologies -and $summary.TopTechnologies.Count -gt 0) {
         Write-Host ''
-        Write-Host '  Top technologies' -ForegroundColor Cyan
+        Write-Host '  Technologies detectees' -ForegroundColor Cyan
         $maxTech = [int](($summary.TopTechnologies | Measure-Object -Property Count -Maximum).Maximum)
         foreach ($item in ($summary.TopTechnologies | Select-Object -First 5)) {
             Write-LauncherBarRow -Label $item.Technology -Count ([int]$item.Count) -MaxCount $maxTech
@@ -838,7 +902,7 @@ function Show-RunSummaryDashboard {
 
     if ($summary.TopInterestingFamilies -and $summary.TopInterestingFamilies.Count -gt 0) {
         Write-Host ''
-        Write-Host '  Interesting families' -ForegroundColor Cyan
+        Write-Host '  Familles interessantes' -ForegroundColor Cyan
         $maxFamilies = [int](($summary.TopInterestingFamilies | Measure-Object -Property Count -Maximum).Maximum)
         foreach ($item in ($summary.TopInterestingFamilies | Select-Object -First 5)) {
             Write-LauncherBarRow -Label $item.Family -Count ([int]$item.Count) -MaxCount $maxFamilies
@@ -847,7 +911,7 @@ function Show-RunSummaryDashboard {
 
     if ($summary.InterestingPriorityDistribution -and $summary.InterestingPriorityDistribution.Count -gt 0) {
         Write-Host ''
-        Write-Host '  Interesting priorities' -ForegroundColor Cyan
+        Write-Host '  Repartition des priorites' -ForegroundColor Cyan
         $maxPriority = [int](($summary.InterestingPriorityDistribution | Measure-Object -Property Count -Maximum).Maximum)
         foreach ($item in $summary.InterestingPriorityDistribution) {
             Write-LauncherBarRow -Label $item.Priority -Count ([int]$item.Count) -MaxCount $maxPriority
@@ -856,7 +920,7 @@ function Show-RunSummaryDashboard {
 
     if ($summary.TopInterestingCategories -and $summary.TopInterestingCategories.Count -gt 0) {
         Write-Host ''
-        Write-Host '  Interesting categories' -ForegroundColor Cyan
+        Write-Host '  Categories interessantes' -ForegroundColor Cyan
         $maxCategories = [int](($summary.TopInterestingCategories | Measure-Object -Property Count -Maximum).Maximum)
         foreach ($item in ($summary.TopInterestingCategories | Select-Object -First 5)) {
             Write-LauncherBarRow -Label $item.Category -Count ([int]$item.Count) -MaxCount $maxCategories
@@ -943,22 +1007,29 @@ function Show-ProtectedEndpoints {
 function Show-OutputPaths {
     param([Parameter(Mandatory)][pscustomobject]$Result)
     Write-LauncherSection -Title 'Exports'
-    Write-Host '  Actions utiles' -ForegroundColor Cyan
+    Write-Host '  Session et logs' -ForegroundColor Cyan
     if ($Result.PSObject.Properties['LauncherSessionRoot']) {
         Write-LauncherLink -Label 'Ouvrir le dossier de session' -Path $Result.LauncherSessionRoot
     }
     if ($Result.PSObject.Properties['LauncherLogRoot']) {
         Write-LauncherLink -Label 'Ouvrir les logs du launcher' -Path $Result.LauncherLogRoot
     }
+    Write-LauncherLink -Label 'Ouvrir errors.log' -Path (Join-Path $Result.OutputDir 'logs/errors.log')
+    Write-LauncherLink -Label 'Ouvrir tools.log' -Path (Join-Path $Result.OutputDir 'logs/tools.log')
+
+    Write-Host ''
+    Write-Host '  Rapports' -ForegroundColor Cyan
     Write-LauncherLink -Label 'Ouvrir report.html' -Path (Join-Path $Result.OutputDir 'reports/report.html')
     Write-LauncherLink -Label 'Ouvrir triage.md' -Path (Join-Path $Result.OutputDir 'reports/triage.md')
     Write-LauncherLink -Label 'Ouvrir run-manifest.json' -Path (Join-Path $Result.OutputDir 'reports/run-manifest.json')
     Write-LauncherLink -Label 'Ouvrir scope-frozen.json' -Path (Join-Path $Result.OutputDir 'reports/scope-frozen.json')
     Write-LauncherLink -Label 'Ouvrir run-settings-frozen.json' -Path (Join-Path $Result.OutputDir 'reports/run-settings-frozen.json')
+
+    Write-Host ''
+    Write-Host '  Fichiers normalises' -ForegroundColor Cyan
     Write-LauncherLink -Label 'Ouvrir interesting_urls.json' -Path (Join-Path $Result.OutputDir 'normalized/interesting_urls.json')
     Write-LauncherLink -Label 'Ouvrir interesting_families.json' -Path (Join-Path $Result.OutputDir 'normalized/interesting_families.json')
-    Write-LauncherLink -Label 'Ouvrir errors.log' -Path (Join-Path $Result.OutputDir 'logs/errors.log')
-    Write-LauncherLink -Label 'Ouvrir tools.log' -Path (Join-Path $Result.OutputDir 'logs/tools.log')
+    Write-LauncherLink -Label 'Ouvrir live_targets.json' -Path (Join-Path $Result.OutputDir 'normalized/live_targets.json')
 }
 
 function Show-LauncherInvokeDebugPanel {
@@ -1426,8 +1497,10 @@ Champs :
 Workflow simple :
 1. Remplace `app.example.com` par le vrai hostname autorise.
 2. Laisse `exclusions` vide si tu n'as aucun sous-scope a retirer.
-3. Sauvegarde le fichier.
-4. Relance le launcher puis choisis `Lancer avec ce fichier de scope`.
+3. Sauvegarde le fichier dans `scopes/incoming` ou `scopes/active`.
+4. Relance le launcher puis choisis `Lancer avec le scope ou la session active`.
+5. Lis le resume avant lancement pour verifier le scope, les logs et le dossier de sortie.
+6. Plus tard, retrouve-le depuis `Scopes recents` ou `Sessions enregistrees`.
 '@
         }
         'standard' {
@@ -1453,7 +1526,9 @@ Workflow simple :
 1. Garde uniquement les items autorises par le programme.
 2. Ajuste les exclusions avec des tokens specifiques.
 3. Sauvegarde le fichier.
-4. Reviens au launcher puis choisis `Lancer avec ce fichier de scope`. Le resultat sera ecrit dans le dossier de sortie indique par le launcher.
+4. Reviens au launcher puis choisis `Lancer avec le scope ou la session active`.
+5. Verifie le resume avant lancement : scope, logs, sortie et options actives.
+6. Le resultat sera ecrit dans le dossier de sortie indique par le launcher.
 '@
         }
         'advanced' {
@@ -1481,8 +1556,9 @@ Workflow simple :
 1. Remplace tous les exemples par les vraies valeurs autorisees.
 2. Supprime les lignes inutiles plutot que de les commenter.
 3. Sauvegarde le fichier.
-4. Reviens au launcher puis choisis `Lancer avec ce fichier de scope`.
-5. Apres un premier run reussi, tu pourras aussi le retrouver dans `Afficher les fichiers de scope deja utilises`.
+4. Reviens au launcher puis choisis `Lancer avec le scope ou la session active`.
+5. Controle le resume avant lancement, surtout les exclusions, les logs et le dossier de sortie.
+6. Apres un premier run reussi, tu pourras aussi le retrouver dans `Scopes recents` ou `Sessions enregistrees`.
 '@
         }
         default {
@@ -1519,8 +1595,9 @@ Workflow conseille :
 3. Selectionne le modele minimal, standard ou avance.
 4. Ouvre le fichier cree dans ton editeur.
 5. Remplis le fichier puis sauvegarde-le.
-6. Reviens au launcher puis choisis `Lancer avec ce fichier de scope`.
-7. Apres un premier run reussi, tu pourras aussi le retrouver dans `Afficher les fichiers de scope deja utilises`.
+6. Reviens au launcher puis choisis `Lancer avec le scope ou la session active`.
+7. Lis le resume avant lancement : scope, session, logs et sortie.
+8. Apres un premier run reussi, tu pourras aussi le retrouver dans `Scopes recents` ou `Sessions enregistrees`.
 '@
 }
 
@@ -1632,7 +1709,14 @@ function New-LauncherRecentScopeRecord {
     $resolvedScopePath = Resolve-LauncherScopePath -Path $ScopePath
     $exists = Test-Path -LiteralPath $resolvedScopePath
     $displayNameValue = if ([string]::IsNullOrWhiteSpace($DisplayName)) { [System.IO.Path]::GetFileNameWithoutExtension($resolvedScopePath) } else { $DisplayName }
-    $noteValue = if ([string]::IsNullOrWhiteSpace($Note)) { Get-LauncherScopeStatusLabel -Exists $exists } else { $Note }
+    $workspace = Initialize-LauncherFileWorkspace
+    $archivedRoot = [System.IO.Path]::GetFullPath($workspace.Archived).TrimEnd('\', '/')
+    $isArchived = $resolvedScopePath.StartsWith(($archivedRoot + [System.IO.Path]::DirectorySeparatorChar), [System.StringComparison]::OrdinalIgnoreCase) -or $resolvedScopePath.Equals($archivedRoot, [System.StringComparison]::OrdinalIgnoreCase)
+    $noteValue = if ([string]::IsNullOrWhiteSpace($Note)) {
+        if ($isArchived) { 'ARCHIVE' } else { Get-LauncherScopeStatusLabel -Exists $exists }
+    } else {
+        $Note
+    }
 
     return [pscustomobject]@{
         display_name    = $displayNameValue
@@ -2243,7 +2327,7 @@ function Show-LauncherRecentScopes {
         $item = $RecentScopes[$index]
         $rows += [pscustomobject]@{
             Index          = ($index + 1)
-            Statut         = (Get-LauncherScopeStatusLabel -Exists ([bool]$item.exists))
+            Statut         = $item.note
             Fichier        = $item.display_name
             Scope          = (Get-LauncherRepoRelativePath -Path $item.scope_path)
             DerniereUtilisation = $(if ($item.last_used_utc) { ([DateTimeOffset]$item.last_used_utc).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss') } else { '-' })
@@ -2268,15 +2352,17 @@ function Show-LauncherSavedSessions {
         $session = $Sessions[$index]
         $rows += [pscustomobject]@{
             Index         = ($index + 1)
+            Statut        = $(if ($session.exists) { $(if ($session.note) { $session.note } else { 'OK' }) } else { 'INTROUVABLE' })
             Session       = $session.display_name
             Utilisation   = $(if ($session.last_used_utc) { ([DateTimeOffset]$session.last_used_utc).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss') } else { '-' })
             LogMode       = $session.logging_mode
             DossierSortie = $(if ($session.last_output_dir) { $session.last_output_dir } else { '-' })
+            DossierLogs   = $(if ($session.last_log_dir) { $session.last_log_dir } else { $session.logs_root })
             SessionRoot   = (Get-LauncherRepoRelativePath -Path $session.session_root)
         }
     }
 
-    Write-LauncherTable -Rows $rows -Columns @('Index', 'Session', 'Utilisation', 'LogMode', 'DossierSortie', 'SessionRoot') -Widths @{ Index = 6; Session = 20; Utilisation = 20; LogMode = 14; DossierSortie = 28; SessionRoot = 34 }
+    Write-LauncherTable -Rows $rows -Columns @('Index', 'Statut', 'Session', 'Utilisation', 'LogMode', 'DossierSortie', 'DossierLogs', 'SessionRoot') -Widths @{ Index = 6; Statut = 12; Session = 18; Utilisation = 20; LogMode = 12; DossierSortie = 24; DossierLogs = 24; SessionRoot = 28 }
 }
 
 function Select-LauncherSavedSession {
@@ -2291,10 +2377,12 @@ function Select-LauncherSavedSession {
         $session = $sessions[$index]
         $rows += [pscustomobject]@{
             Index         = ($index + 1)
+            Statut        = $(if ($session.exists) { $(if ($session.note) { $session.note } else { 'OK' }) } else { 'INTROUVABLE' })
             Session       = $session.display_name
             Utilisation   = $(if ($session.last_used_utc) { ([DateTimeOffset]$session.last_used_utc).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss') } else { '-' })
             LogMode       = $session.logging_mode
             DossierSortie = $(if ($session.last_output_dir) { $session.last_output_dir } else { '-' })
+            DossierLogs   = $(if ($session.last_log_dir) { $session.last_log_dir } else { $session.logs_root })
             SessionRoot   = (Get-LauncherRepoRelativePath -Path $session.session_root)
         }
     }
@@ -2312,7 +2400,7 @@ function Select-LauncherSavedSession {
         $defaultChoice = [string]($defaultIndex + 1)
     }
 
-    $selected = Select-LauncherIndexedItem -Title 'Choisir une session enregistree' -Rows $rows -Columns @('Index', 'Session', 'Utilisation', 'LogMode', 'DossierSortie', 'SessionRoot') -Widths @{ Index = 6; Session = 20; Utilisation = 20; LogMode = 14; DossierSortie = 28; SessionRoot = 34 } -Prompt 'Choisis une session (0=annuler)' -DefaultChoice $defaultChoice
+    $selected = Select-LauncherIndexedItem -Title 'Choisir une session enregistree' -Rows $rows -Columns @('Index', 'Statut', 'Session', 'Utilisation', 'LogMode', 'DossierSortie', 'DossierLogs', 'SessionRoot') -Widths @{ Index = 6; Statut = 12; Session = 18; Utilisation = 20; LogMode = 12; DossierSortie = 24; DossierLogs = 24; SessionRoot = 28 } -Prompt 'Choisis une session (0=annuler)' -DefaultChoice $defaultChoice
     if (-not $selected) { return $null }
     return $sessions[[int]$selected.Index - 1]
 }
@@ -2330,6 +2418,54 @@ function Get-LauncherPlannedLogRoot {
 
     $runId = if ($RunConfig.ContainsKey('RunId') -and -not [string]::IsNullOrWhiteSpace([string]$RunConfig.RunId)) { [string]$RunConfig.RunId } else { '<prochain-run>' }
     return (Join-Path (Join-Path ([System.IO.Path]::GetFullPath([string]$RunConfig.LauncherSessionRoot)) 'logs') $runId)
+}
+
+function Get-LauncherSettingsPreview {
+    param(
+        [AllowNull()][string]$SettingsPath,
+        [AllowNull()][string]$FallbackOutputDir = '',
+        [AllowNull()][string]$FallbackLoggingMode = ''
+    )
+
+    $defaults = [ordered]@{
+        ProgramName       = '-'
+        Preset            = 'balanced'
+        Profile           = 'webapp'
+        OutputDir         = $(if ([string]::IsNullOrWhiteSpace($FallbackOutputDir)) { '-' } else { $FallbackOutputDir })
+        Depth             = '-'
+        Threads           = '-'
+        TimeoutSeconds    = '-'
+        Resume            = '-'
+        Sources           = '-'
+        LoggingMode       = $(if ([string]::IsNullOrWhiteSpace($FallbackLoggingMode)) { Get-LauncherDefaultLoggingMode } else { $FallbackLoggingMode })
+    }
+
+    if ([string]::IsNullOrWhiteSpace($SettingsPath) -or -not (Test-Path -LiteralPath $SettingsPath)) {
+        return [pscustomobject]$defaults
+    }
+
+    try {
+        $parsed = Get-Content -LiteralPath $SettingsPath -Raw -Encoding utf8 | ConvertFrom-Json -Depth 30
+        $sources = Get-LauncherSourceSummary `
+            -EnableGau (ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $parsed -Name 'enableGau' -Default $true) -Default $true -Name 'enableGau') `
+            -EnableWaybackUrls (ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $parsed -Name 'enableWaybackUrls' -Default $true) -Default $true -Name 'enableWaybackUrls') `
+            -EnableHakrawler (ConvertTo-LauncherBoolean -Value (Get-LauncherDocumentProperty -InputObject $parsed -Name 'enableHakrawler' -Default $true) -Default $true -Name 'enableHakrawler')
+
+        return [pscustomobject]@{
+            ProgramName    = [string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'programName' -Default $defaults.ProgramName)
+            Preset         = [string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'preset' -Default $defaults.Preset)
+            Profile        = [string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'profile' -Default $defaults.Profile)
+            OutputDir      = [string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'outputDir' -Default $defaults.OutputDir)
+            Depth          = [string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'depth' -Default $defaults.Depth)
+            Threads        = [string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'threads' -Default $defaults.Threads)
+            TimeoutSeconds = [string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'timeoutSeconds' -Default $defaults.TimeoutSeconds)
+            Resume         = [string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'resume' -Default $defaults.Resume)
+            Sources        = $sources
+            LoggingMode    = $(if ([string]::IsNullOrWhiteSpace($FallbackLoggingMode)) { $defaults.LoggingMode } else { $FallbackLoggingMode })
+        }
+    } catch {
+        return [pscustomobject]$defaults
+    }
 }
 
 function Manage-LauncherSavedSessions {
@@ -2708,47 +2844,85 @@ function Show-LauncherScopeSelection {
         'console' { 'Console classique (clavier / numeros)' }
         default { $_ }
     }
+    $settingsPreview = Get-LauncherSettingsPreview -SettingsPath $(if ($SelectedSession) { $SelectedSession.settings_path } else { $null }) -FallbackOutputDir $PlannedOutputDir -FallbackLoggingMode $LoggingMode
 
     Write-LauncherSection -Title 'Session actuelle'
     Write-LauncherKeyValue -Key 'Mode interaction' -Value $modeLabel
     Write-LauncherKeyValue -Key 'Session active' -Value $(if ($SelectedSession) { $SelectedSession.display_name } else { 'Aucune session enregistree selectionnee' })
     Write-LauncherKeyValue -Key 'Chemin session' -Value $(if ($SelectedSession) { $SelectedSession.session_root } else { 'Une session sera creee si necessaire' })
     Write-LauncherKeyValue -Key '02-run-settings.json' -Value $(if ($SelectedSession) { $SelectedSession.settings_path } else { '-' })
-    Write-LauncherKeyValue -Key 'Mode de logs' -Value $LoggingMode
-    Write-LauncherKeyValue -Key 'Dossier logs' -Value $(if ($PlannedLogDir) { $PlannedLogDir } else { 'Sera cree au lancement' })
+    Write-LauncherStatusLine -Label 'Statut session' -Status $(if ($SelectedSession) { $(if ($SelectedSession.exists) { 'OK' } else { 'INTROUVABLE' }) } else { 'OK' }) -Details $(if ($SelectedSession) { 'session memorisee' } else { 'session creee a la demande' })
 
     Write-LauncherSection -Title 'Scope actuel'
     Write-LauncherKeyValue -Key 'Fichier actuellement utilise' -Value $(if ($SelectedScope) { $SelectedScope.scope_display_path } else { 'Aucun fichier de scope selectionne' })
-    Write-LauncherKeyValue -Key 'Statut' -Value $(if ($SelectedScope) { Get-LauncherScopeStatusLabel -Exists ([bool]$SelectedScope.exists) } else { '-' })
+    Write-LauncherStatusLine -Label 'Statut scope' -Status $(if ($SelectedScope) { $SelectedScope.note } else { '-' }) -Details $(if ($SelectedScope -and $SelectedScope.last_output_dir) { "dernier output: $($SelectedScope.last_output_dir)" } else { '' })
     Write-LauncherKeyValue -Key 'Chemin complet' -Value $(if ($SelectedScope) { $SelectedScope.scope_path } else { '-' })
     Write-LauncherKeyValue -Key 'Aide pour remplir' -Value $workspace.TemplatesGuide
-    Write-LauncherKeyValue -Key 'Dernier dossier de sortie' -Value $(if ($SelectedScope -and $SelectedScope.last_output_dir) { $SelectedScope.last_output_dir } else { '-' })
-    Write-LauncherKeyValue -Key 'Dossier du prochain run' -Value $PlannedOutputDir
+    Write-LauncherKeyValue -Key 'Mode d edition' -Value $(if ($SelectedScope) { $(if (Test-LauncherEditableManagedScopePath -Path $SelectedScope.scope_path) { 'Edition directe' } else { 'Copie dans une session documents' }) } else { '-' })
+
+    Write-LauncherSection -Title 'Parametres du run'
+    Write-LauncherKeyValue -Key 'Programme' -Value $settingsPreview.ProgramName
+    Write-LauncherKeyValue -Key 'Preset / profil' -Value ("{0} / {1}" -f $settingsPreview.Preset, $settingsPreview.Profile)
+    Write-LauncherKeyValue -Key 'Profondeur / threads' -Value ("{0} / {1}" -f $settingsPreview.Depth, $settingsPreview.Threads)
+    Write-LauncherKeyValue -Key 'Timeout' -Value $settingsPreview.TimeoutSeconds
+    Write-LauncherKeyValue -Key 'Sources actives' -Value $settingsPreview.Sources
+    Write-LauncherKeyValue -Key 'Resume' -Value $settingsPreview.Resume
+
+    Write-LauncherSection -Title 'Logs'
+    Write-LauncherKeyValue -Key 'Mode de logs' -Value $LoggingMode
+    Write-LauncherKeyValue -Key 'Dossier des logs' -Value $(if ($PlannedLogDir) { $PlannedLogDir } else { 'Sera cree au lancement' })
+    Write-Host '  Le mode debug ajoute plus de decisions internes pour le depannage.' -ForegroundColor DarkGray
+
+    Write-LauncherSection -Title 'Dossier de sortie'
+    Write-LauncherKeyValue -Key 'Sortie active' -Value $(if ($settingsPreview.OutputDir -and $settingsPreview.OutputDir -ne '-') { $settingsPreview.OutputDir } else { $PlannedOutputDir })
+    Write-LauncherKeyValue -Key 'Dernier output scope' -Value $(if ($SelectedScope -and $SelectedScope.last_output_dir) { $SelectedScope.last_output_dir } else { '-' })
 
     if ($RecentScopes -and $RecentScopes.Count -gt 0) {
-        Write-Host '' 
-        Write-Host '  Recents visibles' -ForegroundColor Cyan
-        foreach ($item in ($RecentScopes | Select-Object -First 3)) {
-            Write-Host ("    - {0} [{1}] -> {2}" -f $item.display_name, (Get-LauncherScopeStatusLabel -Exists ([bool]$item.exists)), (Get-LauncherRepoRelativePath -Path $item.scope_path)) -ForegroundColor Gray
-        }
+        Write-LauncherSection -Title 'Scopes recents'
+        $recentRows = @(
+            $RecentScopes |
+            Select-Object -First 3 |
+            ForEach-Object {
+                [pscustomobject]@{
+                    Statut      = $_.note
+                    Scope       = $_.display_name
+                    Utilisation = $(if ($_.last_used_utc) { ([DateTimeOffset]$_.last_used_utc).ToLocalTime().ToString('yyyy-MM-dd HH:mm') } else { '-' })
+                    Sortie      = $(if ($_.last_output_dir) { $_.last_output_dir } else { '-' })
+                }
+            }
+        )
+        Write-LauncherTable -Rows $recentRows -Columns @('Statut', 'Scope', 'Utilisation', 'Sortie') -Widths @{ Statut = 12; Scope = 22; Utilisation = 18; Sortie = 44 }
     }
 
     if ($SavedSessions -and $SavedSessions.Count -gt 0) {
-        Write-Host ''
-        Write-Host '  Sessions enregistrees' -ForegroundColor Cyan
-        foreach ($item in ($SavedSessions | Select-Object -First 3)) {
-            Write-Host ("    - {0} [{1}] -> {2}" -f $item.display_name, $item.logging_mode, (Get-LauncherRepoRelativePath -Path $item.session_root)) -ForegroundColor Gray
-        }
+        Write-LauncherSection -Title 'Sessions enregistrees'
+        $sessionRows = @(
+            $SavedSessions |
+            Select-Object -First 3 |
+            ForEach-Object {
+                [pscustomobject]@{
+                    Session     = $_.display_name
+                    Statut      = $(if ($_.exists) { 'OK' } else { 'INTROUVABLE' })
+                    Logs        = $(if ($_.logging_mode) { $_.logging_mode } else { '-' })
+                    Utilisation = $(if ($_.last_used_utc) { ([DateTimeOffset]$_.last_used_utc).ToLocalTime().ToString('yyyy-MM-dd HH:mm') } else { '-' })
+                }
+            }
+        )
+        Write-LauncherTable -Rows $sessionRows -Columns @('Session', 'Statut', 'Logs', 'Utilisation') -Widths @{ Session = 24; Statut = 12; Logs = 12; Utilisation = 18 }
     }
 
-    Write-Host ''
-    Write-Host '  Actions disponibles' -ForegroundColor Cyan
-    Write-Host '    - Cree ou choisis un fichier de scope' -ForegroundColor Gray
-    Write-Host '    - Gere les sessions enregistrees et leur dossier de logs' -ForegroundColor Gray
-    Write-Host '    - Ajuste le niveau de logs avant le lancement' -ForegroundColor Gray
-    Write-Host '    - Bascule entre mode visuel et mode console si besoin' -ForegroundColor Gray
-    Write-Host '    - Lance ensuite avec le scope ou la session selectionnee' -ForegroundColor Gray
-    Write-Host '    - Prochaine etape recommandee : verifie le scope, les logs puis lance.' -ForegroundColor DarkGray
+    Write-LauncherSection -Title 'Actions disponibles'
+    Write-Host '  Cree ou choisis un scope, gere les sessions, regle les logs, puis lance.' -ForegroundColor Gray
+    Write-Host '  Le menu ci-dessous garde toujours un raccourci clavier numerique.' -ForegroundColor DarkGray
+
+    Write-LauncherSection -Title 'Prochaine etape'
+    if ($SelectedSession) {
+        Write-Host '  Reprends la session active si ses fichiers te conviennent, sinon choisis un autre scope.' -ForegroundColor Yellow
+    } elseif ($SelectedScope) {
+        Write-Host '  Verifie le scope selectionne, le dossier des logs et le dossier de sortie, puis lance.' -ForegroundColor Yellow
+    } else {
+        Write-Host '  Commence par creer un fichier de scope ou en choisir un existant.' -ForegroundColor Yellow
+    }
 }
 
 function Show-LauncherScopeLastOutput {
@@ -2804,23 +2978,25 @@ function Select-LauncherGuidedStartupPlan {
 
         Show-LauncherScopeSelection -SelectedScope $selectedScope -SelectedSession $selectedSession -PlannedOutputDir $plannedOutputDir -LoggingMode $loggingMode -PlannedLogDir $plannedLogDir -InteractionMode $interactionMode -RecentScopes $recentScopes -SavedSessions $savedSessions
 
-        Write-Host '1. Creer un nouveau fichier de scope a remplir' -ForegroundColor Gray
-        Write-Host '2. Choisir un fichier de scope existant' -ForegroundColor Gray
-        Write-Host '3. Ouvrir un fichier de scope recent' -ForegroundColor Gray
-        Write-Host '4. Gerer les sessions enregistrees' -ForegroundColor Gray
-        Write-Host '5. Choisir le niveau de logs' -ForegroundColor Gray
-        Write-Host ("6. Basculer le mode d'interaction (actuel: {0})" -f $interactionMode) -ForegroundColor Gray
-        Write-Host '7. Afficher les emplacements des scopes et modeles' -ForegroundColor Gray
-        Write-Host '8. Afficher l''aide sur les champs du scope' -ForegroundColor Gray
-        Write-Host '9. Afficher le dernier dossier de sortie du scope courant' -ForegroundColor Gray
-        Write-Host '10. Relancer le dernier fichier de scope utilise' -ForegroundColor Gray
-        Write-Host '11. Lancer avec le scope ou la session active' -ForegroundColor Gray
-        Write-Host '12. Assistant console sans documents' -ForegroundColor Gray
-        Write-Host '13. Relancer un ancien run' -ForegroundColor Gray
-        Write-Host '0. Quitter' -ForegroundColor Gray
+        $defaultChoice = if ($selectedScope -or $selectedSession) { '11' } else { '2' }
+
+        Write-LauncherSection -Title 'Zone de selection'
+        Write-LauncherMenuOption -Number '1' -Label 'Creer un nouveau fichier de scope a remplir' -IsDefault:($defaultChoice -eq '1') -Hint 'modele minimal, standard ou avance'
+        Write-LauncherMenuOption -Number '2' -Label 'Choisir un fichier de scope existant' -IsDefault:($defaultChoice -eq '2') -Hint 'scopes actifs ou incoming'
+        Write-LauncherMenuOption -Number '3' -Label 'Ouvrir un fichier de scope recent' -IsDefault:($defaultChoice -eq '3') -Hint 'scope deja utilise'
+        Write-LauncherMenuOption -Number '4' -Label 'Gerer les sessions enregistrees' -IsDefault:($defaultChoice -eq '4') -Hint 'ouvrir, relancer, dupliquer, supprimer'
+        Write-LauncherMenuOption -Number '5' -Label 'Choisir le niveau de logs' -IsDefault:($defaultChoice -eq '5') -Hint 'standard, verbeux ou debug'
+        Write-LauncherMenuOption -Number '6' -Label ("Basculer le mode d'interaction ({0})" -f $interactionMode) -IsDefault:($defaultChoice -eq '6')
+        Write-LauncherMenuOption -Number '7' -Label 'Afficher les emplacements des scopes et modeles' -IsDefault:($defaultChoice -eq '7')
+        Write-LauncherMenuOption -Number '8' -Label 'Afficher l''aide sur les champs du scope' -IsDefault:($defaultChoice -eq '8')
+        Write-LauncherMenuOption -Number '9' -Label 'Afficher le dernier dossier de sortie du scope courant' -IsDefault:($defaultChoice -eq '9')
+        Write-LauncherMenuOption -Number '10' -Label 'Relancer le dernier fichier de scope utilise' -IsDefault:($defaultChoice -eq '10')
+        Write-LauncherMenuOption -Number '11' -Label 'Lancer avec le scope ou la session active' -IsDefault:($defaultChoice -eq '11') -Hint 'action recommandee si tout est pret'
+        Write-LauncherMenuOption -Number '12' -Label 'Assistant console sans documents' -IsDefault:($defaultChoice -eq '12')
+        Write-LauncherMenuOption -Number '13' -Label 'Relancer un ancien run' -IsDefault:($defaultChoice -eq '13')
+        Write-LauncherMenuOption -Number '0' -Label 'Quitter' -IsDefault:($defaultChoice -eq '0')
 
         $allowedChoices = @('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13')
-        $defaultChoice = if ($selectedScope -or $selectedSession) { '11' } else { '2' }
         $choice = Read-LauncherChoice -Prompt 'Choix' -Allowed $allowedChoices -Default $defaultChoice
 
         switch ($choice) {
@@ -3036,14 +3212,15 @@ function Test-LauncherBootstrapContext {
 function Show-LauncherVersionPanel {
     $launcherInfo = Get-LauncherVersionInfo -Path $PSCommandPath
     $engineInfo = Get-LauncherVersionInfo -Path (Join-Path $PSScriptRoot 'ScopeForge.ps1')
+    $showFullPaths = [bool](Test-LauncherBootstrapContext) -or ($VerbosePreference -eq 'Continue')
 
     Write-LauncherSection -Title 'Version'
     if ($launcherInfo) {
-        Write-LauncherKeyValue -Key 'LauncherPath' -Value $launcherInfo.Path
+        Write-LauncherKeyValue -Key 'Launcher' -Value $(if ($showFullPaths) { $launcherInfo.Path } else { [System.IO.Path]::GetFileName($launcherInfo.Path) })
         Write-LauncherKeyValue -Key 'LauncherUpdated' -Value $launcherInfo.LastWriteTime
     }
     if ($engineInfo) {
-        Write-LauncherKeyValue -Key 'EnginePath' -Value $engineInfo.Path
+        Write-LauncherKeyValue -Key 'Moteur' -Value $(if ($showFullPaths) { $engineInfo.Path } else { [System.IO.Path]::GetFileName($engineInfo.Path) })
         Write-LauncherKeyValue -Key 'EngineUpdated' -Value $engineInfo.LastWriteTime
     }
     if (Test-LauncherBootstrapContext) {
@@ -3616,6 +3793,8 @@ function Get-LauncherStartHereContent {
         [Parameter(Mandatory)][string]$ScopePath,
         [Parameter(Mandatory)][string]$SettingsPath,
         [Parameter(Mandatory)][string]$DefaultOutputDir,
+        [AllowNull()][string]$SessionRoot = '',
+        [AllowNull()][string]$LogsRoot = '',
         [bool]$ManagedScopeFile = $false
     )
 
@@ -3623,11 +3802,19 @@ function Get-LauncherStartHereContent {
     $scopeFileLabel = if ($ManagedScopeFile) { [System.IO.Path]::GetFileName($ScopePath) } else { '01-scope.json' }
 
     return @"
-ScopeForge - guide pas a pas
+ScopeForge - guide operateur pas a pas
+
+Repere rapide
+- Session actuelle       : $(if ([string]::IsNullOrWhiteSpace($SessionRoot)) { 'session creee a la demande' } else { $SessionRoot })
+- Fichier de scope       : $ScopePath
+- Fichier des reglages   : $SettingsPath
+- Dossier des logs       : $(if ([string]::IsNullOrWhiteSpace($LogsRoot)) { 'sera cree pendant le run' } else { $LogsRoot })
+- Dossier de sortie prevu: $DefaultOutputDir
+- Guide des modeles      : scopes/templates/README.md
 
 Tu vas remplir 2 fichiers :
 - $scopeFileLabel : decrit UNIQUEMENT ce qui est autorise
-- 02-run-settings.json : regle la vitesse, la couverture et le volume du run
+- 02-run-settings.json : regle la vitesse, la couverture, les logs et le volume du run
 
 Etape 1 - Comprendre les types de scope
 
@@ -3679,7 +3866,7 @@ Etape 4 - Ce qu'il ne faut PAS mettre dans le scope
 - pas de Wildcard avec chemin comme https://*.example.com/admin
 - pas de cible hors scope
 
-Etape 5 - Remplir 01-scope.json
+Etape 5 - Remplir le fichier de scope
 
 - Chemin du fichier scope : $ScopePath
 - Relis le fichier avant de continuer :
@@ -3687,7 +3874,7 @@ Etape 5 - Remplir 01-scope.json
   2. les Domain n'ont ni scheme ni chemin
   3. les Wildcard sont du type *.example.com ou https://*.example.com
   4. les URL sont absolues en http:// ou https://
-- Quand tu as termine : sauvegarde 01-scope.json puis passe a 02-run-settings.json
+- Quand tu as termine : sauvegarde le scope puis passe a 02-run-settings.json
 
 Etape 6 - Remplir 02-run-settings.json
 
@@ -3715,25 +3902,36 @@ Etape 6 - Remplir 02-run-settings.json
   - respectSchemeOnly = false
   - resume = false
 - Tous les booleens doivent rester en JSON natif true / false sans guillemets
+- Le mode de logs sera memorise avec la session
 
-Dictionnaires / wordlists
+Etape 7 - Dictionnaires / wordlists
 - Statut : $($dictionarySupport.DisplayLabel)
 - Detail : $($dictionarySupport.Detail)
 - Consigne : $($dictionarySupport.Recommendation)
 
-Etape 7 - Ce qui se passe ensuite
+Etape 8 - Ce que fait le launcher ensuite
 
 1. Sauvegarde 02-run-settings.json
 2. Ferme les fenetres d'edition
 3. Le launcher valide les fichiers
-4. Il affiche un resume du scope, des reglages et une duree approximative
+4. Il affiche un resume du scope, des reglages, des logs et une duree approximative
 5. Il lance la collecte
 6. Les resultats seront ecrits dans le dossier indique par outputDir
 7. Valeur actuelle de outputDir : $DefaultOutputDir
+8. Les logs du launcher et du run seront ranges dans le dossier des logs
+
+Etape 9 - Prochaine action attendue
+
+- Sauvegarde les deux fichiers
+- Ferme l'editeur
+- Lis le resume avant lancement
+- Verifie le dossier de sortie et le niveau de logs
+- Lance le run
 
 Relancer plus tard
 
 - Utilise le menu des fichiers de scope deja utilises
+- Utilise aussi les sessions enregistrees pour rouvrir, dupliquer ou relancer une session complete
 - Si un fichier a ete deplace ou supprime, il restera visible comme INTROUVABLE avec son dernier output connu
 $(if ($ManagedScopeFile) { "- Le scope sera edite directement dans son emplacement gere : $ScopePath" } else { "- Le scope est copie dans le workspace de session pour edition." })
 "@
@@ -3809,7 +4007,7 @@ function New-LauncherDocumentSet {
         openReportOnFinish = $OpenReportOnFinish
     }
 
-    $instructions = Get-LauncherStartHereContent -ScopePath $scopePath -SettingsPath $settingsPath -DefaultOutputDir $defaultOutputDir -ManagedScopeFile ([bool](-not [string]::IsNullOrWhiteSpace($ManagedScopeFilePath)))
+    $instructions = Get-LauncherStartHereContent -ScopePath $scopePath -SettingsPath $settingsPath -DefaultOutputDir $defaultOutputDir -SessionRoot $sessionRoot -LogsRoot $logsRoot -ManagedScopeFile ([bool](-not [string]::IsNullOrWhiteSpace($ManagedScopeFilePath)))
 
     Set-Content -LiteralPath $readmePath -Value $instructions -Encoding utf8
     if (-not $ManagedScopeFilePath -and (-not $PreserveExistingFiles -or -not (Test-Path -LiteralPath $scopePath))) {

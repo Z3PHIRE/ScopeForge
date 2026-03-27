@@ -21,5 +21,6 @@ Workflow simple :
 1. Remplace tous les exemples par les vraies valeurs autorisees.
 2. Supprime les lignes inutiles plutot que de les commenter.
 3. Sauvegarde le fichier.
-4. Reviens au launcher puis choisis `Lancer avec ce fichier de scope`.
-5. Apres un premier run reussi, tu pourras aussi le retrouver dans `Afficher les fichiers de scope deja utilises`.
+4. Reviens au launcher puis choisis `Lancer avec le scope ou la session active`.
+5. Lis le resume avant lancement pour verifier les chemins, les logs et le dossier de sortie.
+6. Apres un premier run reussi, tu pourras aussi le retrouver dans `Scopes recents` ou `Sessions enregistrees`.

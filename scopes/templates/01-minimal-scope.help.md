@@ -16,4 +16,6 @@ Workflow simple :
 1. Remplace `app.example.com` par le vrai hostname autorise.
 2. Laisse `exclusions` vide si tu n'as aucun sous-scope a retirer.
 3. Sauvegarde le fichier.
-4. Relance le launcher puis choisis `Lancer avec ce fichier de scope`.
+4. Relance le launcher puis choisis `Lancer avec le scope ou la session active`.
+5. Lis le resume avant lancement pour verifier le fichier, les logs et le dossier de sortie.
+6. Apres un premier run reussi, retrouve ce fichier depuis `Scopes recents` ou `Sessions enregistrees`.

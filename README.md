@@ -454,6 +454,99 @@ Le menu `Afficher les fichiers de scope deja utilises` montre :
 
 Cela permet de relancer plus tard le meme fichier de scope, ou au minimum de retrouver le dernier dossier de sortie associe.
 
+### Sessions sauvegardees
+
+Le launcher conserve aussi des sessions reutilisables dans `sessions/`.
+
+Une session sauvegardee garde au minimum :
+
+- le nom de session
+- le fichier `00-START-HERE.txt`
+- le `01-scope.json` associe
+- le `02-run-settings.json` associe
+- le dernier dossier de sortie connu
+- le dernier dossier de logs connu
+- le niveau de verbosite choisi
+
+Le menu `Gerer les sessions enregistrees` permet ensuite de :
+
+- rouvrir une session
+- revoir ou modifier ses fichiers
+- la relancer plus tard
+- la dupliquer dans un nouveau dossier
+- la supprimer avec confirmation
+- ouvrir le dossier de session, le dernier dossier de sortie ou le dernier dossier de logs
+
+Le launcher retient aussi la derniere session selectionnee si elle existe encore au prochain demarrage.
+
+### Logs et niveaux de verbosite
+
+Avant le lancement, le launcher laisse choisir un mode de logs en francais clair :
+
+- `disabled` : pas de journal launcher supplementaire
+- `normal` : journal utile pour suivre le run sans bruit excessif
+- `verbose` : plus de details sur les choix du launcher et les validations
+- `debug` : verbosite elevee pour le diagnostic et le depannage
+
+Les logs du launcher et les metadonnees de session sont ranges dans le dossier de logs de la session. Le resume avant lancement affiche toujours :
+
+- le dossier de logs planifie
+- le niveau de verbosite choisi
+- le dossier de sortie
+
+En mode `debug`, le launcher journalise davantage :
+
+- les chemins retenus
+- les verifications effectuees
+- le flux de creation de session
+- le passage des parametres vers le moteur
+- les erreurs et avertissements captures
+
+Le mode `debug` reste optionnel pour eviter de surcharger les runs standards.
+
+### Relancer, modifier ou supprimer une session
+
+Workflow conseille pour reprendre un ancien travail :
+
+1. lance `./Launch-ScopeForge.ps1`
+2. ouvre `Gerer les sessions enregistrees`
+3. selectionne la session voulue
+4. choisis ensuite l'action utile :
+   - relancer
+   - modifier les fichiers
+   - ouvrir le dossier
+   - dupliquer
+   - supprimer avec confirmation
+
+La suppression n'est jamais silencieuse. Si tu supprimes une session, le launcher demande une confirmation explicite avant d'effacer son dossier.
+
+### Lire le resume avant lancement
+
+Le panneau de resume avant lancement sert de check-list rapide. Il rappelle en un seul endroit :
+
+- la session active
+- le fichier de scope actif
+- le `02-run-settings.json` actif
+- le dossier de sortie
+- le dossier de logs
+- le mode de logs
+- la composition du scope
+- les sources actives
+- `resume` active ou non
+- une estimation de duree approximative
+
+Lis ce panneau juste avant de confirmer le run. Si une valeur te surprend, reviens en arriere et corrige les fichiers avant de lancer.
+
+### Limites connues de l'interface
+
+Cette interface reste volontairement simple et robuste :
+
+- le mode principal est un mode console enrichi, pas un vrai GUI
+- le mode visuel optionnel depend de `Out-GridView` sous Windows quand il est disponible
+- il n'y a pas de vrai hover souris ni de boutons cliquables integres dans une console PowerShell classique
+- les logs et chemins sont gardes visibles, mais le launcher ne remplace pas un outil de suivi de session complet
+- les dictionnaires / wordlists custom ne sont pas pris en charge tant qu'un support reel n'est pas prouve dans le moteur
+
 ### Exemples de workflow
 
 Workflow simple "comme avant" :

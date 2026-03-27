@@ -25,8 +25,16 @@ Workflow conseille :
 4. Ouvre le fichier cree dans ton editeur.
 5. Remplis le fichier puis sauvegarde-le.
 6. Reviens au launcher et choisis `Lancer avec ce fichier de scope`.
-7. Reviens au launcher puis choisis `Lancer avec ce fichier de scope`.
-8. Apres un premier run reussi, reutilise-le plus tard depuis `Afficher les fichiers de scope deja utilises`.
+7. Lis le resume avant lancement pour verifier le scope, les logs et le dossier de sortie.
+8. Apres un premier run reussi, reutilise-le plus tard depuis `Scopes recents` ou `Sessions enregistrees`.
+
+Ce que le launcher te rappelle apres creation :
+- le nom du fichier cree
+- son chemin complet
+- le guide `.help.md` associe
+- le dossier ou les logs seront ranges
+- le dossier de sortie du prochain run
+- la prochaine action attendue
 
 Comprendre rapidement les types :
 - `Domain` : un hostname exact comme `app.example.com`
