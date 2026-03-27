@@ -107,7 +107,7 @@ function Write-LauncherKV {
         [ConsoleColor]$Color = [ConsoleColor]::Gray
     )
 
-    Write-Host ("  {0,-18} : {1}" -f $Key, (ConvertTo-LauncherCellText -Value $Value)) -ForegroundColor $Color
+    Write-Host ("  {0,-24} : {1}" -f $Key, (ConvertTo-LauncherCellText -Value $Value)) -ForegroundColor $Color
 }
 
 function Write-LauncherLink {
@@ -116,7 +116,7 @@ function Write-LauncherLink {
         [Parameter(Mandatory)][string]$Path
     )
 
-    Write-Host ("  {0,-18} : {1}" -f $Label, $Path) -ForegroundColor Green
+    Write-Host ("  {0,-24} : {1}" -f $Label, $Path) -ForegroundColor Green
 }
 
 function Write-LauncherBarList {
@@ -473,6 +473,143 @@ function Get-LauncherSourceSummary {
     return ('subfinder/httpx/katana + ' + ($sources -join ', '))
 }
 
+function Get-LauncherDictionarySupportStatus {
+    return [pscustomobject]@{
+        Status         = 'not_proven'
+        DisplayLabel   = 'Non pris en charge dans cette version'
+        Detail         = "Aucun parametre ni workflow dictionnaire/wordlist n'a ete verifie dans le moteur actuel."
+        Recommendation = "N'ajoute aucun champ custom lie a un dictionnaire dans 02-run-settings.json."
+    }
+}
+
+function Get-LauncherScopeComposition {
+    param([Parameter(Mandatory)][pscustomobject[]]$ScopeItems)
+
+    $domainCount = @($ScopeItems | Where-Object { $_.Type -eq 'Domain' }).Count
+    $wildcardCount = @($ScopeItems | Where-Object { $_.Type -eq 'Wildcard' }).Count
+    $urlCount = @($ScopeItems | Where-Object { $_.Type -eq 'URL' }).Count
+    $totalExclusions = 0
+    foreach ($item in $ScopeItems) {
+        $totalExclusions += @($item.Exclusions).Count
+    }
+
+    $typeLabels = [System.Collections.Generic.List[string]]::new()
+    if ($domainCount -gt 0) { $typeLabels.Add('Domain') | Out-Null }
+    if ($wildcardCount -gt 0) { $typeLabels.Add('Wildcard') | Out-Null }
+    if ($urlCount -gt 0) { $typeLabels.Add('URL') | Out-Null }
+
+    return [pscustomobject]@{
+        DomainCount      = $domainCount
+        WildcardCount    = $wildcardCount
+        UrlCount         = $urlCount
+        TotalEntries     = $ScopeItems.Count
+        TotalExclusions  = $totalExclusions
+        MixedTypes       = ($typeLabels.Count -gt 1)
+        TypeSummary      = $(if ($typeLabels.Count -gt 0) { $typeLabels -join ', ' } else { '-' })
+    }
+}
+
+function Get-LauncherApproximateTimeEstimate {
+    param(
+        [Parameter(Mandatory)][pscustomobject[]]$ScopeItems,
+        [Parameter(Mandatory)][hashtable]$RunConfig
+    )
+
+    $scopeComposition = Get-LauncherScopeComposition -ScopeItems $ScopeItems
+    $score = 0.0
+    $reasons = [System.Collections.Generic.List[string]]::new()
+
+    $score += $scopeComposition.DomainCount
+    $score += ($scopeComposition.UrlCount * 1.5)
+    $score += ($scopeComposition.WildcardCount * 3.0)
+    $score += ([Math]::Min($scopeComposition.TotalExclusions, 8) * 0.2)
+
+    if ($scopeComposition.WildcardCount -gt 0) {
+        $reasons.Add("les wildcards elargissent la collecte") | Out-Null
+    }
+    if ($scopeComposition.TotalEntries -ge 4) {
+        $reasons.Add("plusieurs cibles sont melangees dans le scope") | Out-Null
+    }
+
+    if ($RunConfig.Depth -ge 4) {
+        $score += 3
+        $reasons.Add("la profondeur de crawl est elevee") | Out-Null
+    } elseif ($RunConfig.Depth -ge 3) {
+        $score += 1.5
+    }
+
+    if ($RunConfig.EnableGau) { $score += 1; $reasons.Add("gau ajoute des URLs historiques") | Out-Null }
+    if ($RunConfig.EnableWaybackUrls) { $score += 1; $reasons.Add("waybackurls ajoute des archives web") | Out-Null }
+    if ($RunConfig.EnableHakrawler) { $score += 2; $reasons.Add("hakrawler ajoute un crawl complementaire") | Out-Null }
+    if ($RunConfig.IncludeApex -and $scopeComposition.WildcardCount -gt 0) { $score += 0.5 }
+    if ($RunConfig.Resume) {
+        $score -= 2.5
+        $reasons.Add("resume peut reduire la duree si des donnees existent deja") | Out-Null
+    }
+    if ($RunConfig.Threads -ge 20) {
+        $score -= 0.5
+    } elseif ($RunConfig.Threads -le 5) {
+        $score += 0.5
+    }
+
+    $band = if ($score -le 3) {
+        'Tres court'
+    } elseif ($score -le 6) {
+        'Court'
+    } elseif ($score -le 10) {
+        'Moyen'
+    } elseif ($score -le 14) {
+        'Long'
+    } else {
+        'Tres long'
+    }
+
+    if ($reasons.Count -eq 0) {
+        $reasons.Add("scope simple et options limitees") | Out-Null
+    }
+
+    return [pscustomobject]@{
+        Band       = $band
+        Score      = [Math]::Round($score, 1)
+        ReasonText = ($reasons | Select-Object -Unique | Select-Object -First 3) -join '; '
+        ScopeStats = $scopeComposition
+    }
+}
+
+function Show-LauncherPreRunSummary {
+    param(
+        [Parameter(Mandatory)][pscustomobject[]]$ScopeItems,
+        [Parameter(Mandatory)][hashtable]$RunConfig
+    )
+
+    $scopeComposition = Get-LauncherScopeComposition -ScopeItems $ScopeItems
+    $estimate = Get-LauncherApproximateTimeEstimate -ScopeItems $ScopeItems -RunConfig $RunConfig
+    $dictionarySupport = Get-LauncherDictionarySupportStatus
+
+    Write-LauncherSection -Title 'Resume avant lancement'
+
+    Write-Host '  Composition du scope' -ForegroundColor Cyan
+    Write-LauncherKeyValue -Key 'Types detectes' -Value $scopeComposition.TypeSummary
+    Write-LauncherKeyValue -Key 'Entrees Domain' -Value $scopeComposition.DomainCount
+    Write-LauncherKeyValue -Key 'Entrees Wildcard' -Value $scopeComposition.WildcardCount
+    Write-LauncherKeyValue -Key 'Entrees URL' -Value $scopeComposition.UrlCount
+    Write-LauncherKeyValue -Key 'Exclusions totales' -Value $scopeComposition.TotalExclusions
+
+    Write-Host ''
+    Write-Host '  Reglages du run' -ForegroundColor Cyan
+    Write-LauncherKeyValue -Key 'Dossier de sortie' -Value $RunConfig.OutputDir
+    Write-LauncherKeyValue -Key 'Resume' -Value $RunConfig.Resume
+    Write-LauncherKeyValue -Key 'Sources actives' -Value (Get-LauncherSourceSummary -EnableGau $RunConfig.EnableGau -EnableWaybackUrls $RunConfig.EnableWaybackUrls -EnableHakrawler $RunConfig.EnableHakrawler)
+    Write-LauncherKeyValue -Key 'Wordlist / dictionnaire' -Value $dictionarySupport.DisplayLabel -Color 'DarkGray'
+
+    Write-Host ''
+    Write-Host '  Duree approximative' -ForegroundColor Cyan
+    Write-LauncherKeyValue -Key 'Estimation' -Value $estimate.Band
+    Write-LauncherKeyValue -Key 'Pourquoi' -Value $estimate.ReasonText -Color 'DarkGray'
+    Write-Host '  Cette estimation est approximative. Elle sert seulement a se reperer avant le lancement.' -ForegroundColor DarkGray
+    Write-Host '  Prochaine etape : confirme le lancement si tout correspond bien au scope voulu.' -ForegroundColor DarkGray
+}
+
 function Get-LauncherProgramProfile {
     param([Parameter(Mandatory)][string]$Name)
     switch ($Name.ToLowerInvariant()) {
@@ -548,62 +685,62 @@ function Select-LauncherProgramProfile {
 function Show-ScopePreview {
     param([Parameter(Mandatory)][pscustomobject[]]$ScopeItems)
     Write-LauncherSection -Title 'Scope validé'
-    Write-Host ("  Items in-scope: {0}" -f $ScopeItems.Count) -ForegroundColor Gray
+    Write-Host ("  Entrees de scope valides : {0}" -f $ScopeItems.Count) -ForegroundColor Gray
     $rows = @($ScopeItems | ForEach-Object {
         [pscustomobject]@{
-            Id         = $_.Id
+            Identifiant = $_.Id
             Type       = $_.Type
-            Value      = $_.NormalizedValue
+            Valeur     = $_.NormalizedValue
             Exclusions = if ($_.Exclusions -and $_.Exclusions.Count -gt 0) { ($_.Exclusions -join ', ') } else { '-' }
         }
     })
-    Write-LauncherTable -Rows $rows -Columns @('Id', 'Type', 'Value', 'Exclusions') -Widths @{ Id = 10; Type = 10; Value = 58; Exclusions = 24 }
+    Write-LauncherTable -Rows $rows -Columns @('Identifiant', 'Type', 'Valeur', 'Exclusions') -Widths @{ Identifiant = 12; Type = 10; Valeur = 56; Exclusions = 24 }
 }
 
 function Show-LauncherConfigPreview {
     param([Parameter(Mandatory)][hashtable]$RunConfig)
     Write-LauncherSection -Title 'Configuration'
     if ($RunConfig.ContainsKey('DocumentWorkspace')) {
-        Write-LauncherKeyValue -Key 'DocumentWorkspace' -Value $RunConfig.DocumentWorkspace
+        Write-LauncherKeyValue -Key 'Workspace documents' -Value $RunConfig.DocumentWorkspace
     }
     if ($RunConfig.ContainsKey('PresetName')) {
         Write-Host ''
-        Write-Host '  Program' -ForegroundColor Cyan
+        Write-Host '  Programme' -ForegroundColor Cyan
         Write-LauncherKeyValue -Key 'Preset' -Value $RunConfig.PresetName
-        Write-LauncherKeyValue -Key 'Preset details' -Value $RunConfig.PresetDescription -Color 'DarkGray'
+        Write-LauncherKeyValue -Key 'Description preset' -Value $RunConfig.PresetDescription -Color 'DarkGray'
     }
     if ($RunConfig.ContainsKey('ProfileName')) {
-        Write-LauncherKeyValue -Key 'Program profile' -Value $RunConfig.ProfileName
-        Write-LauncherKeyValue -Key 'Profile details' -Value $RunConfig.ProfileDescription -Color 'DarkGray'
+        Write-LauncherKeyValue -Key 'Profil cible' -Value $RunConfig.ProfileName
+        Write-LauncherKeyValue -Key 'Details profil' -Value $RunConfig.ProfileDescription -Color 'DarkGray'
         if ($RunConfig.ContainsKey('ProfileSourceExplanation')) {
-            Write-LauncherKeyValue -Key 'Source strategy' -Value $RunConfig.ProfileSourceExplanation -Color 'DarkGray'
+            Write-LauncherKeyValue -Key 'Strategie sources' -Value $RunConfig.ProfileSourceExplanation -Color 'DarkGray'
         }
     }
 
-    Write-LauncherKeyValue -Key 'ScopeFile' -Value $RunConfig.ScopeFile
-    Write-LauncherKeyValue -Key 'ProgramName' -Value $RunConfig.ProgramName
-    Write-LauncherKeyValue -Key 'OutputDir' -Value $RunConfig.OutputDir
+    Write-LauncherKeyValue -Key 'Fichier de scope' -Value $RunConfig.ScopeFile
+    Write-LauncherKeyValue -Key 'Nom du programme' -Value $RunConfig.ProgramName
+    Write-LauncherKeyValue -Key 'Dossier de sortie' -Value $RunConfig.OutputDir
 
     Write-Host ''
-    Write-Host '  Performance' -ForegroundColor Cyan
-    Write-LauncherKeyValue -Key 'Depth' -Value $RunConfig.Depth
-    Write-LauncherKeyValue -Key 'Threads' -Value $RunConfig.Threads
-    Write-LauncherKeyValue -Key 'TimeoutSeconds' -Value $RunConfig.TimeoutSeconds
-    Write-LauncherKeyValue -Key 'UniqueUserAgent' -Value $RunConfig.UniqueUserAgent
+    Write-Host '  Vitesse et volume' -ForegroundColor Cyan
+    Write-LauncherKeyValue -Key 'Profondeur' -Value $RunConfig.Depth
+    Write-LauncherKeyValue -Key 'Concurrence' -Value $RunConfig.Threads
+    Write-LauncherKeyValue -Key 'Timeout' -Value $RunConfig.TimeoutSeconds
+    Write-LauncherKeyValue -Key 'User-Agent' -Value $RunConfig.UniqueUserAgent
 
     Write-Host ''
-    Write-Host '  Sources' -ForegroundColor Cyan
-    Write-LauncherKeyValue -Key 'Sources' -Value (Get-LauncherSourceSummary -EnableGau $RunConfig.EnableGau -EnableWaybackUrls $RunConfig.EnableWaybackUrls -EnableHakrawler $RunConfig.EnableHakrawler)
+    Write-Host '  Couverture' -ForegroundColor Cyan
+    Write-LauncherKeyValue -Key 'Sources actives' -Value (Get-LauncherSourceSummary -EnableGau $RunConfig.EnableGau -EnableWaybackUrls $RunConfig.EnableWaybackUrls -EnableHakrawler $RunConfig.EnableHakrawler)
 
     Write-Host ''
-    Write-Host '  Flags' -ForegroundColor Cyan
-    Write-LauncherKeyValue -Key 'IncludeApex' -Value $RunConfig.IncludeApex
-    Write-LauncherKeyValue -Key 'RespectSchemeOnly' -Value $RunConfig.RespectSchemeOnly
-    Write-LauncherKeyValue -Key 'NoInstall' -Value $RunConfig.NoInstall
-    Write-LauncherKeyValue -Key 'Quiet' -Value $RunConfig.Quiet
-    Write-LauncherKeyValue -Key 'Resume' -Value $RunConfig.Resume
+    Write-Host '  Options' -ForegroundColor Cyan
+    Write-LauncherKeyValue -Key 'Inclure apex' -Value $RunConfig.IncludeApex
+    Write-LauncherKeyValue -Key 'Respecter le scheme' -Value $RunConfig.RespectSchemeOnly
+    Write-LauncherKeyValue -Key 'Sans installation' -Value $RunConfig.NoInstall
+    Write-LauncherKeyValue -Key 'Sortie reduite' -Value $RunConfig.Quiet
+    Write-LauncherKeyValue -Key 'Reprise' -Value $RunConfig.Resume
     if ($RunConfig.ContainsKey('OpenReportOnFinish')) {
-        Write-LauncherKeyValue -Key 'OpenReport' -Value $RunConfig.OpenReportOnFinish
+        Write-LauncherKeyValue -Key 'Ouvrir le rapport' -Value $RunConfig.OpenReportOnFinish
     }
 }
 
@@ -746,16 +883,16 @@ function Show-ProtectedEndpoints {
 function Show-OutputPaths {
     param([Parameter(Mandatory)][pscustomobject]$Result)
     Write-LauncherSection -Title 'Exports'
-    Write-Host '  Quick actions' -ForegroundColor Cyan
-    Write-LauncherLink -Label 'Open report.html' -Path (Join-Path $Result.OutputDir 'reports/report.html')
-    Write-LauncherLink -Label 'Open triage.md' -Path (Join-Path $Result.OutputDir 'reports/triage.md')
-    Write-LauncherLink -Label 'Open run-manifest.json' -Path (Join-Path $Result.OutputDir 'reports/run-manifest.json')
-    Write-LauncherLink -Label 'Open scope-frozen.json' -Path (Join-Path $Result.OutputDir 'reports/scope-frozen.json')
-    Write-LauncherLink -Label 'Open run-settings-frozen.json' -Path (Join-Path $Result.OutputDir 'reports/run-settings-frozen.json')
-    Write-LauncherLink -Label 'Open interesting_urls.json' -Path (Join-Path $Result.OutputDir 'normalized/interesting_urls.json')
-    Write-LauncherLink -Label 'Open interesting_families.json' -Path (Join-Path $Result.OutputDir 'normalized/interesting_families.json')
-    Write-LauncherLink -Label 'Open errors.log' -Path (Join-Path $Result.OutputDir 'logs/errors.log')
-    Write-LauncherLink -Label 'Open tools.log' -Path (Join-Path $Result.OutputDir 'logs/tools.log')
+    Write-Host '  Actions utiles' -ForegroundColor Cyan
+    Write-LauncherLink -Label 'Ouvrir report.html' -Path (Join-Path $Result.OutputDir 'reports/report.html')
+    Write-LauncherLink -Label 'Ouvrir triage.md' -Path (Join-Path $Result.OutputDir 'reports/triage.md')
+    Write-LauncherLink -Label 'Ouvrir run-manifest.json' -Path (Join-Path $Result.OutputDir 'reports/run-manifest.json')
+    Write-LauncherLink -Label 'Ouvrir scope-frozen.json' -Path (Join-Path $Result.OutputDir 'reports/scope-frozen.json')
+    Write-LauncherLink -Label 'Ouvrir run-settings-frozen.json' -Path (Join-Path $Result.OutputDir 'reports/run-settings-frozen.json')
+    Write-LauncherLink -Label 'Ouvrir interesting_urls.json' -Path (Join-Path $Result.OutputDir 'normalized/interesting_urls.json')
+    Write-LauncherLink -Label 'Ouvrir interesting_families.json' -Path (Join-Path $Result.OutputDir 'normalized/interesting_families.json')
+    Write-LauncherLink -Label 'Ouvrir errors.log' -Path (Join-Path $Result.OutputDir 'logs/errors.log')
+    Write-LauncherLink -Label 'Ouvrir tools.log' -Path (Join-Path $Result.OutputDir 'logs/tools.log')
 }
 
 function Show-LauncherInvokeDebugPanel {
@@ -794,7 +931,7 @@ function Show-NextActionsPanel {
     $topCategory = $Result.Summary.TopInterestingCategories | Select-Object -First 1
     $topFamily = $Result.Summary.TopInterestingFamilies | Select-Object -First 1
 
-    Write-LauncherSection -Title 'Next actions'
+    Write-LauncherSection -Title 'Prochaines actions'
     if ($protectedCount -gt 0) {
         Write-Host ("  Revoir les endpoints proteges: {0} cible(s) 401/403." -f $protectedCount) -ForegroundColor Yellow
     }
@@ -918,6 +1055,1095 @@ function Get-LauncherRunsRoot {
         $null = New-Item -ItemType Directory -Path $runsRoot -Force
     }
     return $runsRoot
+}
+
+function Get-LauncherFileWorkspace {
+    $repoRoot = $PSScriptRoot
+    $scopesRoot = Join-Path $repoRoot 'scopes'
+    $stateRoot = Join-Path $repoRoot 'state'
+
+    return [pscustomobject]@{
+        RepoRoot         = $repoRoot
+        ScopesRoot       = $scopesRoot
+        Incoming         = Join-Path $scopesRoot 'incoming'
+        Active           = Join-Path $scopesRoot 'active'
+        Archived         = Join-Path $scopesRoot 'archived'
+        Templates        = Join-Path $scopesRoot 'templates'
+        TemplatesGuide   = Join-Path (Join-Path $scopesRoot 'templates') 'README.md'
+        StateRoot        = $stateRoot
+        RecentScopesPath = Join-Path $stateRoot 'recent-scopes.json'
+    }
+}
+
+function Initialize-LauncherFileWorkspace {
+    $workspace = Get-LauncherFileWorkspace
+    # Ces dossiers restent stables pour que le launcher puisse retrouver
+    # facilement les scopes, les modeles et l'historique recent.
+    foreach ($path in @($workspace.ScopesRoot, $workspace.Incoming, $workspace.Active, $workspace.Archived, $workspace.Templates, $workspace.StateRoot)) {
+        if (-not (Test-Path -LiteralPath $path)) {
+            $null = New-Item -ItemType Directory -Path $path -Force
+        }
+    }
+    Ensure-LauncherDefaultTemplateFiles -Workspace $workspace
+    return $workspace
+}
+
+function Resolve-LauncherScopePath {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return [System.IO.Path]::GetFullPath($Path)
+    }
+
+    return [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $Path))
+}
+
+function Get-LauncherRepoRelativePath {
+    param([AllowNull()][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return '-' }
+
+    try {
+        $workspace = Get-LauncherFileWorkspace
+        $repoRoot = [System.IO.Path]::GetFullPath($workspace.RepoRoot)
+        $fullPath = [System.IO.Path]::GetFullPath($Path)
+        if ($fullPath.StartsWith($repoRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $relativePath = $fullPath.Substring($repoRoot.Length).TrimStart('\', '/')
+            if (-not [string]::IsNullOrWhiteSpace($relativePath)) {
+                return ('.\' + $relativePath.Replace('/', '\'))
+            }
+        }
+        return $fullPath
+    } catch {
+        return $Path
+    }
+}
+
+function Get-LauncherRecentScopesLimit {
+    return 12
+}
+
+function Get-LauncherScopeStatusLabel {
+    param([bool]$Exists)
+
+    if ($Exists) { return 'OK' }
+    return 'INTROUVABLE'
+}
+
+function Test-LauncherEditableManagedScopePath {
+    param([AllowNull()][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+
+    $resolvedPath = Resolve-LauncherScopePath -Path $Path
+    $workspace = Initialize-LauncherFileWorkspace
+    foreach ($editableRoot in @($workspace.Incoming, $workspace.Active)) {
+        $resolvedRoot = [System.IO.Path]::GetFullPath($editableRoot).TrimEnd('\', '/')
+        if ($resolvedPath.Equals($resolvedRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+
+        $prefix = $resolvedRoot + [System.IO.Path]::DirectorySeparatorChar
+        if ($resolvedPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Get-LauncherRecentScopeUpdatePath {
+    param([Parameter(Mandatory)][hashtable]$RunConfig)
+
+    foreach ($key in @('LauncherSelectedScopePath', 'ManagedScopeFile', 'ScopeFile')) {
+        if ($RunConfig.ContainsKey($key) -and -not [string]::IsNullOrWhiteSpace([string]$RunConfig[$key])) {
+            return (Resolve-LauncherScopePath -Path ([string]$RunConfig[$key]))
+        }
+    }
+
+    return $null
+}
+
+function Get-LauncherBuiltInScopeTemplateContent {
+    param([Parameter(Mandatory)][string]$TemplateKey)
+
+    switch ($TemplateKey.ToLowerInvariant()) {
+        'minimal' {
+            return @'
+[
+  {
+    "type": "Domain",
+    "value": "app.example.com",
+    "exclusions": []
+  }
+]
+'@
+        }
+        'standard' {
+            return @'
+[
+  {
+    "type": "Domain",
+    "value": "app.example.com",
+    "exclusions": []
+  },
+  {
+    "type": "Wildcard",
+    "value": "https://*.example.com",
+    "exclusions": ["dev", "staging"]
+  },
+  {
+    "type": "URL",
+    "value": "https://app.example.com/api/v1",
+    "exclusions": []
+  }
+]
+'@
+        }
+        'advanced' {
+            return @'
+[
+  {
+    "type": "Domain",
+    "value": "app.example.com",
+    "exclusions": []
+  },
+  {
+    "type": "Domain",
+    "value": "api.example.com",
+    "exclusions": []
+  },
+  {
+    "type": "Wildcard",
+    "value": "https://*.example.com",
+    "exclusions": ["dev", "qa", "sandbox", "staging"]
+  },
+  {
+    "type": "URL",
+    "value": "https://app.example.com/login",
+    "exclusions": []
+  },
+  {
+    "type": "URL",
+    "value": "https://app.example.com/api/v1",
+    "exclusions": []
+  }
+]
+'@
+        }
+        default {
+            throw "Modele de scope inconnu: $TemplateKey"
+        }
+    }
+}
+
+function Get-LauncherBuiltInScopeTemplateHelpContent {
+    param([Parameter(Mandatory)][string]$TemplateKey)
+
+    switch ($TemplateKey.ToLowerInvariant()) {
+        'minimal' {
+            return @'
+# Modele minimal
+
+Ce modele sert a demarrer avec un seul item de scope simple et exact.
+
+Quand l'utiliser :
+- pour un premier test du launcher
+- pour une cible avec un seul hostname exact
+- pour verifier rapidement que le workflow fonctionne
+
+Champs :
+- `type` : obligatoire. Valeurs autorisees : `URL`, `Domain`, `Wildcard`.
+- `value` : obligatoire. Ici, un hostname exact comme `app.example.com`.
+- `exclusions` : optionnel. Tableau de tokens a exclure.
+
+Workflow simple :
+1. Remplace `app.example.com` par le vrai hostname autorise.
+2. Laisse `exclusions` vide si tu n'as aucun sous-scope a retirer.
+3. Sauvegarde le fichier.
+4. Relance le launcher puis choisis `Lancer avec ce fichier de scope`.
+'@
+        }
+        'standard' {
+            return @'
+# Modele standard
+
+Ce modele combine les trois formes de scope les plus utiles : `Domain`, `Wildcard` et `URL`.
+
+Quand l'utiliser :
+- pour un programme web classique
+- quand tu connais un ou deux hosts exacts
+- quand tu veux aussi autoriser un wildcard et quelques URL de depart utiles
+
+Champs :
+- `type` : obligatoire. Utilise `Domain` pour un host exact, `Wildcard` pour des sous-domaines, `URL` pour une URL de depart precise.
+- `value` : obligatoire. Respecte le format exact :
+  - `Domain` : `app.example.com`
+  - `Wildcard` : `https://*.example.com` ou `*.example.com`
+  - `URL` : `https://app.example.com/api/v1`
+- `exclusions` : optionnel. Tableau de chaines simples comme `["dev", "staging"]`.
+
+Workflow simple :
+1. Garde uniquement les items autorises par le programme.
+2. Ajuste les exclusions avec des tokens specifiques.
+3. Sauvegarde le fichier.
+4. Reviens au launcher puis choisis `Lancer avec ce fichier de scope`. Le resultat sera ecrit dans le dossier de sortie indique par le launcher.
+'@
+        }
+        'advanced' {
+            return @'
+# Modele avance
+
+Ce modele sert a preparer un scope plus riche avec plusieurs hosts exacts, plusieurs URL de depart et un wildcard complete par des exclusions.
+
+Quand l'utiliser :
+- pour un programme avec plusieurs applications
+- pour separer clairement web, API et points d'entree utiles
+- quand tu veux un fichier plus complet avant le premier run
+
+Champs :
+- `type` : obligatoire. Toujours `URL`, `Domain` ou `Wildcard`.
+- `value` : obligatoire. Doit respecter le format attendu par le parseur.
+- `exclusions` : optionnel. Tableau de chaines; evite les tokens trop larges qui excluent trop de choses.
+
+Points d'attention :
+- `*.example.com` n'inclut pas automatiquement `example.com`. Ajoute un item `Domain` si besoin.
+- Les commentaires JSON ne sont pas supportes de maniere fiable. Garde un JSON strict.
+- Les champs supplementaires dans le JSON n'ont pas d'effet. N'ajoute pas de metadonnees dans le scope.
+
+Workflow simple :
+1. Remplace tous les exemples par les vraies valeurs autorisees.
+2. Supprime les lignes inutiles plutot que de les commenter.
+3. Sauvegarde le fichier.
+4. Reviens au launcher puis choisis `Lancer avec ce fichier de scope`.
+5. Apres un premier run reussi, tu pourras aussi le retrouver dans `Afficher les fichiers de scope deja utilises`.
+'@
+        }
+        default {
+            throw "Guide de modele de scope inconnu: $TemplateKey"
+        }
+    }
+}
+
+function Get-LauncherScopeTemplatesReadmeContent {
+    return @'
+# Modeles de fichiers de scope
+
+Ces fichiers servent de base pour creer un scope editable a la main.
+
+Regles importantes :
+- Le moteur attend un tableau JSON strict.
+- Chaque item doit contenir `type` et `value`.
+- `exclusions` doit etre un tableau de chaines.
+- Les commentaires JSON ne sont pas supportes de maniere fiable : utilise les fichiers `.md` pour l'aide.
+
+Modeles disponibles :
+- `01-minimal-scope.json` : un seul item simple pour demarrer vite.
+- `02-standard-scope.json` : un exemple equilibre avec `Domain`, `Wildcard` et `URL`.
+- `03-advanced-scope.json` : un squelette plus riche pour les programmes avec plusieurs surfaces.
+
+Guides associes :
+- `01-minimal-scope.help.md`
+- `02-standard-scope.help.md`
+- `03-advanced-scope.help.md`
+
+Workflow conseille :
+1. Lance `./Launch-ScopeForge.ps1`.
+2. Choisis `Creer un nouveau fichier de scope a remplir`.
+3. Selectionne le modele minimal, standard ou avance.
+4. Ouvre le fichier cree dans ton editeur.
+5. Remplis le fichier puis sauvegarde-le.
+6. Reviens au launcher puis choisis `Lancer avec ce fichier de scope`.
+7. Apres un premier run reussi, tu pourras aussi le retrouver dans `Afficher les fichiers de scope deja utilises`.
+'@
+}
+
+function Get-LauncherBuiltInScopeTemplates {
+    return @(
+        [pscustomobject]@{
+            Key                 = 'minimal'
+            SortOrder           = 1
+            DisplayName         = 'Modele minimal'
+            MenuLabel           = 'Creer un modele minimal'
+            Description         = 'Un seul item exact pour demarrer tres vite.'
+            FileName            = '01-minimal-scope.json'
+            HelpFileName        = '01-minimal-scope.help.md'
+            SuggestedFilePrefix = 'scope-minimal'
+        },
+        [pscustomobject]@{
+            Key                 = 'standard'
+            SortOrder           = 2
+            DisplayName         = 'Modele standard'
+            MenuLabel           = 'Creer un modele standard'
+            Description         = 'Le bon choix pour la plupart des programmes web.'
+            FileName            = '02-standard-scope.json'
+            HelpFileName        = '02-standard-scope.help.md'
+            SuggestedFilePrefix = 'scope-standard'
+        },
+        [pscustomobject]@{
+            Key                 = 'advanced'
+            SortOrder           = 3
+            DisplayName         = 'Modele avance'
+            MenuLabel           = 'Creer un modele avance'
+            Description         = 'Plusieurs items pour preparer un scope plus complet.'
+            FileName            = '03-advanced-scope.json'
+            HelpFileName        = '03-advanced-scope.help.md'
+            SuggestedFilePrefix = 'scope-advanced'
+        }
+    )
+}
+
+function Ensure-LauncherDefaultTemplateFiles {
+    param([AllowNull()][object]$Workspace = $null)
+
+    $targetWorkspace = if ($Workspace) { $Workspace } else { Get-LauncherFileWorkspace }
+
+    # Les modeles integres sont ecrits localement si besoin pour que le workflow
+    # reste autonome, y compris quand seuls les scripts principaux sont presents.
+    foreach ($template in (Get-LauncherBuiltInScopeTemplates)) {
+        $templatePath = Join-Path $targetWorkspace.Templates $template.FileName
+        if (-not (Test-Path -LiteralPath $templatePath)) {
+            Set-Content -LiteralPath $templatePath -Value (Get-LauncherBuiltInScopeTemplateContent -TemplateKey $template.Key) -Encoding utf8
+        }
+
+        $helpPath = Join-Path $targetWorkspace.Templates $template.HelpFileName
+        if (-not (Test-Path -LiteralPath $helpPath)) {
+            Set-Content -LiteralPath $helpPath -Value (Get-LauncherBuiltInScopeTemplateHelpContent -TemplateKey $template.Key) -Encoding utf8
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $targetWorkspace.TemplatesGuide)) {
+        Set-Content -LiteralPath $targetWorkspace.TemplatesGuide -Value (Get-LauncherScopeTemplatesReadmeContent) -Encoding utf8
+    }
+}
+
+function Get-LauncherMinimalScopeStarterContent {
+    return (Get-LauncherBuiltInScopeTemplateContent -TemplateKey 'minimal')
+}
+
+function Get-LauncherDefaultScopeTemplateContent {
+    return (Get-LauncherBuiltInScopeTemplateContent -TemplateKey 'standard')
+}
+
+function Get-LauncherScopeTemplateFiles {
+    $workspace = Initialize-LauncherFileWorkspace
+    $templates = [System.Collections.Generic.List[object]]::new()
+    $builtInByFileName = @{}
+    foreach ($template in (Get-LauncherBuiltInScopeTemplates)) {
+        $builtInByFileName[$template.FileName.ToLowerInvariant()] = $template
+    }
+
+    foreach ($file in (Get-ChildItem -LiteralPath $workspace.Templates -Filter *.json -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
+        $fileKey = $file.Name.ToLowerInvariant()
+        $builtInTemplate = if ($builtInByFileName.ContainsKey($fileKey)) { $builtInByFileName[$fileKey] } else { $null }
+        $templates.Add([pscustomobject]@{
+                Key                 = $(if ($builtInTemplate) { $builtInTemplate.Key } else { $file.BaseName })
+                DisplayName         = $(if ($builtInTemplate) { $builtInTemplate.DisplayName } else { $file.BaseName })
+                MenuLabel           = $(if ($builtInTemplate) { $builtInTemplate.MenuLabel } else { "Utiliser le modele $($file.BaseName)" })
+                Description         = $(if ($builtInTemplate) { $builtInTemplate.Description } else { 'Modele personnalise detecte dans scopes/templates.' })
+                Source              = 'scopes/templates'
+                Path                = $file.FullName
+                HelpPath            = $(if ($builtInTemplate) { Join-Path $workspace.Templates $builtInTemplate.HelpFileName } else { $workspace.TemplatesGuide })
+                SuggestedFilePrefix = $(if ($builtInTemplate) { $builtInTemplate.SuggestedFilePrefix } else { 'scope-personnalise' })
+                SortOrder           = $(if ($builtInTemplate) { $builtInTemplate.SortOrder } else { 100 })
+            }) | Out-Null
+    }
+
+    return @($templates | Sort-Object SortOrder, DisplayName)
+}
+
+function New-LauncherRecentScopeRecord {
+    param(
+        [AllowNull()][string]$DisplayName,
+        [AllowNull()][string]$ScopePath,
+        [AllowNull()][string]$LastOutputDir,
+        [AllowNull()][string]$LastUsedUtc,
+        [AllowNull()][string]$Note
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ScopePath)) { return $null }
+
+    $resolvedScopePath = Resolve-LauncherScopePath -Path $ScopePath
+    $exists = Test-Path -LiteralPath $resolvedScopePath
+    $displayNameValue = if ([string]::IsNullOrWhiteSpace($DisplayName)) { [System.IO.Path]::GetFileNameWithoutExtension($resolvedScopePath) } else { $DisplayName }
+    $noteValue = if ([string]::IsNullOrWhiteSpace($Note)) { Get-LauncherScopeStatusLabel -Exists $exists } else { $Note }
+
+    return [pscustomobject]@{
+        display_name    = $displayNameValue
+        scope_path      = $resolvedScopePath
+        last_output_dir = if ([string]::IsNullOrWhiteSpace($LastOutputDir)) { $null } else { $LastOutputDir }
+        last_used_utc   = if ([string]::IsNullOrWhiteSpace($LastUsedUtc)) { [DateTimeOffset]::UtcNow.ToString('o') } else { $LastUsedUtc }
+        exists          = [bool]$exists
+        note            = $noteValue
+    }
+}
+
+function Read-LauncherRecentScopes {
+    $workspace = Initialize-LauncherFileWorkspace
+    if (-not (Test-Path -LiteralPath $workspace.RecentScopesPath)) { return @() }
+
+    try {
+        $rawContent = Get-Content -LiteralPath $workspace.RecentScopesPath -Raw -Encoding utf8
+        if ([string]::IsNullOrWhiteSpace($rawContent)) { return @() }
+        $parsed = ConvertFrom-Json -InputObject $rawContent -Depth 50
+    } catch {
+        Write-Host ("Impossible de lire state/recent-scopes.json: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+        return @()
+    }
+
+    $items = if ($parsed -is [System.Collections.IEnumerable] -and $parsed -isnot [string] -and -not $parsed.PSObject.Properties['items']) {
+        @($parsed)
+    } elseif ($parsed.PSObject.Properties['items']) {
+        @($parsed.items)
+    } else {
+        @()
+    }
+
+    $records = [System.Collections.Generic.List[object]]::new()
+    # Les scopes recents restent visibles meme s'ils ont ete deplaces, afin de
+    # garder le dernier output connu et d'expliquer le statut INTROUVABLE.
+    foreach ($item in $items) {
+        $record = New-LauncherRecentScopeRecord `
+            -DisplayName ([string](Get-LauncherDocumentProperty -InputObject $item -Name 'display_name' -Default '')) `
+            -ScopePath ([string](Get-LauncherDocumentProperty -InputObject $item -Name 'scope_path' -Default '')) `
+            -LastOutputDir ([string](Get-LauncherDocumentProperty -InputObject $item -Name 'last_output_dir' -Default '')) `
+            -LastUsedUtc ([string](Get-LauncherDocumentProperty -InputObject $item -Name 'last_used_utc' -Default '')) `
+            -Note ([string](Get-LauncherDocumentProperty -InputObject $item -Name 'note' -Default ''))
+        if ($record) {
+            $record.note = Get-LauncherScopeStatusLabel -Exists $record.exists
+            $records.Add($record) | Out-Null
+        }
+    }
+
+    return @(
+        $records |
+        Sort-Object -Property @{
+            Expression = {
+                try { [DateTimeOffset]$_.last_used_utc } catch { [DateTimeOffset]'1970-01-01T00:00:00Z' }
+            }
+            Descending = $true
+        }
+    )
+}
+
+function Write-LauncherRecentScopes {
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Items)
+
+    $workspace = Initialize-LauncherFileWorkspace
+    $payload = [ordered]@{
+        version = 1
+        items   = @(
+            $Items |
+            Select-Object -First (Get-LauncherRecentScopesLimit) |
+            ForEach-Object {
+                $record = New-LauncherRecentScopeRecord `
+                    -DisplayName ([string](Get-LauncherDocumentProperty -InputObject $_ -Name 'display_name' -Default '')) `
+                    -ScopePath ([string](Get-LauncherDocumentProperty -InputObject $_ -Name 'scope_path' -Default '')) `
+                    -LastOutputDir ([string](Get-LauncherDocumentProperty -InputObject $_ -Name 'last_output_dir' -Default '')) `
+                    -LastUsedUtc ([string](Get-LauncherDocumentProperty -InputObject $_ -Name 'last_used_utc' -Default '')) `
+                    -Note ([string](Get-LauncherDocumentProperty -InputObject $_ -Name 'note' -Default ''))
+                if ($record) {
+                    [ordered]@{
+                        display_name    = $record.display_name
+                        scope_path      = $record.scope_path
+                        last_output_dir = $record.last_output_dir
+                        last_used_utc   = $record.last_used_utc
+                        exists          = $record.exists
+                        note            = $record.note
+                    }
+                }
+            }
+        )
+    }
+
+    Set-Content -LiteralPath $workspace.RecentScopesPath -Value ($payload | ConvertTo-Json -Depth 20) -Encoding utf8
+    return $workspace.RecentScopesPath
+}
+
+function Update-LauncherRecentScopes {
+    param(
+        [Parameter(Mandatory)][string]$ScopePath,
+        [AllowNull()][string]$LastOutputDir,
+        [AllowNull()][string]$DisplayName,
+        [AllowNull()][string]$Note
+    )
+
+    $currentItems = @(Read-LauncherRecentScopes)
+    $newRecord = New-LauncherRecentScopeRecord -DisplayName $DisplayName -ScopePath $ScopePath -LastOutputDir $LastOutputDir -LastUsedUtc ([DateTimeOffset]::UtcNow.ToString('o')) -Note $Note
+    if (-not $newRecord) { return $null }
+
+    $normalizedScopePath = $newRecord.scope_path.ToLowerInvariant()
+    $updatedItems = [System.Collections.Generic.List[object]]::new()
+    $updatedItems.Add($newRecord) | Out-Null
+
+    foreach ($item in $currentItems) {
+        $itemPath = [string](Get-LauncherDocumentProperty -InputObject $item -Name 'scope_path' -Default '')
+        if ([string]::IsNullOrWhiteSpace($itemPath)) { continue }
+        if ($itemPath.ToLowerInvariant() -eq $normalizedScopePath) { continue }
+        $updatedItems.Add($item) | Out-Null
+    }
+
+    $null = Write-LauncherRecentScopes -Items @($updatedItems)
+    return $newRecord
+}
+
+function Get-LauncherRecentScopeByPath {
+    param(
+        [Parameter(Mandatory)][string]$ScopePath,
+        [AllowEmptyCollection()][object[]]$RecentScopes = @()
+    )
+
+    if (-not $RecentScopes -or $RecentScopes.Count -eq 0) {
+        $RecentScopes = @(Read-LauncherRecentScopes)
+    }
+
+    $normalizedPath = (Resolve-LauncherScopePath -Path $ScopePath).ToLowerInvariant()
+    return ($RecentScopes | Where-Object {
+            $candidatePath = [string](Get-LauncherDocumentProperty -InputObject $_ -Name 'scope_path' -Default '')
+            -not [string]::IsNullOrWhiteSpace($candidatePath) -and $candidatePath.ToLowerInvariant() -eq $normalizedPath
+        } | Select-Object -First 1)
+}
+
+function Get-LauncherScopeEntryFromPath {
+    param(
+        [Parameter(Mandatory)][string]$ScopePath,
+        [AllowEmptyCollection()][object[]]$RecentScopes = @()
+    )
+
+    $resolvedScopePath = Resolve-LauncherScopePath -Path $ScopePath
+    $recentItem = Get-LauncherRecentScopeByPath -ScopePath $resolvedScopePath -RecentScopes $RecentScopes
+    $exists = Test-Path -LiteralPath $resolvedScopePath
+
+    return [pscustomobject]@{
+        display_name       = $(if ($recentItem) { $recentItem.display_name } else { [System.IO.Path]::GetFileNameWithoutExtension($resolvedScopePath) })
+        scope_path         = $resolvedScopePath
+        scope_display_path = Get-LauncherRepoRelativePath -Path $resolvedScopePath
+        last_output_dir    = $(if ($recentItem) { $recentItem.last_output_dir } else { $null })
+        last_used_utc      = $(if ($recentItem) { $recentItem.last_used_utc } else { $null })
+        exists             = [bool]$exists
+        note               = $(if ($recentItem -and $recentItem.note) { $recentItem.note } else { Get-LauncherScopeStatusLabel -Exists $exists })
+    }
+}
+
+function Get-LauncherManagedScopeFiles {
+    $workspace = Initialize-LauncherFileWorkspace
+    $recentScopes = @(Read-LauncherRecentScopes)
+    $rows = [System.Collections.Generic.List[object]]::new()
+    $folders = @(
+        [pscustomobject]@{ Label = 'actif'; Path = $workspace.Active },
+        [pscustomobject]@{ Label = 'nouveau'; Path = $workspace.Incoming }
+    )
+
+    foreach ($folder in $folders) {
+        foreach ($file in (Get-ChildItem -LiteralPath $folder.Path -Filter *.json -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
+            $recentItem = Get-LauncherRecentScopeByPath -ScopePath $file.FullName -RecentScopes $recentScopes
+            $rows.Add([pscustomobject]@{
+                    display_name       = $file.BaseName
+                    scope_path         = $file.FullName
+                    scope_display_path = Get-LauncherRepoRelativePath -Path $file.FullName
+                    folder_label       = $folder.Label
+                    last_output_dir    = $(if ($recentItem) { $recentItem.last_output_dir } else { $null })
+                    last_used_utc      = $(if ($recentItem) { $recentItem.last_used_utc } else { $null })
+                    exists             = $true
+                    note               = 'OK'
+                }) | Out-Null
+        }
+    }
+
+    return @($rows)
+}
+
+function Show-LauncherScopeFolders {
+    $workspace = Initialize-LauncherFileWorkspace
+
+    Write-LauncherSection -Title 'Emplacements des scopes'
+    Write-LauncherKeyValue -Key 'Racine du repo' -Value $workspace.RepoRoot
+    Write-LauncherKeyValue -Key 'Nouveaux scopes' -Value $workspace.Incoming
+    Write-LauncherKeyValue -Key 'Scopes actifs' -Value $workspace.Active
+    Write-LauncherKeyValue -Key 'Scopes archives' -Value $workspace.Archived
+    Write-LauncherKeyValue -Key 'Dossier modeles' -Value $workspace.Templates
+    Write-LauncherKeyValue -Key 'Guide des modeles' -Value $workspace.TemplatesGuide
+    Write-LauncherKeyValue -Key 'Etat launcher' -Value $workspace.StateRoot
+    Write-LauncherKeyValue -Key 'Index recent' -Value $workspace.RecentScopesPath
+    Write-LauncherKeyValue -Key 'Exemple local' -Value (Join-Path $workspace.RepoRoot 'examples\scope.json')
+    Write-LauncherKeyValue -Key 'Output par defaut' -Value (Get-LauncherDefaultOutputDir)
+    Write-Host '  Prochaine etape : ouvre un modele dans scopes/templates, ou choisis un fichier deja pret dans scopes/active ou scopes/incoming.' -ForegroundColor DarkGray
+}
+
+function Show-LauncherRecentScopes {
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$RecentScopes)
+
+    Write-LauncherSection -Title 'Scopes recents'
+    if (-not $RecentScopes -or $RecentScopes.Count -eq 0) {
+        Write-Host 'Aucun scope recent enregistre pour le moment.' -ForegroundColor Yellow
+        return
+    }
+
+    $rows = @()
+    for ($index = 0; $index -lt $RecentScopes.Count; $index++) {
+        $item = $RecentScopes[$index]
+        $rows += [pscustomobject]@{
+            Index          = ($index + 1)
+            Statut         = (Get-LauncherScopeStatusLabel -Exists ([bool]$item.exists))
+            Fichier        = $item.display_name
+            Scope          = (Get-LauncherRepoRelativePath -Path $item.scope_path)
+            DerniereUtilisation = $(if ($item.last_used_utc) { ([DateTimeOffset]$item.last_used_utc).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss') } else { '-' })
+            DossierSortie  = $(if ($item.last_output_dir) { $item.last_output_dir } else { '-' })
+        }
+    }
+
+    Write-LauncherTable -Rows $rows -Columns @('Index', 'Statut', 'Fichier', 'Scope', 'DerniereUtilisation', 'DossierSortie') -Widths @{ Index = 6; Statut = 12; Fichier = 18; Scope = 34; DerniereUtilisation = 20; DossierSortie = 34 }
+}
+
+function Show-LauncherSelectedScopeGuidance {
+    param([Parameter(Mandatory)][pscustomobject]$SelectedScope)
+
+    $willEditInPlace = Test-LauncherEditableManagedScopePath -Path $SelectedScope.scope_path
+    Write-Host ''
+    Write-Host '  Fichier de scope selectionne' -ForegroundColor Cyan
+    Write-LauncherKeyValue -Key 'Fichier' -Value $SelectedScope.scope_display_path
+    Write-LauncherKeyValue -Key 'Chemin complet' -Value $SelectedScope.scope_path
+    Write-LauncherKeyValue -Key 'Statut' -Value (Get-LauncherScopeStatusLabel -Exists ([bool]$SelectedScope.exists))
+    Write-LauncherKeyValue -Key 'Mode d edition' -Value $(if ($willEditInPlace) { 'Edition directe sur ce fichier' } else { 'Copie dans une session documents avant edition' })
+    Write-LauncherKeyValue -Key 'Dernier dossier de sortie' -Value $(if ($SelectedScope.last_output_dir) { $SelectedScope.last_output_dir } else { 'Aucun dossier enregistre' })
+    Write-Host '  Prochaine etape : choisis "Lancer avec ce fichier de scope" ou affiche son dernier dossier de sortie.' -ForegroundColor DarkGray
+}
+
+function Select-LauncherRecentScope {
+    $recentScopes = @(Read-LauncherRecentScopes)
+    Show-LauncherRecentScopes -RecentScopes $recentScopes
+    if ($recentScopes.Count -eq 0) { return $null }
+
+    $allowedChoices = @('0') + @(1..$recentScopes.Count | ForEach-Object { [string]$_ })
+    $choice = Read-LauncherChoice -Prompt 'Choisis un scope recent (0=annuler)' -Allowed $allowedChoices -Default '0'
+    if ($choice -eq '0') { return $null }
+    return $recentScopes[[int]$choice - 1]
+}
+
+function Show-LauncherScopeHelp {
+    $workspace = Initialize-LauncherFileWorkspace
+    $templates = @(Get-LauncherScopeTemplateFiles)
+
+    Write-LauncherSection -Title 'Aide sur les champs du scope'
+    Write-Host 'Les fichiers de scope doivent rester en JSON strict sans commentaires.' -ForegroundColor Gray
+    Write-LauncherKeyValue -Key 'Guide general' -Value $workspace.TemplatesGuide
+
+    if ($templates.Count -gt 0) {
+        $rows = @()
+        for ($index = 0; $index -lt $templates.Count; $index++) {
+            $template = $templates[$index]
+            $rows += [pscustomobject]@{
+                Index   = ($index + 1)
+                Modele  = $template.DisplayName
+                Usage   = $template.Description
+                JSON    = (Get-LauncherRepoRelativePath -Path $template.Path)
+                Guide   = (Get-LauncherRepoRelativePath -Path $template.HelpPath)
+            }
+        }
+
+        Write-LauncherTable -Rows $rows -Columns @('Index', 'Modele', 'Usage', 'JSON', 'Guide') -Widths @{ Index = 6; Modele = 20; Usage = 34; JSON = 28; Guide = 30 }
+        Write-Host 'G. Ouvrir le guide general' -ForegroundColor Gray
+        Write-Host '0. Retour' -ForegroundColor Gray
+
+        $allowedChoices = @('0', 'G', 'g') + @(1..$templates.Count | ForEach-Object { [string]$_ })
+        $choice = Read-LauncherChoice -Prompt 'Choix' -Allowed $allowedChoices -Default '0'
+        switch ($choice.ToUpperInvariant()) {
+            '0' { return }
+            'G' { Open-LauncherDocument -Path $workspace.TemplatesGuide -Title 'Guide des modeles de scope' }
+            default {
+                $selectedTemplate = $templates[[int]$choice - 1]
+                Open-LauncherDocument -Path $selectedTemplate.HelpPath -Title ("Guide {0}" -f $selectedTemplate.DisplayName)
+            }
+        }
+    }
+}
+
+function Read-LauncherManualScopePath {
+    while ($true) {
+        $rawPath = Read-LauncherValue -Prompt 'Chemin du fichier de scope JSON (vide pour annuler)' -Default ''
+        if ([string]::IsNullOrWhiteSpace($rawPath)) { return $null }
+
+        $resolvedPath = Resolve-LauncherScopePath -Path $rawPath
+        # La saisie manuelle reste volontairement stricte pour eviter d'ouvrir
+        # un dossier, un mauvais format ou un fichier absent.
+        if (-not (Test-Path -LiteralPath $resolvedPath)) {
+            Write-Host ("Scope introuvable: {0}" -f $resolvedPath) -ForegroundColor Yellow
+            continue
+        }
+
+        $item = Get-Item -LiteralPath $resolvedPath
+        if ($item.PSIsContainer) {
+            Write-Host 'Le chemin pointe vers un dossier, pas un fichier JSON.' -ForegroundColor Yellow
+            continue
+        }
+
+        if ($item.Extension -ne '.json') {
+            Write-Host 'Le scope doit etre un fichier .json.' -ForegroundColor Yellow
+            continue
+        }
+
+        try {
+            $null = @(Read-ScopeFile -Path $resolvedPath)
+        } catch {
+            Write-Host ("Ce fichier JSON ne ressemble pas a un fichier de scope valide: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+            continue
+        }
+
+        return $item.FullName
+    }
+}
+
+function Show-LauncherManagedScopeFiles {
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$ScopeFiles)
+
+    Write-LauncherSection -Title 'Choisir un fichier de scope existant'
+    if (-not $ScopeFiles -or $ScopeFiles.Count -eq 0) {
+        Write-Host 'Aucun fichier de scope JSON detecte dans scopes/active ou scopes/incoming.' -ForegroundColor Yellow
+        return
+    }
+
+    $rows = @()
+    for ($index = 0; $index -lt $ScopeFiles.Count; $index++) {
+        $item = $ScopeFiles[$index]
+        $rows += [pscustomobject]@{
+            Index         = ($index + 1)
+            Dossier       = $item.folder_label
+            Nom           = $item.display_name
+            Scope         = $item.scope_display_path
+            DossierSortie = $(if ($item.last_output_dir) { $item.last_output_dir } else { '-' })
+        }
+    }
+
+    Write-LauncherTable -Rows $rows -Columns @('Index', 'Dossier', 'Nom', 'Scope', 'DossierSortie') -Widths @{ Index = 6; Dossier = 12; Nom = 18; Scope = 38; DossierSortie = 32 }
+}
+
+function Select-LauncherManagedScopeFile {
+    $scopeFiles = @(Get-LauncherManagedScopeFiles)
+    Show-LauncherManagedScopeFiles -ScopeFiles $scopeFiles
+
+    Write-Host 'M. Saisir un chemin manuel' -ForegroundColor Gray
+    Write-Host '0. Annuler' -ForegroundColor Gray
+
+    $allowedChoices = @('0', 'M', 'm') + @(1..$scopeFiles.Count | ForEach-Object { [string]$_ })
+    $choice = Read-LauncherChoice -Prompt 'Choix' -Allowed $allowedChoices -Default $(if ($scopeFiles.Count -gt 0) { '1' } else { 'M' })
+    switch ($choice.ToUpperInvariant()) {
+        '0' { return $null }
+        'M' { return (Read-LauncherManualScopePath) }
+        default { return $scopeFiles[[int]$choice - 1].scope_path }
+    }
+}
+
+function Show-LauncherCreatedScopeGuidance {
+    param(
+        [Parameter(Mandatory)][pscustomobject]$CreatedScope,
+        [Parameter(Mandatory)][string]$PlannedOutputDir
+    )
+
+    Write-LauncherSection -Title 'Fichier de scope cree'
+    Write-LauncherKeyValue -Key 'Nom du fichier' -Value ([System.IO.Path]::GetFileName($CreatedScope.Path))
+    Write-LauncherKeyValue -Key 'Chemin complet' -Value $CreatedScope.Path
+    Write-LauncherKeyValue -Key 'Chemin repo' -Value (Get-LauncherRepoRelativePath -Path $CreatedScope.Path)
+    Write-LauncherKeyValue -Key 'Modele' -Value $CreatedScope.TemplateDisplayName
+    Write-LauncherKeyValue -Key 'Guide du modele' -Value $CreatedScope.HelpPath
+    Write-LauncherKeyValue -Key 'Fichier ouvert' -Value $(if ($CreatedScope.OpenedScope) { 'Oui' } else { 'Non' })
+    Write-LauncherKeyValue -Key 'Guide ouvert' -Value $(if ($CreatedScope.OpenedGuide) { 'Oui' } else { 'Non' })
+    Write-LauncherKeyValue -Key 'Dossier de sortie du prochain run' -Value $PlannedOutputDir
+
+    Write-Host ''
+    Write-Host 'Etapes suivantes' -ForegroundColor Cyan
+    Write-Host '1. Remplis le fichier de scope puis sauvegarde-le.' -ForegroundColor Gray
+    Write-Host '2. Reviens au menu et choisis "Lancer avec ce fichier de scope".' -ForegroundColor Gray
+    Write-Host '3. Apres un premier run reussi, tu pourras aussi le retrouver dans "Afficher les fichiers de scope deja utilises".' -ForegroundColor Gray
+}
+
+function New-LauncherScopeFromTemplate {
+    param([string]$PlannedOutputDir = '')
+
+    $workspace = Initialize-LauncherFileWorkspace
+    $templates = @(Get-LauncherScopeTemplateFiles)
+    $minimalTemplate = $templates | Where-Object { $_.Key -eq 'minimal' } | Select-Object -First 1
+    $standardTemplate = $templates | Where-Object { $_.Key -eq 'standard' } | Select-Object -First 1
+    $advancedTemplate = $templates | Where-Object { $_.Key -eq 'advanced' } | Select-Object -First 1
+    $otherTemplates = @($templates | Where-Object { $_.Key -notin @('minimal', 'standard', 'advanced') })
+
+    Write-LauncherSection -Title 'Creer un nouveau fichier de scope a remplir'
+    Write-Host 'Choisis le type de fichier de scope que tu veux creer.' -ForegroundColor Cyan
+    Write-Host '1. Creer un modele minimal' -ForegroundColor Gray
+    Write-Host '2. Creer un modele standard' -ForegroundColor Gray
+    Write-Host '3. Creer un modele avance' -ForegroundColor Gray
+    if ($otherTemplates.Count -gt 0) {
+        Write-Host '4. Utiliser un autre modele de scopes/templates' -ForegroundColor Gray
+    }
+    Write-Host '0. Annuler' -ForegroundColor Gray
+
+    $allowedTemplateChoices = @('0', '1', '2', '3')
+    if ($otherTemplates.Count -gt 0) { $allowedTemplateChoices += '4' }
+    $templateChoice = Read-LauncherChoice -Prompt 'Type de modele' -Allowed $allowedTemplateChoices -Default '2'
+
+    if ($templateChoice -eq '0') { return $null }
+
+    $selectedTemplate = switch ($templateChoice) {
+        '1' { $minimalTemplate }
+        '2' { $standardTemplate }
+        '3' { $advancedTemplate }
+        '4' {
+            $rows = @()
+            for ($index = 0; $index -lt $otherTemplates.Count; $index++) {
+                $template = $otherTemplates[$index]
+                $rows += [pscustomobject]@{
+                    Index   = ($index + 1)
+                    Nom     = $template.DisplayName
+                    Usage   = $template.Description
+                    JSON    = (Get-LauncherRepoRelativePath -Path $template.Path)
+                    Guide   = (Get-LauncherRepoRelativePath -Path $template.HelpPath)
+                }
+            }
+
+            Write-LauncherTable -Rows $rows -Columns @('Index', 'Nom', 'Usage', 'JSON', 'Guide') -Widths @{ Index = 6; Nom = 20; Usage = 30; JSON = 28; Guide = 28 }
+            Write-Host '0. Annuler' -ForegroundColor Gray
+            $customChoice = Read-LauncherChoice -Prompt 'Modele avance' -Allowed @('0') + @(1..$otherTemplates.Count | ForEach-Object { [string]$_ }) -Default '1'
+            if ($customChoice -eq '0') { return $null }
+            $otherTemplates[[int]$customChoice - 1]
+        }
+    }
+    if (-not $selectedTemplate) { return $null }
+
+    $templateContent = Get-Content -LiteralPath $selectedTemplate.Path -Raw -Encoding utf8
+
+    Write-Host ("Modele choisi : {0}" -f $selectedTemplate.DisplayName) -ForegroundColor Green
+    Write-Host ("Guide associe  : {0}" -f (Get-LauncherRepoRelativePath -Path $selectedTemplate.HelpPath)) -ForegroundColor Gray
+    Write-Host '1. Enregistrer dans scopes/incoming' -ForegroundColor Gray
+    Write-Host '2. Enregistrer dans scopes/active' -ForegroundColor Gray
+    $destinationChoice = Read-LauncherChoice -Prompt 'Destination' -Allowed @('1', '2') -Default '1'
+    $destinationRoot = if ($destinationChoice -eq '2') { $workspace.Active } else { $workspace.Incoming }
+
+    while ($true) {
+        # Le nom par defaut rappelle le type de modele pour retrouver vite le bon
+        # fichier dans scopes/incoming ou dans les recents.
+        $defaultName = ('{0}-{1}' -f $selectedTemplate.SuggestedFilePrefix, [DateTime]::Now.ToString('yyyyMMdd-HHmmss'))
+        $fileName = Read-LauncherValue -Prompt 'Nom du fichier scope' -Default $defaultName
+        if ([string]::IsNullOrWhiteSpace($fileName)) {
+            Write-Host 'Le nom du fichier ne peut pas etre vide.' -ForegroundColor Yellow
+            continue
+        }
+        if (-not $fileName.EndsWith('.json', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $fileName += '.json'
+        }
+
+        $invalidChars = [System.IO.Path]::GetInvalidFileNameChars()
+        if ($fileName.IndexOfAny($invalidChars) -ge 0) {
+            Write-Host 'Le nom du fichier contient des caracteres invalides.' -ForegroundColor Yellow
+            continue
+        }
+
+        $targetPath = Join-Path $destinationRoot $fileName
+        if (Test-Path -LiteralPath $targetPath) {
+            Write-Host ("Le fichier existe deja: {0}" -f $targetPath) -ForegroundColor Yellow
+            continue
+        }
+
+        Set-Content -LiteralPath $targetPath -Value $templateContent -Encoding utf8
+        $openedScope = $false
+        $openedGuide = $false
+
+        # Ouvrir immediatement les fichiers retire l'ambiguite sur la prochaine
+        # action attendue: l'utilisateur modifie, sauvegarde, puis relance.
+        if (Read-LauncherYesNo -Prompt 'Ouvrir le fichier cree dans l''editeur' -Default $true) {
+            Open-LauncherDocument -Path $targetPath -Title 'Fichier de scope'
+            $openedScope = $true
+        }
+
+        if (Read-LauncherYesNo -Prompt 'Ouvrir aussi le guide du modele' -Default $false) {
+            Open-LauncherDocument -Path $selectedTemplate.HelpPath -Title ("Guide {0}" -f $selectedTemplate.DisplayName)
+            $openedGuide = $true
+        }
+
+        $createdScope = [pscustomobject]@{
+            Path                = $targetPath
+            HelpPath            = $selectedTemplate.HelpPath
+            TemplateDisplayName = $selectedTemplate.DisplayName
+            OpenedScope         = $openedScope
+            OpenedGuide         = $openedGuide
+        }
+        Show-LauncherCreatedScopeGuidance -CreatedScope $createdScope -PlannedOutputDir $(if ($PlannedOutputDir) { $PlannedOutputDir } else { Get-LauncherDefaultOutputDir })
+        return $createdScope
+    }
+}
+
+function Show-LauncherScopeSelection {
+    param(
+        [AllowNull()][pscustomobject]$SelectedScope,
+        [Parameter(Mandatory)][string]$PlannedOutputDir,
+        [AllowEmptyCollection()][object[]]$RecentScopes = @()
+    )
+
+    $workspace = Initialize-LauncherFileWorkspace
+
+    Write-LauncherSection -Title 'Assistant fichiers de scope'
+    Write-LauncherKeyValue -Key 'Fichier actuellement utilise' -Value $(if ($SelectedScope) { $SelectedScope.scope_display_path } else { 'Aucun fichier de scope selectionne' })
+    Write-LauncherKeyValue -Key 'Statut' -Value $(if ($SelectedScope) { Get-LauncherScopeStatusLabel -Exists ([bool]$SelectedScope.exists) } else { '-' })
+    Write-LauncherKeyValue -Key 'Chemin complet' -Value $(if ($SelectedScope) { $SelectedScope.scope_path } else { '-' })
+    Write-LauncherKeyValue -Key 'Aide pour remplir' -Value $workspace.TemplatesGuide
+    Write-LauncherKeyValue -Key 'Dernier dossier de sortie' -Value $(if ($SelectedScope -and $SelectedScope.last_output_dir) { $SelectedScope.last_output_dir } else { '-' })
+    Write-LauncherKeyValue -Key 'Dossier du prochain run' -Value $PlannedOutputDir
+
+    if ($RecentScopes -and $RecentScopes.Count -gt 0) {
+        Write-Host '' 
+        Write-Host '  Recents visibles' -ForegroundColor Cyan
+        foreach ($item in ($RecentScopes | Select-Object -First 3)) {
+            Write-Host ("    - {0} [{1}] -> {2}" -f $item.display_name, (Get-LauncherScopeStatusLabel -Exists ([bool]$item.exists)), (Get-LauncherRepoRelativePath -Path $item.scope_path)) -ForegroundColor Gray
+        }
+    }
+
+    Write-Host ''
+    Write-Host '  Prochaine etape' -ForegroundColor Cyan
+    Write-Host '    - Cree ou choisis un fichier de scope' -ForegroundColor Gray
+    Write-Host '    - Verifie son aide et son dernier dossier de sortie si besoin' -ForegroundColor Gray
+    Write-Host '    - Lance ensuite avec ce fichier de scope' -ForegroundColor Gray
+}
+
+function Show-LauncherScopeLastOutput {
+    param([AllowNull()][pscustomobject]$SelectedScope)
+
+    Write-LauncherSection -Title 'Dernier dossier de sortie connu'
+    if (-not $SelectedScope) {
+        Write-Host 'Aucun fichier de scope courant selectionne.' -ForegroundColor Yellow
+        return
+    }
+
+    Write-LauncherKeyValue -Key 'Fichier de scope' -Value $SelectedScope.scope_display_path
+    Write-LauncherKeyValue -Key 'Statut' -Value (Get-LauncherScopeStatusLabel -Exists ([bool]$SelectedScope.exists))
+    Write-LauncherKeyValue -Key 'Dossier de sortie' -Value $(if ($SelectedScope.last_output_dir) { $SelectedScope.last_output_dir } else { 'Aucun dossier enregistre' })
+    Write-Host '  Prochaine etape : ouvre ce dossier si tu veux relire les anciens rapports avant de relancer.' -ForegroundColor DarkGray
+}
+
+function Select-LauncherGuidedStartupPlan {
+    param(
+        [string]$InitialScopeFile,
+        [string]$OutputDir,
+        [bool]$AllowRerun = $false
+    )
+
+    $workspace = Initialize-LauncherFileWorkspace
+    $plannedOutputDir = if ($OutputDir) { $OutputDir } else { Get-LauncherDefaultOutputDir }
+    $selectedScope = if ($InitialScopeFile) { Get-LauncherScopeEntryFromPath -ScopePath $InitialScopeFile -RecentScopes (Read-LauncherRecentScopes) } else { $null }
+
+    while ($true) {
+        $recentScopes = @(Read-LauncherRecentScopes)
+        if ($selectedScope) {
+            $selectedScope = Get-LauncherScopeEntryFromPath -ScopePath $selectedScope.scope_path -RecentScopes $recentScopes
+        }
+
+        Show-LauncherScopeSelection -SelectedScope $selectedScope -PlannedOutputDir $plannedOutputDir -RecentScopes $recentScopes
+
+        Write-Host '1. Creer un nouveau fichier de scope a remplir' -ForegroundColor Gray
+        Write-Host '2. Choisir un fichier de scope existant' -ForegroundColor Gray
+        Write-Host '3. Afficher les fichiers de scope deja utilises' -ForegroundColor Gray
+        Write-Host '4. Relancer le dernier fichier de scope utilise' -ForegroundColor Gray
+        Write-Host '5. Afficher les emplacements des scopes et modeles' -ForegroundColor Gray
+        Write-Host '6. Afficher l''aide sur les champs du scope' -ForegroundColor Gray
+        Write-Host '7. Afficher le dernier dossier de sortie du scope courant' -ForegroundColor Gray
+        Write-Host '8. Lancer avec ce fichier de scope' -ForegroundColor Gray
+        if ($AllowRerun) {
+            Write-Host '9. Relancer un ancien run' -ForegroundColor Gray
+            Write-Host '10. Assistant console sans documents' -ForegroundColor Gray
+            Write-Host '0. Quitter' -ForegroundColor Gray
+        } else {
+            Write-Host '9. Assistant console sans documents' -ForegroundColor Gray
+            Write-Host '0. Quitter' -ForegroundColor Gray
+        }
+
+        $allowedChoices = @('0', '1', '2', '3', '4', '5', '6', '7', '8', '9')
+        if ($AllowRerun) { $allowedChoices += '10' }
+        $defaultChoice = if ($selectedScope) { '8' } else { '2' }
+        $choice = Read-LauncherChoice -Prompt 'Choix' -Allowed $allowedChoices -Default $defaultChoice
+
+        switch ($choice) {
+            '1' {
+                $createdScope = New-LauncherScopeFromTemplate -PlannedOutputDir $plannedOutputDir
+                if ($createdScope) {
+                    $selectedScope = Get-LauncherScopeEntryFromPath -ScopePath $createdScope.Path -RecentScopes $recentScopes
+                }
+            }
+            '2' {
+                $scopePath = Select-LauncherManagedScopeFile
+                if ($scopePath) {
+                    $selectedScope = Get-LauncherScopeEntryFromPath -ScopePath $scopePath -RecentScopes $recentScopes
+                    Show-LauncherSelectedScopeGuidance -SelectedScope $selectedScope
+                }
+            }
+            '3' {
+                $recentItem = Select-LauncherRecentScope
+                if ($recentItem) {
+                    $selectedScope = Get-LauncherScopeEntryFromPath -ScopePath $recentItem.scope_path -RecentScopes $recentScopes
+                    Show-LauncherSelectedScopeGuidance -SelectedScope $selectedScope
+                }
+            }
+            '4' {
+                $lastRecent = $recentScopes | Select-Object -First 1
+                if (-not $lastRecent) {
+                    Write-Host 'Aucun fichier de scope recent a relancer.' -ForegroundColor Yellow
+                    continue
+                }
+                $lastScope = Get-LauncherScopeEntryFromPath -ScopePath $lastRecent.scope_path -RecentScopes $recentScopes
+                if (-not $lastScope.exists) {
+                    Write-Host ("Le dernier fichier de scope utilise est INTROUVABLE: {0}" -f $lastScope.scope_display_path) -ForegroundColor Yellow
+                    continue
+                }
+                return [pscustomobject]@{
+                    Action           = 'documents'
+                    InitialScopeFile = $lastScope.scope_path
+                    ManagedScopeFile = $(if (Test-LauncherEditableManagedScopePath -Path $lastScope.scope_path) { $lastScope.scope_path } else { $null })
+                    OutputDir        = $plannedOutputDir
+                }
+            }
+            '5' {
+                Show-LauncherScopeFolders
+            }
+            '6' {
+                Show-LauncherScopeHelp
+            }
+            '7' {
+                Show-LauncherScopeLastOutput -SelectedScope $selectedScope
+            }
+            '8' {
+                if (-not $selectedScope) {
+                    Write-Host 'Selectionne d''abord un fichier de scope.' -ForegroundColor Yellow
+                    continue
+                }
+                if (-not $selectedScope.exists) {
+                    Write-Host ("Le fichier de scope courant est INTROUVABLE: {0}" -f $selectedScope.scope_display_path) -ForegroundColor Yellow
+                    continue
+                }
+                return [pscustomobject]@{
+                    Action           = 'documents'
+                    InitialScopeFile = $selectedScope.scope_path
+                    ManagedScopeFile = $(if (Test-LauncherEditableManagedScopePath -Path $selectedScope.scope_path) { $selectedScope.scope_path } else { $null })
+                    OutputDir        = $plannedOutputDir
+                }
+            }
+            '9' {
+                if ($AllowRerun) {
+                    return [pscustomobject]@{ Action = 'rerun' }
+                }
+                return [pscustomobject]@{
+                    Action           = 'console'
+                    InitialScopeFile = $(if ($selectedScope) { $selectedScope.scope_path } else { $null })
+                    OutputDir        = $plannedOutputDir
+                }
+            }
+            '10' {
+                return [pscustomobject]@{
+                    Action           = 'console'
+                    InitialScopeFile = $(if ($selectedScope) { $selectedScope.scope_path } else { $null })
+                    OutputDir        = $plannedOutputDir
+                }
+            }
+            '0' {
+                return [pscustomobject]@{ Action = 'quit' }
+            }
+        }
+    }
 }
 
 function Get-LauncherRunCatalogRoot {
@@ -1536,9 +2762,138 @@ function Read-LauncherIntegerValue {
     }
 }
 
+function Get-LauncherStartHereContent {
+    param(
+        [Parameter(Mandatory)][string]$ScopePath,
+        [Parameter(Mandatory)][string]$SettingsPath,
+        [Parameter(Mandatory)][string]$DefaultOutputDir,
+        [bool]$ManagedScopeFile = $false
+    )
+
+    $dictionarySupport = Get-LauncherDictionarySupportStatus
+    $scopeFileLabel = if ($ManagedScopeFile) { [System.IO.Path]::GetFileName($ScopePath) } else { '01-scope.json' }
+
+    return @"
+ScopeForge - guide pas a pas
+
+Tu vas remplir 2 fichiers :
+- $scopeFileLabel : decrit UNIQUEMENT ce qui est autorise
+- 02-run-settings.json : regle la vitesse, la couverture et le volume du run
+
+Etape 1 - Comprendre les types de scope
+
+1. Domain
+- Signifie : un hostname exact comme app.example.com
+- Utilise-le quand le programme autorise un site ou sous-domaine precis
+- Exemple :
+  { "type": "Domain", "value": "app.example.com", "exclusions": [] }
+
+2. Wildcard
+- Signifie : plusieurs sous-domaines d'une meme racine comme https://*.example.com
+- Utilise-le quand le programme autorise une famille complete de sous-domaines
+- Exemple :
+  { "type": "Wildcard", "value": "https://*.example.com", "exclusions": ["dev", "staging"] }
+
+3. URL
+- Signifie : une URL de depart precise comme https://api.example.com/v1
+- Utilise-la quand le programme mentionne une URL de depart ou une zone applicative precise
+- Exemple :
+  { "type": "URL", "value": "https://api.example.com/v1", "exclusions": [] }
+
+Etape 2 - Construire un scope avec plusieurs cibles
+
+- 01-scope.json doit rester un tableau JSON
+- Tu peux melanger plusieurs Domain, Wildcard et URL dans le meme fichier
+- Garde seulement les cibles explicitement autorisees
+
+Exemple mixte :
+[
+  { "type": "Domain", "value": "app.example.com", "exclusions": [] },
+  { "type": "Wildcard", "value": "https://*.example.com", "exclusions": ["dev", "staging"] },
+  { "type": "URL", "value": "https://api.example.com/v1", "exclusions": [] }
+]
+
+Etape 3 - Comprendre les exclusions
+
+- exclusions est toujours un tableau, meme s'il est vide
+- Chaque token exclut tout host, URL ou chemin qui contient cette chaine
+- Reste specifique : un token trop large peut exclure plus que prevu
+
+Exemple :
+- ["dev", "staging"] exclut par exemple dev.example.com ou /staging/api
+
+Etape 4 - Ce qu'il ne faut PAS mettre dans le scope
+
+- pas de commentaires JSON
+- pas de type inconnu comme "CIDR" ou "Subdomain"
+- pas de Domain avec scheme comme https://app.example.com
+- pas de Wildcard avec chemin comme https://*.example.com/admin
+- pas de cible hors scope
+
+Etape 5 - Remplir 01-scope.json
+
+- Chemin du fichier scope : $ScopePath
+- Relis le fichier avant de continuer :
+  1. chaque item a bien type, value, exclusions
+  2. les Domain n'ont ni scheme ni chemin
+  3. les Wildcard sont du type *.example.com ou https://*.example.com
+  4. les URL sont absolues en http:// ou https://
+- Quand tu as termine : sauvegarde 01-scope.json puis passe a 02-run-settings.json
+
+Etape 6 - Remplir 02-run-settings.json
+
+- Chemin des reglages : $SettingsPath
+- Reglages qui affectent surtout la vitesse :
+  - depth
+  - threads
+  - timeoutSeconds
+  - resume
+- Reglages qui affectent surtout la couverture :
+  - enableGau
+  - enableWaybackUrls
+  - enableHakrawler
+  - includeApex
+  - respectSchemeOnly
+- Reglages qui augmentent surtout le volume de sortie :
+  - depth
+  - enableGau
+  - enableWaybackUrls
+  - enableHakrawler
+- Reglages prudents par defaut :
+  - preset = balanced
+  - profile = webapp
+  - includeApex = false
+  - respectSchemeOnly = false
+  - resume = false
+- Tous les booleens doivent rester en JSON natif true / false sans guillemets
+
+Dictionnaires / wordlists
+- Statut : $($dictionarySupport.DisplayLabel)
+- Detail : $($dictionarySupport.Detail)
+- Consigne : $($dictionarySupport.Recommendation)
+
+Etape 7 - Ce qui se passe ensuite
+
+1. Sauvegarde 02-run-settings.json
+2. Ferme les fenetres d'edition
+3. Le launcher valide les fichiers
+4. Il affiche un resume du scope, des reglages et une duree approximative
+5. Il lance la collecte
+6. Les resultats seront ecrits dans le dossier indique par outputDir
+7. Valeur actuelle de outputDir : $DefaultOutputDir
+
+Relancer plus tard
+
+- Utilise le menu des fichiers de scope deja utilises
+- Si un fichier a ete deplace ou supprime, il restera visible comme INTROUVABLE avec son dernier output connu
+$(if ($ManagedScopeFile) { "- Le scope sera edite directement dans son emplacement gere : $ScopePath" } else { "- Le scope est copie dans le workspace de session pour edition." })
+"@
+}
+
 function New-LauncherDocumentSet {
     param(
         [string]$InitialScopeFile,
+        [string]$ManagedScopeFilePath,
         [string]$ProgramName,
         [string]$OutputDir,
         [int]$Depth,
@@ -1572,32 +2927,16 @@ function New-LauncherDocumentSet {
     $null = New-Item -ItemType Directory -Path $sessionRoot -Force
 
     $readmePath = Join-Path $sessionRoot '00-START-HERE.txt'
-    $scopePath = Join-Path $sessionRoot '01-scope.json'
+    $scopePath = if ($ManagedScopeFilePath) { Resolve-LauncherScopePath -Path $ManagedScopeFilePath } else { Join-Path $sessionRoot '01-scope.json' }
     $settingsPath = Join-Path $sessionRoot '02-run-settings.json'
 
     $scopeTemplate = $null
-    if ($InitialScopeFile -and (Test-Path -LiteralPath $InitialScopeFile)) {
+    if ($ManagedScopeFilePath) {
+        $scopeTemplate = $null
+    } elseif ($InitialScopeFile -and (Test-Path -LiteralPath $InitialScopeFile)) {
         $scopeTemplate = Get-Content -LiteralPath $InitialScopeFile -Raw -Encoding utf8
     } else {
-        $exampleScopePath = Join-Path $PSScriptRoot 'examples/scope.json'
-        if (Test-Path -LiteralPath $exampleScopePath) {
-            $scopeTemplate = Get-Content -LiteralPath $exampleScopePath -Raw -Encoding utf8
-        } else {
-            $scopeTemplate = @'
-[
-  {
-    "type": "URL",
-    "value": "https://target.example/api/v1",
-    "exclusions": []
-  },
-  {
-    "type": "Wildcard",
-    "value": "https://*.example.com",
-    "exclusions": ["dev", "stg", "staging"]
-  }
-]
-'@
-        }
+        $scopeTemplate = Get-LauncherDefaultScopeTemplateContent
     }
 
     $defaultProgramName = if ($ProgramName) { $ProgramName } else { 'authorized-bugbounty' }
@@ -1605,57 +2944,31 @@ function New-LauncherDocumentSet {
     $defaultUserAgent = if ($UniqueUserAgent) { $UniqueUserAgent } else { "researcher-" + ([Guid]::NewGuid().ToString('N').Substring(0, 8)) }
 
     $settingsObject = [ordered]@{
-        programName       = $defaultProgramName
-        outputDir         = $defaultOutputDir
-        preset            = 'balanced'
-        profile           = 'webapp'
-        depth             = if ($Depth -gt 0) { $Depth } else { 3 }
-        threads           = if ($Threads -gt 0) { $Threads } else { 10 }
-        timeoutSeconds    = if ($TimeoutSeconds -gt 0) { $TimeoutSeconds } else { 30 }
-        uniqueUserAgent   = $defaultUserAgent
-        includeApex       = $IncludeApex
-        respectSchemeOnly = $RespectSchemeOnly
-        enableGau         = $EnableGau
-        enableWaybackUrls = $EnableWaybackUrls
-        enableHakrawler   = $EnableHakrawler
-        noInstall         = $NoInstall
-        quiet             = $Quiet
-        resume            = $Resume
+        preset             = 'balanced'
+        profile            = 'webapp'
+        programName        = $defaultProgramName
+        outputDir          = $defaultOutputDir
+        uniqueUserAgent    = $defaultUserAgent
+        depth              = if ($Depth -gt 0) { $Depth } else { 3 }
+        threads            = if ($Threads -gt 0) { $Threads } else { 10 }
+        timeoutSeconds     = if ($TimeoutSeconds -gt 0) { $TimeoutSeconds } else { 30 }
+        enableGau          = $EnableGau
+        enableWaybackUrls  = $EnableWaybackUrls
+        enableHakrawler    = $EnableHakrawler
+        includeApex        = $IncludeApex
+        respectSchemeOnly  = $RespectSchemeOnly
+        resume             = $Resume
+        noInstall          = $NoInstall
+        quiet              = $Quiet
         openReportOnFinish = $OpenReportOnFinish
     }
 
-    $instructions = @"
-ScopeForge - mode documents
-
-Ordre recommande:
-1. Lis rapidement ce fichier.
-2. Remplis puis sauvegarde 01-scope.json avec UNIQUEMENT le scope autorise.
-3. Remplis puis sauvegarde 02-run-settings.json.
-4. Ferme les fenetres d'edition. Le launcher validera les fichiers et demarrera automatiquement.
-
-Fichiers:
-- 01-scope.json
-  Mets ici la liste du scope autorise. Format attendu: tableau JSON d'items URL / Wildcard / Domain.
-- 02-run-settings.json
-  Mets ici les reglages du run.
-
-Valeurs utiles dans 02-run-settings.json:
-- preset: safe | balanced | deep
-- profile: webapp | api | wide-assets
-- enableGau / enableWaybackUrls / enableHakrawler: true ou false
-- Les champs booléens (quiet, noInstall, resume, includeApex, respectSchemeOnly, openReportOnFinish) doivent rester en JSON natif true / false, sans guillemets.
-- openReportOnFinish: true pour ouvrir automatiquement le rapport HTML a la fin
-
-Conseils:
-- Conserve un User-Agent unique si le programme le demande.
-- Ne mets jamais de cible hors scope.
-- Si une validation echoue, le launcher rouvrira les fichiers pour correction.
-
-Le rapport final ouvrira le HTML principal avec les pages interessantes, familles, priorites et endpoints proteges.
-"@
+    $instructions = Get-LauncherStartHereContent -ScopePath $scopePath -SettingsPath $settingsPath -DefaultOutputDir $defaultOutputDir -ManagedScopeFile ([bool](-not [string]::IsNullOrWhiteSpace($ManagedScopeFilePath)))
 
     Set-Content -LiteralPath $readmePath -Value $instructions -Encoding utf8
-    Set-Content -LiteralPath $scopePath -Value $scopeTemplate -Encoding utf8
+    if (-not $ManagedScopeFilePath) {
+        Set-Content -LiteralPath $scopePath -Value $scopeTemplate -Encoding utf8
+    }
     Set-Content -LiteralPath $settingsPath -Value ($settingsObject | ConvertTo-Json -Depth 20) -Encoding utf8
 
     return [pscustomobject]@{
@@ -1669,6 +2982,7 @@ Le rapport final ouvrira le HTML principal avec les pages interessantes, famille
 function Build-DocumentRunConfig {
     param(
         [string]$InitialScopeFile,
+        [string]$ManagedScopeFilePath,
         [string]$ProgramName,
         [string]$OutputDir,
         [int]$Depth,
@@ -1686,10 +3000,13 @@ function Build-DocumentRunConfig {
         [bool]$OpenReportOnFinish
     )
 
-    $documentSet = New-LauncherDocumentSet -InitialScopeFile $InitialScopeFile -ProgramName $ProgramName -OutputDir $OutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -EnableGau $EnableGau -EnableWaybackUrls $EnableWaybackUrls -EnableHakrawler $EnableHakrawler -NoInstall $NoInstall -Quiet $Quiet -IncludeApex $IncludeApex -RespectSchemeOnly $RespectSchemeOnly -Resume $Resume -OpenReportOnFinish $OpenReportOnFinish
+    $documentSet = New-LauncherDocumentSet -InitialScopeFile $InitialScopeFile -ManagedScopeFilePath $ManagedScopeFilePath -ProgramName $ProgramName -OutputDir $OutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -EnableGau $EnableGau -EnableWaybackUrls $EnableWaybackUrls -EnableHakrawler $EnableHakrawler -NoInstall $NoInstall -Quiet $Quiet -IncludeApex $IncludeApex -RespectSchemeOnly $RespectSchemeOnly -Resume $Resume -OpenReportOnFinish $OpenReportOnFinish
 
     Write-LauncherSection -Title 'Mode documents'
     Write-Host ("Les documents de configuration ont ete crees ici : {0}" -f $documentSet.RootPath) -ForegroundColor Cyan
+    if ($ManagedScopeFilePath) {
+        Write-Host ("Le scope actif sera edite directement ici : {0}" -f (Get-LauncherRepoRelativePath -Path $documentSet.ScopePath)) -ForegroundColor Cyan
+    }
     Write-Host 'Remplis, sauvegarde et ferme chaque document. Le launcher reprendra automatiquement.' -ForegroundColor Gray
 
     Open-LauncherDocument -Path $documentSet.ReadmePath -Title 'Instructions'
@@ -1806,6 +3123,8 @@ function Build-DocumentRunConfig {
                 Resume                 = $localResume
                 OpenReportOnFinish     = $localOpenReportOnFinish
                 DocumentWorkspace      = $documentSet.RootPath
+                ManagedScopeFile       = $(if ($ManagedScopeFilePath) { $documentSet.ScopePath } else { $null })
+                LauncherSelectedScopePath = $(if ($InitialScopeFile) { Resolve-LauncherScopePath -Path $InitialScopeFile } else { $documentSet.ScopePath })
                 ScopePreview           = $scopePreview
             }
         } catch {
@@ -1942,6 +3261,7 @@ function Build-InteractiveRunConfig {
         ProfileDescription = $profile.Description
         ProfileSourceExplanation = $profile.SourceExplanation
         ScopeFile         = $localScopeFile
+        LauncherSelectedScopePath = $(if ($localScopeFile) { Resolve-LauncherScopePath -Path $localScopeFile } else { $null })
         ProgramName       = $localProgramName
         OutputDir         = $localOutputDir
         Depth             = $localDepth
@@ -1995,6 +3315,7 @@ function Start-ScopeForgeLauncher {
 
     $runConfig = @{
         ScopeFile         = $ScopeFile
+        LauncherSelectedScopePath = $(if ($ScopeFile) { Resolve-LauncherScopePath -Path $ScopeFile } else { $null })
         ProgramName       = $ProgramName
         OutputDir         = $OutputDir
         Depth             = $Depth
@@ -2020,19 +3341,28 @@ function Start-ScopeForgeLauncher {
         }
     }
 
+    $showPostRunMenu = $false
+
     if (-not $NonInteractive) {
         Write-LauncherBanner
         Show-LauncherVersionPanel
 
-        $startupAction = if ($RerunManifestPath -or $RerunPrevious) {
-            'rerun'
+        $startupPlan = if ($RerunManifestPath -or $RerunPrevious) {
+            [pscustomobject]@{ Action = 'rerun' }
+        } elseif ($ConsoleMode) {
+            [pscustomobject]@{ Action = 'console' }
         } else {
-            Select-LauncherStartupAction -ConsoleModeDefault:$ConsoleMode -AllowRerun:([bool](@(Get-LauncherStoredRuns).Count -gt 0))
+            Select-LauncherGuidedStartupPlan -InitialScopeFile $ScopeFile -OutputDir $OutputDir -AllowRerun:([bool](@(Get-LauncherStoredRuns).Count -gt 0))
         }
 
-        switch ($startupAction) {
+        if (-not $startupPlan -or $startupPlan.Action -eq 'quit') { return }
+
+        switch ($startupPlan.Action) {
             'console' {
-                $runConfig = Build-InteractiveRunConfig -InitialScopeFile $ScopeFile -ProgramName $ProgramName -OutputDir $OutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -EnableGau $EnableGau -EnableWaybackUrls $EnableWaybackUrls -EnableHakrawler $EnableHakrawler -NoInstall ([bool]$NoInstall) -Quiet ([bool]$Quiet) -IncludeApex ([bool]$IncludeApex) -RespectSchemeOnly ([bool]$RespectSchemeOnly) -Resume ([bool]$Resume) -OpenReportOnFinish $OpenReportOnFinish
+                $showPostRunMenu = $true
+                $selectedScopeFile = if ($startupPlan.PSObject.Properties['InitialScopeFile']) { $startupPlan.InitialScopeFile } else { $ScopeFile }
+                $selectedOutputDir = if ($startupPlan.PSObject.Properties['OutputDir'] -and $startupPlan.OutputDir) { $startupPlan.OutputDir } else { $OutputDir }
+                $runConfig = Build-InteractiveRunConfig -InitialScopeFile $selectedScopeFile -ProgramName $ProgramName -OutputDir $selectedOutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -EnableGau $EnableGau -EnableWaybackUrls $EnableWaybackUrls -EnableHakrawler $EnableHakrawler -NoInstall ([bool]$NoInstall) -Quiet ([bool]$Quiet) -IncludeApex ([bool]$IncludeApex) -RespectSchemeOnly ([bool]$RespectSchemeOnly) -Resume ([bool]$Resume) -OpenReportOnFinish $OpenReportOnFinish
             }
             'rerun' {
                 $selectedRun = if ($RerunManifestPath) { Read-LauncherStoredRunManifest -ManifestPath $RerunManifestPath } else { Select-LauncherStoredRun }
@@ -2044,14 +3374,18 @@ function Start-ScopeForgeLauncher {
                 }
             }
             default {
-                $runConfig = Build-DocumentRunConfig -InitialScopeFile $ScopeFile -ProgramName $ProgramName -OutputDir $OutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -EnableGau $EnableGau -EnableWaybackUrls $EnableWaybackUrls -EnableHakrawler $EnableHakrawler -NoInstall ([bool]$NoInstall) -Quiet ([bool]$Quiet) -IncludeApex ([bool]$IncludeApex) -RespectSchemeOnly ([bool]$RespectSchemeOnly) -Resume ([bool]$Resume) -OpenReportOnFinish $OpenReportOnFinish
+                $selectedScopeFile = if ($startupPlan.PSObject.Properties['InitialScopeFile']) { $startupPlan.InitialScopeFile } else { $ScopeFile }
+                $managedScopeFile = if ($startupPlan.PSObject.Properties['ManagedScopeFile']) { $startupPlan.ManagedScopeFile } else { $null }
+                $selectedOutputDir = if ($startupPlan.PSObject.Properties['OutputDir'] -and $startupPlan.OutputDir) { $startupPlan.OutputDir } else { $OutputDir }
+                $runConfig = Build-DocumentRunConfig -InitialScopeFile $selectedScopeFile -ManagedScopeFilePath $managedScopeFile -ProgramName $ProgramName -OutputDir $selectedOutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -EnableGau $EnableGau -EnableWaybackUrls $EnableWaybackUrls -EnableHakrawler $EnableHakrawler -NoInstall ([bool]$NoInstall) -Quiet ([bool]$Quiet) -IncludeApex ([bool]$IncludeApex) -RespectSchemeOnly ([bool]$RespectSchemeOnly) -Resume ([bool]$Resume) -OpenReportOnFinish $OpenReportOnFinish
             }
         }
 
         $scopePreview = if ($runConfig.ContainsKey('ScopePreview')) { $runConfig.ScopePreview } else { Read-ScopeFile -Path $runConfig.ScopeFile -IncludeApex:([bool]$runConfig.IncludeApex) }
         Show-ScopePreview -ScopeItems $scopePreview
         Show-LauncherConfigPreview -RunConfig $runConfig
-        if ($startupAction -in @('console', 'rerun') -and -not ($RerunManifestPath -and $NonInteractive)) {
+        Show-LauncherPreRunSummary -ScopeItems $scopePreview -RunConfig $runConfig
+        if ($startupPlan.Action -in @('console', 'rerun') -and -not ($RerunManifestPath -and $NonInteractive)) {
             if (-not (Read-LauncherYesNo -Prompt 'Confirmer le lancement ?' -Default $true)) { return }
         } else {
             Write-Host ''
@@ -2088,6 +3422,10 @@ function Start-ScopeForgeLauncher {
     }
 
     $runManifest = Save-LauncherRunManifest -RunConfig $runConfig -Result $result -RunStartedAtUtc $runStartedAtUtc -RunEndedAtUtc ([DateTimeOffset]::UtcNow.ToString('o'))
+    $recentScopePath = Get-LauncherRecentScopeUpdatePath -RunConfig $runConfig
+    if (-not [string]::IsNullOrWhiteSpace([string]$recentScopePath)) {
+        $null = Update-LauncherRecentScopes -ScopePath $recentScopePath -LastOutputDir $result.OutputDir -DisplayName ([System.IO.Path]::GetFileNameWithoutExtension([string]$recentScopePath))
+    }
     $result | Add-Member -NotePropertyName RunManifest -NotePropertyValue $runManifest -Force
     Show-RunSummaryDashboard -Result $result
     Show-NextActionsPanel -Result $result
@@ -2099,7 +3437,7 @@ function Start-ScopeForgeLauncher {
         Open-LauncherPath -Path (Join-Path $result.OutputDir 'reports/report.html')
     }
 
-    if ((-not $NonInteractive) -and $ConsoleMode) {
+    if ((-not $NonInteractive) -and $showPostRunMenu) {
         Show-PostRunMenu -Result $result
     }
 }

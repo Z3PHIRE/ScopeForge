@@ -1,0 +1,7 @@
+[
+  {
+    "type": "Domain",
+    "value": "app.example.com",
+    "exclusions": []
+  }
+]

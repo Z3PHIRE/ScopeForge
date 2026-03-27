@@ -518,7 +518,7 @@ function Read-ScopeFile {
     if (-not (Test-Path -LiteralPath $resolvedPath)) { throw "Scope file not found: $resolvedPath" }
     $raw = Get-Content -LiteralPath $resolvedPath -Raw -Encoding utf8
     if ([string]::IsNullOrWhiteSpace($raw)) { throw 'Scope file is empty.' }
-    try { $parsed = ConvertFrom-Json -InputObject $raw -Depth 100 } catch { throw "Scope file is not valid JSON: $($_.Exception.Message)" }
+    try { $parsed = ConvertFrom-Json -InputObject $raw -Depth 100 -NoEnumerate } catch { throw "Scope file is not valid JSON: $($_.Exception.Message)" }
     if ($parsed -isnot [System.Collections.IEnumerable] -or $parsed -is [string]) { throw 'Scope file must contain a JSON array.' }
     $items = [System.Collections.Generic.List[object]]::new(); $index = 0
     foreach ($item in $parsed) { $index++; $items.Add((Normalize-ScopeItem -InputObject $item -Index $index -IncludeApex:$IncludeApex)) }

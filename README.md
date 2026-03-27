@@ -85,6 +85,14 @@ irm https://raw.githubusercontent.com/Z3PHIRE/ScopeForge/main/Launch-ScopeForgeF
 
 ## Fichier de scope
 
+Le moteur attend un tableau JSON strict. Chaque item contient :
+
+- `type` : `URL`, `Domain` ou `Wildcard`
+- `value` : la valeur exacte correspondant au type choisi
+- `exclusions` : un tableau de tokens a exclure, souvent vide
+
+Pour une compatibilite maximale, garde un JSON sans commentaires.
+
 Exemple complet :
 
 ```json
@@ -106,6 +114,130 @@ Exemple complet :
   }
 ]
 ```
+
+Les modeles aides vivent aussi dans `scopes/templates/README.md`, avec un guide Markdown associe a chaque template.
+
+### Comprendre les types de scope
+
+- `Domain` : un hostname exact comme `app.example.com`
+  Utilise-le quand le programme autorise un site ou sous-domaine precis.
+- `Wildcard` : une famille de sous-domaines comme `https://*.example.com` ou `*.example.com`
+  Utilise-le quand le programme autorise plusieurs sous-domaines sous une meme racine.
+- `URL` : une URL de depart precise comme `https://api.example.com/v1`
+  Utilise-la quand le programme mentionne explicitement une URL de depart, un portail ou une zone limitee a un chemin.
+
+### Quand utiliser Domain / Wildcard / URL
+
+- Choisis `Domain` si tu veux rester sur un host exact sans englober ses voisins.
+- Choisis `Wildcard` si le scope officiel parle d'un ensemble de sous-domaines.
+- Choisis `URL` si tu as besoin d'un point de depart tres precis ou d'une zone applicative clairement delimitee.
+- Tu peux melanger les trois types dans un seul tableau JSON si le programme contient plusieurs cibles heterogenes.
+
+### Construire un scope avec plusieurs cibles
+
+Le fichier `01-scope.json` reste un seul tableau JSON. Tu peux donc combiner :
+
+- plusieurs `Domain`
+- un ou plusieurs `Wildcard`
+- une ou plusieurs `URL`
+
+Exemple mixte :
+
+```json
+[
+  {
+    "type": "Domain",
+    "value": "app.example.com",
+    "exclusions": []
+  },
+  {
+    "type": "Wildcard",
+    "value": "https://*.example.com",
+    "exclusions": ["dev", "staging"]
+  },
+  {
+    "type": "URL",
+    "value": "https://api.example.com/v1",
+    "exclusions": []
+  }
+]
+```
+
+### Exemples simples et exemples mixtes
+
+Exemple minimal avec un seul `Domain` :
+
+```json
+[
+  {
+    "type": "Domain",
+    "value": "app.example.com",
+    "exclusions": []
+  }
+]
+```
+
+Exemple `Wildcard` avec exclusions :
+
+```json
+[
+  {
+    "type": "Wildcard",
+    "value": "https://*.example.com",
+    "exclusions": ["dev", "qa", "staging"]
+  }
+]
+```
+
+Exemple mixte `URL` + `Wildcard` + `Domain` :
+
+```json
+[
+  {
+    "type": "URL",
+    "value": "https://portal.example.com/login",
+    "exclusions": []
+  },
+  {
+    "type": "Wildcard",
+    "value": "https://*.example.com",
+    "exclusions": ["dev", "sandbox"]
+  },
+  {
+    "type": "Domain",
+    "value": "api.example.net",
+    "exclusions": []
+  }
+]
+```
+
+Exemples de choses a ne PAS mettre dans le scope :
+
+```text
+{ "type": "Domain", "value": "https://app.example.com", "exclusions": [] }
+{ "type": "Wildcard", "value": "https://*.example.com/admin", "exclusions": [] }
+{ "type": "CIDR", "value": "10.0.0.0/24", "exclusions": [] }
+// commentaire JSON
+```
+
+Pourquoi :
+
+- `Domain` ne doit pas contenir de scheme ni de chemin
+- `Wildcard` ne doit pas contenir de chemin
+- seuls `URL`, `Domain` et `Wildcard` sont acceptes
+- garde un JSON strict sans commentaires pour une compatibilite maximale
+
+### Comment relire son scope avant lancement
+
+Avant de lancer :
+
+1. verifie que le fichier est bien un tableau JSON
+2. verifie que chaque item contient `type`, `value` et `exclusions`
+3. verifie que chaque `Domain` est un hostname exact
+4. verifie que chaque `Wildcard` est du type `*.example.com` ou `https://*.example.com`
+5. verifie que chaque `URL` est absolue en `http://` ou `https://`
+6. relis les exclusions pour eviter les tokens trop larges
+7. supprime tout exemple qui ne correspond pas au scope reel
 
 ## Sorties générées
 
@@ -187,6 +319,153 @@ Si tu preferes l'ancien assistant en console, tu peux toujours forcer ce mode :
 ```powershell
 ./Launch-ScopeForge.ps1 -ConsoleMode
 ```
+
+### Creer et remplir un fichier de scope
+
+Le launcher sait maintenant t'aider a travailler "comme avant" avec de vrais fichiers a editer manuellement :
+
+1. lance `./Launch-ScopeForge.ps1`
+2. choisis `Creer un nouveau fichier de scope a remplir`
+3. choisis un modele `minimal`, `standard` ou `avance`
+4. choisis le dossier cible, en general `scopes/incoming`
+5. accepte l'ouverture automatique du fichier dans ton editeur
+6. remplis le JSON, sauvegarde, puis reviens au launcher
+7. choisis `Lancer avec ce fichier de scope`
+8. lis le resume avant lancement, puis confirme si tout est correct
+
+Apres creation, le launcher indique clairement :
+
+- le nom du fichier cree
+- son chemin complet
+- s'il a ete ouvert ou non
+- quel guide explique comment le remplir
+- dans quel dossier le prochain output sera ecrit
+- quelle est la prochaine action attendue
+
+### Organisation des fichiers
+
+Les fichiers utiles sont separes par role :
+
+- `scopes/incoming` : nouveaux fichiers de scope a verifier ou completer
+- `scopes/active` : fichiers de scope deja prets a etre reutilises
+- `scopes/archived` : anciens scopes que tu veux garder sans les laisser actifs
+- `scopes/templates` : modeles JSON et guides Markdown pour les remplir
+- `state/recent-scopes.json` : index des derniers fichiers de scope utilises
+- `output/` ou le `outputDir` choisi : resultats d'un run termine
+
+Le launcher continue aussi a creer un workspace de session pour le mode documents avec :
+
+- `00-START-HERE.txt`
+- `01-scope.json`
+- `02-run-settings.json`
+
+Si tu pars d'un fichier gere dans `scopes/active` ou `scopes/incoming`, le launcher peut l'ouvrir directement au lieu de le recopier dans un dossier temporaire.
+
+### Choisir entre modele minimal, standard et avance
+
+- `01-minimal-scope.json` : un seul item `Domain`. C'est le plus simple pour verifier ton workflow.
+- `02-standard-scope.json` : un exemple equilibre avec `Domain`, `Wildcard` et `URL`. C'est le bon choix par defaut.
+- `03-advanced-scope.json` : un squelette plus complet pour plusieurs hosts, URL de depart et exclusions.
+
+Les guides associes sont :
+
+- `scopes/templates/01-minimal-scope.help.md`
+- `scopes/templates/02-standard-scope.help.md`
+- `scopes/templates/03-advanced-scope.help.md`
+
+Le guide general est :
+
+- `scopes/templates/README.md`
+
+### Comprendre 02-run-settings.json
+
+Le fichier `02-run-settings.json` n'ajoute pas de fonctionnalite magique. Il sert seulement a regler le run.
+
+Reglages qui affectent surtout la vitesse :
+
+- `depth`
+- `threads`
+- `timeoutSeconds`
+- `resume`
+
+Reglages qui affectent surtout la couverture :
+
+- `enableGau`
+- `enableWaybackUrls`
+- `enableHakrawler`
+- `includeApex`
+- `respectSchemeOnly`
+
+Reglages qui augmentent surtout le volume de sortie :
+
+- `depth`
+- `enableGau`
+- `enableWaybackUrls`
+- `enableHakrawler`
+
+Reglages prudents par defaut :
+
+- `preset = balanced`
+- `profile = webapp`
+- `includeApex = false`
+- `respectSchemeOnly = false`
+- `resume = false`
+
+Les champs booleens doivent rester en JSON natif `true` / `false` sans guillemets.
+
+Dictionnaires / wordlists :
+
+- statut actuel : non prouve / non pris en charge dans cette version
+- aucun champ dedie n'est documente ni valide aujourd'hui
+- n'ajoute pas de cle custom dans `02-run-settings.json`
+- le resume avant lancement rappelle explicitement ce statut
+
+### Resume avant lancement
+
+Juste avant le run, le launcher affiche un resume lisible avec :
+
+- le nombre d'entrees `Domain`
+- le nombre d'entrees `Wildcard`
+- le nombre d'entrees `URL`
+- le nombre total d'exclusions
+- le dossier de sortie selectionne
+- l'etat de `resume`
+- les sources optionnelles actives
+- une duree approximative de type `Tres court` a `Tres long`
+
+Cette duree reste indicative. Elle sert seulement a aider l'utilisateur a juger si le run sera plutot leger ou plus long.
+
+### Retrouver les anciens fichiers deja utilises
+
+Apres un run lance avec succes depuis le launcher, le fichier de scope est memorise dans `state/recent-scopes.json` avec :
+
+- `display_name`
+- `scope_path`
+- `last_output_dir`
+- `last_used_utc`
+- `exists`
+- `note`
+
+Le menu `Afficher les fichiers de scope deja utilises` montre :
+
+- si le fichier existe encore : `OK`
+- si le fichier a ete deplace ou supprime : `INTROUVABLE`
+- le dernier dossier de sortie connu, meme si le fichier n'existe plus
+
+Cela permet de relancer plus tard le meme fichier de scope, ou au minimum de retrouver le dernier dossier de sortie associe.
+
+### Exemples de workflow
+
+Workflow simple "comme avant" :
+
+1. creer un fichier
+2. l'ouvrir
+3. le remplir manuellement
+4. le sauvegarder
+5. lancer le run
+6. le relancer plus tard depuis les scopes recents
+
+Si une validation echoue, le launcher rouvre les documents pour correction au lieu de lancer un run invalide.
 
 ### Ce que changent les presets
 

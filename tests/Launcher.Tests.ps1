@@ -32,6 +32,127 @@ Describe 'ScopeForge launcher boolean handling' {
         }
     }
 
+    Context 'Guidance helpers' {
+        It 'marks dictionary support as not proven in the current version' {
+            $status = Get-LauncherDictionarySupportStatus
+            if ($status.Status -ne 'not_proven') { throw 'Expected dictionary support to stay not proven.' }
+            if ($status.DisplayLabel -notlike '*Non pris en charge*') { throw 'Expected a clear user-facing dictionary support label.' }
+        }
+
+        It 'summarizes a mixed scope composition' {
+            $scopeItems = @(
+                [pscustomobject]@{ Type = 'Domain'; Exclusions = @() },
+                [pscustomobject]@{ Type = 'Wildcard'; Exclusions = @('dev', 'staging') },
+                [pscustomobject]@{ Type = 'URL'; Exclusions = @('beta') }
+            )
+
+            $summary = Get-LauncherScopeComposition -ScopeItems $scopeItems
+            if ($summary.DomainCount -ne 1) { throw 'Expected one Domain item.' }
+            if ($summary.WildcardCount -ne 1) { throw 'Expected one Wildcard item.' }
+            if ($summary.UrlCount -ne 1) { throw 'Expected one URL item.' }
+            if ($summary.TotalExclusions -ne 3) { throw 'Expected exclusion count to be aggregated.' }
+            if (-not $summary.MixedTypes) { throw 'Expected the scope to be marked as mixed.' }
+        }
+
+        It 'produces an approximate time band from scope and run settings' {
+            $scopeItems = @(
+                [pscustomobject]@{ Type = 'Wildcard'; Exclusions = @('dev', 'qa') },
+                [pscustomobject]@{ Type = 'URL'; Exclusions = @() },
+                [pscustomobject]@{ Type = 'Domain'; Exclusions = @() }
+            )
+            $runConfig = @{
+                Depth             = 4
+                Threads           = 10
+                EnableGau         = $true
+                EnableWaybackUrls = $true
+                EnableHakrawler   = $true
+                IncludeApex       = $false
+                Resume            = $false
+            }
+
+            $estimate = Get-LauncherApproximateTimeEstimate -ScopeItems $scopeItems -RunConfig $runConfig
+            if ($estimate.Band -notin @('Tres court', 'Court', 'Moyen', 'Long', 'Tres long')) { throw 'Expected a supported estimate band.' }
+            if ($estimate.ReasonText -notlike '*wildcard*' -and $estimate.ReasonText -notlike '*crawl*') { throw 'Expected the estimate to explain at least one visible factor.' }
+        }
+
+        It 'generates a START-HERE guide that explains scope types and next steps' {
+            $content = Get-LauncherStartHereContent `
+                -ScopePath 'C:\Temp\ScopeForge\01-scope.json' `
+                -SettingsPath 'C:\Temp\ScopeForge\02-run-settings.json' `
+                -DefaultOutputDir '.\output' `
+                -ManagedScopeFile:$false
+
+            foreach ($snippet in @('1. Domain', '2. Wildcard', '3. URL', 'Etape 2 - Construire un scope avec plusieurs cibles', 'Dictionnaires / wordlists', 'Le launcher valide les fichiers')) {
+                if ($content -notlike ("*{0}*" -f $snippet)) {
+                    throw ("Expected START-HERE content to contain '{0}'." -f $snippet)
+                }
+            }
+        }
+
+        It 'renders the pre-run summary without throwing' {
+            $scopeItems = @(
+                [pscustomobject]@{ Id = 'scope-001'; Type = 'Domain'; NormalizedValue = 'app.example.com'; Exclusions = @() },
+                [pscustomobject]@{ Id = 'scope-002'; Type = 'Wildcard'; NormalizedValue = 'https://*.example.com'; Exclusions = @('dev', 'staging') },
+                [pscustomobject]@{ Id = 'scope-003'; Type = 'URL'; NormalizedValue = 'https://api.example.com/v1'; Exclusions = @() }
+            )
+            $runConfig = @{
+                OutputDir         = '.\output'
+                Resume            = $false
+                EnableGau         = $true
+                EnableWaybackUrls = $true
+                EnableHakrawler   = $true
+                Depth             = 3
+                Threads           = 10
+                IncludeApex       = $false
+            }
+
+            Show-LauncherPreRunSummary -ScopeItems $scopeItems -RunConfig $runConfig
+        }
+
+        It 'distinguishes editable managed scopes from templates' {
+            $workspace = [pscustomobject]@{
+                RepoRoot         = $TestDrive
+                ScopesRoot       = Join-Path $TestDrive 'scopes'
+                Incoming         = Join-Path $TestDrive 'scopes\\incoming'
+                Active           = Join-Path $TestDrive 'scopes\\active'
+                Archived         = Join-Path $TestDrive 'scopes\\archived'
+                Templates        = Join-Path $TestDrive 'scopes\\templates'
+                TemplatesGuide   = Join-Path $TestDrive 'scopes\\templates\\README.md'
+                StateRoot        = Join-Path $TestDrive 'state'
+                RecentScopesPath = Join-Path $TestDrive 'state\\recent-scopes.json'
+            }
+            Mock Get-LauncherFileWorkspace { $workspace }
+            $null = Initialize-LauncherFileWorkspace
+
+            $activeScope = Join-Path $workspace.Active 'active.json'
+            $templateScope = Join-Path $workspace.Templates 'template.json'
+            Set-Content -LiteralPath $activeScope -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+            Set-Content -LiteralPath $templateScope -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+
+            if (-not (Test-LauncherEditableManagedScopePath -Path $activeScope)) { throw 'Expected active scopes to stay editable in place.' }
+            if (Test-LauncherEditableManagedScopePath -Path $templateScope) { throw 'Expected templates to be copied into a session instead of being edited in place.' }
+        }
+
+        It 'prefers the selected scope path when updating recent scopes' {
+            $selectedScope = Join-Path $TestDrive 'selected.json'
+            $managedScope = Join-Path $TestDrive 'managed.json'
+            $sessionScope = Join-Path $TestDrive 'session.json'
+            foreach ($path in @($selectedScope, $managedScope, $sessionScope)) {
+                Set-Content -LiteralPath $path -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+            }
+
+            $updatePath = Get-LauncherRecentScopeUpdatePath -RunConfig @{
+                LauncherSelectedScopePath = $selectedScope
+                ManagedScopeFile          = $managedScope
+                ScopeFile                 = $sessionScope
+            }
+
+            if ($updatePath -ne (Resolve-LauncherScopePath -Path $selectedScope)) {
+                throw 'Expected recent scope updates to prefer the user-selected scope path.'
+            }
+        }
+    }
+
     Context 'Build-DocumentRunConfig' {
         BeforeEach {
             $script:launcherSettingsJson = $null
@@ -397,6 +518,212 @@ Describe 'ScopeForge launcher boolean handling' {
             if ($rerunConfig.ScopeFile -ne $frozenScopeFile) { throw 'Expected rerun config to use the frozen scope file.' }
             if ($rerunConfig.RespectSchemeOnly -ne $true) { throw 'Expected rerun config to preserve boolean settings.' }
             if ($rerunConfig.Quiet.GetType().FullName -ne 'System.Boolean') { throw 'Expected rerun Quiet to stay a native boolean.' }
+        }
+    }
+
+    Context 'Guided scope file workflow' {
+        BeforeEach {
+            $script:fileWorkspace = [pscustomobject]@{
+                RepoRoot         = $TestDrive
+                ScopesRoot       = Join-Path $TestDrive 'scopes'
+                Incoming         = Join-Path $TestDrive 'scopes\\incoming'
+                Active           = Join-Path $TestDrive 'scopes\\active'
+                Archived         = Join-Path $TestDrive 'scopes\\archived'
+                Templates        = Join-Path $TestDrive 'scopes\\templates'
+                TemplatesGuide   = Join-Path $TestDrive 'scopes\\templates\\README.md'
+                StateRoot        = Join-Path $TestDrive 'state'
+                RecentScopesPath = Join-Path $TestDrive 'state\\recent-scopes.json'
+            }
+            Mock Get-LauncherFileWorkspace { $script:fileWorkspace }
+            $script:fileWorkspace = Initialize-LauncherFileWorkspace
+            $script:testScopePrefix = ('ut-' + ([Guid]::NewGuid().ToString('N').Substring(0, 8)))
+        }
+
+        AfterEach {
+            if (-not (Get-Variable -Name fileWorkspace -Scope Script -ErrorAction SilentlyContinue)) { return }
+            if (-not (Get-Variable -Name testScopePrefix -Scope Script -ErrorAction SilentlyContinue)) { return }
+            foreach ($folderPath in @($script:fileWorkspace.Incoming, $script:fileWorkspace.Active, $script:fileWorkspace.Templates)) {
+                Get-ChildItem -LiteralPath $folderPath -Filter "$($script:testScopePrefix)*.json" -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        It 'updates recent scopes, preserves missing entries, and caps the list' {
+            $existingScope = Join-Path $script:fileWorkspace.Active ("{0}-existing.json" -f $script:testScopePrefix)
+            $missingScope = Join-Path $script:fileWorkspace.Active ("{0}-missing.json" -f $script:testScopePrefix)
+            $null = New-Item -ItemType Directory -Path $script:fileWorkspace.Active -Force
+            Set-Content -LiteralPath $existingScope -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+
+            $null = Update-LauncherRecentScopes -ScopePath $missingScope -LastOutputDir 'C:\Runs\missing' -DisplayName 'missing'
+            $null = Update-LauncherRecentScopes -ScopePath $existingScope -LastOutputDir 'C:\Runs\existing' -DisplayName 'existing'
+
+            foreach ($index in 1..12) {
+                $scopePath = Join-Path $script:fileWorkspace.Incoming ("{0}-scope-{1}.json" -f $script:testScopePrefix, $index)
+                $null = New-Item -ItemType Directory -Path $script:fileWorkspace.Incoming -Force
+                Set-Content -LiteralPath $scopePath -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+                $null = Update-LauncherRecentScopes -ScopePath $scopePath -LastOutputDir ("C:\Runs\{0}" -f $index) -DisplayName ("scope-{0}" -f $index)
+            }
+
+            $items = @(Read-LauncherRecentScopes)
+            if ($items.Count -ne (Get-LauncherRecentScopesLimit)) { throw 'Expected recent scopes to be capped to the configured limit.' }
+            if ($items | Where-Object { $_.scope_path -eq (Resolve-LauncherScopePath -Path $missingScope) } | Measure-Object | Select-Object -ExpandProperty Count) {
+                throw 'Expected the oldest missing entry to be discarded only by the list cap, not silently before then.'
+            }
+
+            $null = Update-LauncherRecentScopes -ScopePath $missingScope -LastOutputDir 'C:\Runs\missing-new' -DisplayName 'missing'
+            $items = @(Read-LauncherRecentScopes)
+            $missingItem = $items | Where-Object { $_.scope_path -eq (Resolve-LauncherScopePath -Path $missingScope) } | Select-Object -First 1
+            if (-not $missingItem) { throw 'Expected a missing scope to remain tracked in recent scopes.' }
+            if ($missingItem.exists) { throw 'Expected missing scope to be marked as not found.' }
+            if ($missingItem.note -ne 'INTROUVABLE') { throw 'Expected missing scope to be marked as INTROUVABLE.' }
+            if ($items[0].scope_path -ne (Resolve-LauncherScopePath -Path $missingScope)) { throw 'Expected the latest scope update to move to the top of the recent list.' }
+        }
+
+        It 'seeds built-in templates and help files that stay compatible with the scope parser' {
+            $templates = @(Get-LauncherScopeTemplateFiles)
+            if ($templates.Count -lt 3) { throw 'Expected the built-in minimal, standard and advanced templates to be available.' }
+
+            $expectedTemplateFiles = @(
+                '01-minimal-scope.json',
+                '02-standard-scope.json',
+                '03-advanced-scope.json'
+            )
+            $expectedHelpFiles = @(
+                'README.md',
+                '01-minimal-scope.help.md',
+                '02-standard-scope.help.md',
+                '03-advanced-scope.help.md'
+            )
+
+            foreach ($fileName in $expectedTemplateFiles) {
+                $path = Join-Path $script:fileWorkspace.Templates $fileName
+                if (-not (Test-Path -LiteralPath $path)) { throw ("Expected template file to exist: {0}" -f $fileName) }
+                $parsedScope = @(Read-ScopeFile -Path $path)
+                if ($parsedScope.Count -lt 1) { throw ("Expected template file to parse as a non-empty scope: {0}" -f $fileName) }
+            }
+
+            foreach ($fileName in $expectedHelpFiles) {
+                $path = Join-Path $script:fileWorkspace.Templates $fileName
+                if (-not (Test-Path -LiteralPath $path)) { throw ("Expected help file to exist: {0}" -f $fileName) }
+            }
+        }
+
+        It 'creates and optionally opens a guided minimal scope file' {
+            Mock Write-LauncherSection { }
+            Mock Write-Host { }
+            $script:openedDocuments = @()
+            $script:choiceValues = @('1', '1')
+            $expectedScopeName = "$($script:testScopePrefix)-demo-scope"
+            $script:valueValues = @($expectedScopeName)
+            $script:yesNoValues = @($true, $false)
+
+            Mock Read-LauncherChoice {
+                $next = $script:choiceValues[0]
+                if ($script:choiceValues.Count -gt 1) {
+                    $script:choiceValues = @($script:choiceValues[1..($script:choiceValues.Count - 1)])
+                } else {
+                    $script:choiceValues = @()
+                }
+                return $next
+            }
+            Mock Read-LauncherYesNo {
+                $next = $script:yesNoValues[0]
+                if ($script:yesNoValues.Count -gt 1) {
+                    $script:yesNoValues = @($script:yesNoValues[1..($script:yesNoValues.Count - 1)])
+                } else {
+                    $script:yesNoValues = @()
+                }
+                return $next
+            }
+            Mock Open-LauncherDocument {
+                param([string]$Path, [string]$Title)
+
+                $script:openedDocuments += [pscustomobject]@{
+                    Path  = $Path
+                    Title = $Title
+                }
+            }
+            Mock Show-LauncherCreatedScopeGuidance { }
+            Mock Read-LauncherValue {
+                $next = $script:valueValues[0]
+                if ($script:valueValues.Count -gt 1) {
+                    $script:valueValues = @($script:valueValues[1..($script:valueValues.Count - 1)])
+                } else {
+                    $script:valueValues = @()
+                }
+                return $next
+            }
+
+            $createdScope = New-LauncherScopeFromTemplate -PlannedOutputDir '.\output\guided'
+            if (-not (Test-Path -LiteralPath $createdScope.Path)) { throw 'Expected the new scope file to be created.' }
+            if ($createdScope.Path -ne (Join-Path $script:fileWorkspace.Incoming ("{0}.json" -f $expectedScopeName))) { throw 'Expected the new scope file to be created under scopes/incoming by default.' }
+            if (-not $createdScope.OpenedScope) { throw 'Expected the created scope file to be flagged as opened.' }
+            if ($createdScope.OpenedGuide) { throw 'Expected the guide file to stay closed when the prompt returns false.' }
+            if ($createdScope.TemplateDisplayName -ne 'Modele minimal') { throw 'Expected the guided creation flow to use the minimal template.' }
+            if ($script:openedDocuments.Count -ne 1) { throw 'Expected only the created scope file to be opened.' }
+            if ($script:openedDocuments[0].Title -ne 'Fichier de scope') { throw 'Expected the created scope file to be opened with the scope title.' }
+
+            $content = Get-Content -LiteralPath $createdScope.Path -Raw -Encoding utf8
+            if ($content -notlike '*"value": "app.example.com"*') { throw 'Expected the minimal starter scope content to be written.' }
+        }
+
+        It 'creates a document session for a managed scope without coercion errors' {
+            $managedScope = Join-Path $script:fileWorkspace.Active ("{0}-managed.json" -f $script:testScopePrefix)
+            $launcherStorage = Join-Path $TestDrive '.launcher-storage'
+            $null = New-Item -ItemType Directory -Path (Split-Path -Parent $managedScope) -Force
+            Set-Content -LiteralPath $managedScope -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+
+            Mock Get-LauncherStorageRoot { $launcherStorage }
+
+            $documentSet = New-LauncherDocumentSet -ManagedScopeFilePath $managedScope -ProgramName 'demo' -OutputDir '.\output\guided' -Depth 3 -UniqueUserAgent 'ua-demo' -Threads 10 -TimeoutSeconds 30 -EnableGau $true -EnableWaybackUrls $true -EnableHakrawler $true -NoInstall $false -Quiet $false -IncludeApex $false -RespectSchemeOnly $false -Resume $false -OpenReportOnFinish $true
+
+            if (-not (Test-Path -LiteralPath $documentSet.ReadmePath)) { throw 'Expected the guided document session to create 00-START-HERE.txt.' }
+            if ($documentSet.ScopePath -ne (Resolve-LauncherScopePath -Path $managedScope)) { throw 'Expected the managed scope path to be kept as-is.' }
+
+            $readmeContent = Get-Content -LiteralPath $documentSet.ReadmePath -Raw -Encoding utf8
+            if ($readmeContent -notlike '*Le scope sera edite directement dans son emplacement gere*') {
+                throw 'Expected the START-HERE guide to explain that the managed scope is edited in place.'
+            }
+        }
+
+        It 'discovers JSON files from the active and incoming scope folders and surfaces the last output' {
+            $activeScope = Join-Path $script:fileWorkspace.Active ("{0}-active-scope.json" -f $script:testScopePrefix)
+            $incomingScope = Join-Path $script:fileWorkspace.Incoming ("{0}-incoming-scope.json" -f $script:testScopePrefix)
+            $templateScope = Join-Path $script:fileWorkspace.Templates ("{0}-template-scope.json" -f $script:testScopePrefix)
+
+            foreach ($path in @($activeScope, $incomingScope, $templateScope)) {
+                $null = New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force
+                Set-Content -LiteralPath $path -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+            }
+
+            $null = Update-LauncherRecentScopes -ScopePath $activeScope -LastOutputDir 'C:\Runs\active' -DisplayName 'active-scope'
+            $scopeFiles = @(Get-LauncherManagedScopeFiles)
+
+            foreach ($expectedPath in @($activeScope, $incomingScope)) {
+                if (-not ($scopeFiles | Where-Object { $_.scope_path -eq (Resolve-LauncherScopePath -Path $expectedPath) } | Select-Object -First 1)) {
+                    throw ("Expected managed scope discovery to include {0}." -f $expectedPath)
+                }
+            }
+            if ($scopeFiles | Where-Object { $_.scope_path -eq (Resolve-LauncherScopePath -Path $templateScope) } | Select-Object -First 1) {
+                throw 'Expected templates to stay out of the existing-scope picker.'
+            }
+            $activeEntry = $scopeFiles | Where-Object { $_.scope_path -eq (Resolve-LauncherScopePath -Path $activeScope) } | Select-Object -First 1
+            if (-not $activeEntry) { throw 'Expected the active scope to be present in the discovered list.' }
+            if ($activeEntry.last_output_dir -ne 'C:\Runs\active') { throw 'Expected discovered scope files to surface the last known output directory.' }
+        }
+
+        It 'keeps the selected scope and output when switching to assistant console' {
+            $activeScope = Join-Path $script:fileWorkspace.Active ("{0}-selected.json" -f $script:testScopePrefix)
+            Set-Content -LiteralPath $activeScope -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+
+            Mock Show-LauncherScopeSelection { }
+            Mock Write-Host { }
+            Mock Read-LauncherChoice { '9' }
+
+            $plan = Select-LauncherGuidedStartupPlan -InitialScopeFile $activeScope -OutputDir '.\output\guided' -AllowRerun:$false
+
+            if ($plan.Action -ne 'console') { throw 'Expected the guided plan to switch to assistant console.' }
+            if ($plan.InitialScopeFile -ne (Resolve-LauncherScopePath -Path $activeScope)) { throw 'Expected the selected scope to be preserved for console mode.' }
+            if ($plan.OutputDir -ne '.\output\guided') { throw 'Expected the planned output directory to be preserved for console mode.' }
         }
     }
 }

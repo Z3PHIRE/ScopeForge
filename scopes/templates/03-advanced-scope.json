@@ -1,0 +1,27 @@
+[
+  {
+    "type": "Domain",
+    "value": "app.example.com",
+    "exclusions": []
+  },
+  {
+    "type": "Domain",
+    "value": "api.example.com",
+    "exclusions": []
+  },
+  {
+    "type": "Wildcard",
+    "value": "https://*.example.com",
+    "exclusions": ["dev", "qa", "sandbox", "staging"]
+  },
+  {
+    "type": "URL",
+    "value": "https://app.example.com/login",
+    "exclusions": []
+  },
+  {
+    "type": "URL",
+    "value": "https://app.example.com/api/v1",
+    "exclusions": []
+  }
+]
