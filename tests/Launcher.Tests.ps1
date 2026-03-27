@@ -523,6 +523,7 @@ Describe 'ScopeForge launcher boolean handling' {
 
     Context 'Guided scope file workflow' {
         BeforeEach {
+            $script:launcherStorage = Join-Path $TestDrive '.launcher-storage'
             $script:fileWorkspace = [pscustomobject]@{
                 RepoRoot         = $TestDrive
                 ScopesRoot       = Join-Path $TestDrive 'scopes'
@@ -535,6 +536,7 @@ Describe 'ScopeForge launcher boolean handling' {
                 RecentScopesPath = Join-Path $TestDrive 'state\\recent-scopes.json'
             }
             Mock Get-LauncherFileWorkspace { $script:fileWorkspace }
+            Mock Get-LauncherStorageRoot { $script:launcherStorage }
             $script:fileWorkspace = Initialize-LauncherFileWorkspace
             $script:testScopePrefix = ('ut-' + ([Guid]::NewGuid().ToString('N').Substring(0, 8)))
         }
@@ -717,7 +719,7 @@ Describe 'ScopeForge launcher boolean handling' {
 
             Mock Show-LauncherScopeSelection { }
             Mock Write-Host { }
-            Mock Read-LauncherChoice { '9' }
+            Mock Read-LauncherChoice { '12' }
 
             $plan = Select-LauncherGuidedStartupPlan -InitialScopeFile $activeScope -OutputDir '.\output\guided' -AllowRerun:$false
 
@@ -725,5 +727,150 @@ Describe 'ScopeForge launcher boolean handling' {
             if ($plan.InitialScopeFile -ne (Resolve-LauncherScopePath -Path $activeScope)) { throw 'Expected the selected scope to be preserved for console mode.' }
             if ($plan.OutputDir -ne '.\output\guided') { throw 'Expected the planned output directory to be preserved for console mode.' }
         }
+    }
+
+    Context 'Saved session persistence and launcher logging' {
+        BeforeEach {
+            $script:launcherStorage = Join-Path $TestDrive '.launcher-storage'
+            $script:fileWorkspace = [pscustomobject]@{
+                RepoRoot         = $TestDrive
+                ScopesRoot       = Join-Path $TestDrive 'scopes'
+                Incoming         = Join-Path $TestDrive 'scopes\\incoming'
+                Active           = Join-Path $TestDrive 'scopes\\active'
+                Archived         = Join-Path $TestDrive 'scopes\\archived'
+                Templates        = Join-Path $TestDrive 'scopes\\templates'
+                TemplatesGuide   = Join-Path $TestDrive 'scopes\\templates\\README.md'
+                StateRoot        = Join-Path $TestDrive 'state'
+                RecentScopesPath = Join-Path $TestDrive 'state\\recent-scopes.json'
+            }
+
+            Mock Get-LauncherStorageRoot { $script:launcherStorage }
+            Mock Get-LauncherFileWorkspace { $script:fileWorkspace }
+            $null = Initialize-LauncherFileWorkspace
+            Mock Write-Host { }
+            Mock Write-LauncherSection { }
+            Mock Write-LauncherTable { }
+            Mock Write-LauncherKeyValue { }
+            Mock Open-LauncherDocument { }
+            Mock Open-LauncherPath { }
+        }
+
+        It 'stores the managed scope path and logging mode in session metadata' {
+            $managedScope = Join-Path $script:fileWorkspace.Active 'managed.json'
+            Set-Content -LiteralPath $managedScope -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+
+            $documentSet = New-LauncherDocumentSet -ManagedScopeFilePath $managedScope -LoggingMode 'debug' -ProgramName 'demo' -OutputDir '.\output\guided' -Depth 3 -UniqueUserAgent 'ua-demo' -Threads 10 -TimeoutSeconds 30 -EnableGau $true -EnableWaybackUrls $true -EnableHakrawler $true -NoInstall $false -Quiet $false -IncludeApex $false -RespectSchemeOnly $false -Resume $false -OpenReportOnFinish $true
+            $session = Read-LauncherSessionMetadata -SessionRoot $documentSet.RootPath
+
+            if ($session.scope_path -ne (Resolve-LauncherScopePath -Path $managedScope)) { throw 'Expected the session metadata to keep the external managed scope path.' }
+            if ($session.logging_mode -ne 'debug') { throw 'Expected the session metadata to persist the selected logging mode.' }
+            if ($session.logs_root -ne (Join-Path $documentSet.RootPath 'logs')) { throw 'Expected the session metadata to keep the session logs root.' }
+        }
+
+        It 'duplicates a saved session into a new unique root and remaps copied files' {
+            $sessionRoot = Get-LauncherUniqueSessionDirectory
+            $null = New-Item -ItemType Directory -Path $sessionRoot -Force
+            Set-Content -LiteralPath (Join-Path $sessionRoot '00-START-HERE.txt') -Encoding utf8 -Value 'demo'
+            Set-Content -LiteralPath (Join-Path $sessionRoot '01-scope.json') -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+            Set-Content -LiteralPath (Join-Path $sessionRoot '02-run-settings.json') -Encoding utf8 -Value '{"programName":"demo"}'
+            $null = New-Item -ItemType Directory -Path (Join-Path $sessionRoot 'logs') -Force
+
+            $session = Update-LauncherSessionMetadata -SessionRoot $sessionRoot -Values @{
+                display_name = 'demo'
+                note         = 'SESSION'
+            }
+
+            $copy = Copy-LauncherSavedSession -Session $session -NewDisplayName 'demo-copy'
+
+            if ($copy.session_root -eq $session.session_root) { throw 'Expected the duplicated session to live in a new directory.' }
+            if ($copy.scope_path -ne (Join-Path $copy.session_root '01-scope.json')) { throw 'Expected the duplicated session to point to its copied scope file.' }
+            if ($copy.settings_path -ne (Join-Path $copy.session_root '02-run-settings.json')) { throw 'Expected the duplicated session to point to its copied settings file.' }
+            if ($copy.display_name -ne 'demo-copy') { throw 'Expected the duplicated session display name to be updated.' }
+        }
+
+        It 'removes a saved session and clears the selected session pointer' {
+            $sessionRoot = Get-LauncherUniqueSessionDirectory
+            $null = New-Item -ItemType Directory -Path $sessionRoot -Force
+
+            $session = Update-LauncherSessionMetadata -SessionRoot $sessionRoot -Values @{
+                display_name = 'demo-delete'
+                note         = 'SESSION'
+            }
+            Set-LauncherSelectedSession -SessionId $session.session_id
+
+            if (-not (Remove-LauncherSavedSession -Session $session)) { throw 'Expected the session deletion helper to return $true.' }
+            if (Test-Path -LiteralPath $session.session_root) { throw 'Expected the session directory to be removed.' }
+            if (Get-LauncherSelectedSession | Where-Object { $_.session_id -eq $session.session_id }) { throw 'Expected the deleted session to be cleared from the selected-session pointer.' }
+        }
+
+        It 'persists the selected session across launcher restarts via UI state' {
+            $sessionRoot = Get-LauncherUniqueSessionDirectory
+            $null = New-Item -ItemType Directory -Path $sessionRoot -Force
+            $session = Update-LauncherSessionMetadata -SessionRoot $sessionRoot -Values @{
+                display_name = 'demo-persist'
+                note         = 'SESSION'
+            }
+
+            Set-LauncherSelectedSession -SessionId $session.session_id
+            $selected = Get-LauncherSelectedSession
+
+            if (-not $selected) { throw 'Expected a selected session to be returned from persisted UI state.' }
+            if ($selected.session_id -ne $session.session_id) { throw 'Expected the persisted selected session to be reloaded after the state file is written.' }
+        }
+
+        It 'computes a planned launcher log path from the session and run id' {
+            $sessionRoot = Join-Path $script:launcherStorage 'launcher\\session-demo'
+            $planned = Get-LauncherPlannedLogRoot -RunConfig @{
+                LauncherSessionRoot = $sessionRoot
+                RunId               = 'run-123'
+            }
+
+            $expected = [System.IO.Path]::GetFullPath((Join-Path (Join-Path $sessionRoot 'logs') 'run-123'))
+            if ($planned -ne $expected) { throw 'Expected the planned log path to use the session logs folder and run id.' }
+        }
+
+        It 'captures debug diagnostics in the launcher log folder' {
+            $runConfig = @{
+                LauncherSessionRoot = Join-Path $script:launcherStorage 'launcher\\session-debug'
+                LauncherLogMode     = 'debug'
+                RunId               = 'run-debug'
+                ScopeFile           = Join-Path $TestDrive 'scope.json'
+                OutputDir           = Join-Path $TestDrive 'output'
+            }
+            Set-Content -LiteralPath $runConfig.ScopeFile -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+
+            $context = Start-LauncherLoggingContext -RunConfig $runConfig
+            Write-LauncherDiagnosticLog -Message 'debug trace' -Level DEBUG
+            Stop-LauncherLoggingContext
+
+            if (-not (Test-Path -LiteralPath $context.LogPath)) { throw 'Expected the launcher log file to be created.' }
+            $content = Get-Content -LiteralPath $context.LogPath -Raw -Encoding utf8
+            if ($content -notlike '*debug trace*') { throw 'Expected debug mode to persist detailed launcher diagnostics.' }
+        }
+
+        It 'returns a saved-session documents plan from the guided menu' {
+            $sessionRoot = Get-LauncherUniqueSessionDirectory
+            $scopePath = Join-Path $script:fileWorkspace.Active 'saved-session-scope.json'
+            Set-Content -LiteralPath $scopePath -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+
+            $session = Update-LauncherSessionMetadata -SessionRoot $sessionRoot -Values @{
+                display_name = 'session-demo'
+                scope_path   = $scopePath
+                logging_mode = 'verbose'
+                note         = 'SESSION'
+            }
+
+            Mock Show-LauncherScopeSelection { }
+            Mock Manage-LauncherSavedSessions { [pscustomobject]@{ Action = 'launch'; Session = $session } }
+            Mock Read-LauncherChoice { '4' }
+
+            $plan = Select-LauncherGuidedStartupPlan -InitialScopeFile '' -OutputDir '.\output\guided' -AllowRerun:$false
+
+            if ($plan.Action -ne 'saved-session-documents') { throw 'Expected the guided launcher to return a saved-session documents plan.' }
+            if ($plan.SessionRoot -ne $session.session_root) { throw 'Expected the selected session root to be preserved.' }
+            if ($plan.LoggingMode -ne 'verbose') { throw 'Expected the session logging mode to be reused.' }
+            if ($plan.ManagedScopeFile -ne (Resolve-LauncherScopePath -Path $scopePath)) { throw 'Expected active managed scopes to stay editable in place when reopening a session.' }
+        }
+
     }
 }

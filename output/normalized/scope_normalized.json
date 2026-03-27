@@ -1,0 +1,18 @@
+{
+  "Id": "scope-001",
+  "Index": 1,
+  "Type": "Domain",
+  "OriginalValue": "example.com",
+  "NormalizedValue": "example.com",
+  "Scheme": null,
+  "Host": "example.com",
+  "Port": null,
+  "RootDomain": "example.com",
+  "PathPrefix": "/",
+  "StartUrl": null,
+  "IncludeApex": false,
+  "Exclusions": null,
+  "HostRegexString": "^example\\.com$",
+  "ScopeRegexString": "^https?://example\\.com(?::\\d+)?(?:/.*)?$",
+  "Description": "Exact domain example.com"
+}

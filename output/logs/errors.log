@@ -1,1 +1,3 @@
 2026-03-26 11:39:51 +01:00 [ERROR] [Runtime] Scope file not found: C:\Users\anthony.b\ScopeForge\ScopeForge\missing-scope.json
+2026-03-27 17:06:16 +01:00 [ERROR] [Runtime] Cannot overwrite variable Host because it is read-only or constant.
+2026-03-27 17:06:16 +01:00 [ERROR] [Runtime] Cannot overwrite variable Host because it is read-only or constant.

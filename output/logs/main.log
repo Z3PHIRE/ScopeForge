@@ -1,2 +1,18 @@
 2026-03-26 11:39:51 +01:00 [INFO] [1/6] Validation du scope
 2026-03-26 11:39:51 +01:00 [ERROR] [Runtime] Scope file not found: C:\Users\anthony.b\ScopeForge\ScopeForge\missing-scope.json
+2026-03-27 17:05:36 +01:00 [INFO] [1/6] Validation du scope
+2026-03-27 17:05:37 +01:00 [INFO] [2/6] Préparation outils
+2026-03-27 17:05:37 +01:00 [INFO] PowerShell 7.5.4 on Microsoft Windows 10.0.26200 (windows/amd64)
+2026-03-27 17:05:41 +01:00 [INFO] [1/6] Validation du scope
+2026-03-27 17:05:41 +01:00 [INFO] [2/6] Préparation outils
+2026-03-27 17:05:41 +01:00 [INFO] PowerShell 7.5.4 on Microsoft Windows 10.0.26200 (windows/amd64)
+2026-03-27 17:06:15 +01:00 [WARN] Optional tool 'gau' is unavailable: Une tentative d’accès à un socket de manière interdite par ses autorisations d’accès a été tentée. (api.github.com:443)
+2026-03-27 17:06:15 +01:00 [WARN] Optional tool 'gau' is unavailable: Une tentative d’accès à un socket de manière interdite par ses autorisations d’accès a été tentée. (api.github.com:443)
+2026-03-27 17:06:15 +01:00 [WARN] Optional tool 'waybackurls' is unavailable: Une tentative d’accès à un socket de manière interdite par ses autorisations d’accès a été tentée. (api.github.com:443)
+2026-03-27 17:06:15 +01:00 [WARN] Optional tool 'waybackurls' is unavailable: Une tentative d’accès à un socket de manière interdite par ses autorisations d’accès a été tentée. (api.github.com:443)
+2026-03-27 17:06:16 +01:00 [WARN] Optional tool 'hakrawler' is unavailable: Une tentative d’accès à un socket de manière interdite par ses autorisations d’accès a été tentée. (api.github.com:443)
+2026-03-27 17:06:16 +01:00 [INFO] [3/6] Découverte passive
+2026-03-27 17:06:16 +01:00 [WARN] Optional tool 'hakrawler' is unavailable: Une tentative d’accès à un socket de manière interdite par ses autorisations d’accès a été tentée. (api.github.com:443)
+2026-03-27 17:06:16 +01:00 [INFO] [3/6] Découverte passive
+2026-03-27 17:06:16 +01:00 [ERROR] [Runtime] Cannot overwrite variable Host because it is read-only or constant.
+2026-03-27 17:06:16 +01:00 [ERROR] [Runtime] Cannot overwrite variable Host because it is read-only or constant.
