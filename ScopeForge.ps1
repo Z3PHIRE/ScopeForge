@@ -755,17 +755,17 @@ function Get-ProbeCandidateUrls {
     $urls = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     switch ($ScopeItem.Type) {
         'URL' { $null = $urls.Add($ScopeItem.StartUrl) }
-        'Domain' { foreach ($scheme in @('https', 'http')) { $null = $urls.Add("{0}://{1}" -f $scheme, $ScopeItem.Host) } }
+        'Domain' { foreach ($scheme in @('https', 'http')) { $null = $urls.Add(("{0}://{1}" -f $scheme, $ScopeItem.Host)) } }
         'Wildcard' {
             if (-not $TargetHost) { return @() }
             if ($ScopeItem.Scheme) {
-                $null = $urls.Add("{0}://{1}" -f $ScopeItem.Scheme, $TargetHost)
+                $null = $urls.Add(("{0}://{1}" -f $ScopeItem.Scheme, $TargetHost))
                 if (-not $RespectSchemeOnly) {
                     $alternate = if ($ScopeItem.Scheme -eq 'https') { 'http' } else { 'https' }
-                    $null = $urls.Add("{0}://{1}" -f $alternate, $TargetHost)
+                    $null = $urls.Add(("{0}://{1}" -f $alternate, $TargetHost))
                 }
             } else {
-                foreach ($scheme in @('https', 'http')) { $null = $urls.Add("{0}://{1}" -f $scheme, $TargetHost) }
+                foreach ($scheme in @('https', 'http')) { $null = $urls.Add(("{0}://{1}" -f $scheme, $TargetHost)) }
             }
         }
     }
