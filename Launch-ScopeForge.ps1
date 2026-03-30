@@ -2376,7 +2376,6 @@ function Write-LauncherSessionMetadata {
         settings_path     = $SessionRecord.settings_path
         readme_path       = $SessionRecord.readme_path
 
-        # Compat ancien format + champ explicite attendu
         logs_root         = $SessionRecord.logs_root
         session_logs_root = $SessionRecord.logs_root
 
@@ -2392,7 +2391,7 @@ function Write-LauncherSessionMetadata {
     return $metadataPath
 }
 
-  function Read-LauncherSessionMetadata {
+function Read-LauncherSessionMetadata {
     param([Parameter(Mandatory)][string]$SessionRoot)
 
     $metadataPath = Get-LauncherSessionMetadataPath -SessionRoot $SessionRoot
