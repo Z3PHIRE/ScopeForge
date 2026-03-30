@@ -5626,3 +5626,6 @@ function Start-ScopeForgeLauncher {
 
     return $result
 }
+if ($MyInvocation.InvocationName -ne '.') {
+    Start-ScopeForgeLauncher @PSBoundParameters
+}
