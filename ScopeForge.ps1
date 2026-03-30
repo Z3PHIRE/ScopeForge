@@ -976,8 +976,31 @@ function Get-HistoricalUrls {
         if ($IncludeSubdomains) { $arguments += '--subs' }
         $arguments += $Target
 
-        $result = Invoke-ExternalCommand -FilePath $GauPath -Arguments $arguments -TimeoutSeconds $TimeoutSeconds -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
-        $rawLines = if (Test-Path -LiteralPath $stdoutFile) { Get-Content -LiteralPath $stdoutFile -Encoding utf8 } else { @() }
+        try {
+            $result = Invoke-ExternalCommand `
+                -FilePath $GauPath `
+                -Arguments $arguments `
+                -TimeoutSeconds ([Math]::Max($TimeoutSeconds * 4, 120)) `
+                -StdOutPath $stdoutFile `
+                -StdErrPath $stderrFile `
+                -IgnoreExitCode
+        } catch {
+            Add-ErrorRecord `
+                -Phase 'HistoricalDiscovery' `
+                -Target $Target `
+                -Message $_.Exception.Message `
+                -Tool 'gau' `
+                -ErrorCode $(if ($_.Exception.Message -like 'Command timed out*') { 'ToolTimeout' } else { 'RuntimeError' })
+
+            Write-ReconLog -Level WARN -Message "gau a echoue pour $Target, poursuite sans URLs historiques gau."
+            return @()
+        }
+
+        $rawLines = if (Test-Path -LiteralPath $stdoutFile) {
+            Get-Content -LiteralPath $stdoutFile -Encoding utf8
+        } else {
+            @()
+        }
 
         if ($rawLines.Count -gt 0) {
             Add-Content -LiteralPath $RawOutputPath -Value ($rawLines -join [Environment]::NewLine) -Encoding utf8
@@ -985,7 +1008,14 @@ function Get-HistoricalUrls {
         }
 
         if ($result.ExitCode -ne 0) {
-            Add-ErrorRecord -Phase 'HistoricalDiscovery' -Target $Target -Message 'gau returned a non-zero exit code.' -Details $result.StdErr -Tool 'gau' -ExitCode $result.ExitCode -ErrorCode 'ToolExitCode'
+            Add-ErrorRecord `
+                -Phase 'HistoricalDiscovery' `
+                -Target $Target `
+                -Message 'gau returned a non-zero exit code.' `
+                -Details $result.StdErr `
+                -Tool 'gau' `
+                -ExitCode $result.ExitCode `
+                -ErrorCode 'ToolExitCode'
         }
 
         $urls = $rawLines |
