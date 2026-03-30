@@ -1,5 +1,4 @@
 [CmdletBinding()]
-[CmdletBinding()]
 param(
     [string]$ScopeFile,
     [int]$Depth = 3,
@@ -946,13 +945,28 @@ function Get-PassiveSubdomains {
 
     try {
         $result = Invoke-ExternalCommand -FilePath $SubfinderPath -Arguments @('-silent', '-d', $RootDomain) -TimeoutSeconds $TimeoutSeconds -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
-        $rawLines = if (Test-Path -LiteralPath $stdoutFile) { Get-Content -LiteralPath $stdoutFile -Encoding utf8 } else { @() }
+
+        $rawLines = @(
+            if (Test-Path -LiteralPath $stdoutFile) {
+                Get-Content -LiteralPath $stdoutFile -Encoding utf8
+            }
+        )
+
         if ($rawLines.Count -gt 0) {
             Add-Content -LiteralPath $RawOutputPath -Value ($rawLines -join [Environment]::NewLine) -Encoding utf8
             Add-Content -LiteralPath $RawOutputPath -Value [Environment]::NewLine -Encoding utf8
         }
-        if ($result.ExitCode -ne 0) { Add-ErrorRecord -Phase 'PassiveDiscovery' -Target $RootDomain -Message 'subfinder returned a non-zero exit code.' -Details $result.StdErr -Tool 'subfinder' -ExitCode $result.ExitCode -ErrorCode 'ToolExitCode' }
-        return @($rawLines | ForEach-Object { $_.Trim().TrimEnd('.').ToLowerInvariant() } | Where-Object { $_ -and (Test-ValidDnsName -Name $_) } | Select-Object -Unique)
+
+        if ($result.ExitCode -ne 0) {
+            Add-ErrorRecord -Phase 'PassiveDiscovery' -Target $RootDomain -Message 'subfinder returned a non-zero exit code.' -Details $result.StdErr -Tool 'subfinder' -ExitCode $result.ExitCode -ErrorCode 'ToolExitCode'
+        }
+
+        return @(
+            $rawLines |
+            ForEach-Object { $_.Trim().TrimEnd('.').ToLowerInvariant() } |
+            Where-Object { $_ -and (Test-ValidDnsName -Name $_) } |
+            Select-Object -Unique
+        )
     } finally {
         Remove-Item -LiteralPath $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
     }
@@ -996,11 +1010,11 @@ function Get-HistoricalUrls {
             return @()
         }
 
-        $rawLines = if (Test-Path -LiteralPath $stdoutFile) {
-            Get-Content -LiteralPath $stdoutFile -Encoding utf8
-        } else {
-            @()
-        }
+        $rawLines = @(
+            if (Test-Path -LiteralPath $stdoutFile) {
+                Get-Content -LiteralPath $stdoutFile -Encoding utf8
+            }
+        )
 
         if ($rawLines.Count -gt 0) {
             Add-Content -LiteralPath $RawOutputPath -Value ($rawLines -join [Environment]::NewLine) -Encoding utf8
@@ -1018,7 +1032,8 @@ function Get-HistoricalUrls {
                 -ErrorCode 'ToolExitCode'
         }
 
-        $urls = $rawLines |
+        $urls = @(
+            $rawLines |
             ForEach-Object { $_.Trim() } |
             Where-Object { $_ -match '^https?://' } |
             ForEach-Object {
@@ -1029,8 +1044,9 @@ function Get-HistoricalUrls {
             } |
             Where-Object { $_ } |
             Select-Object -Unique
+        )
 
-        return @($urls)
+        return $urls
     } finally {
         Remove-Item -LiteralPath $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
     }
@@ -1049,8 +1065,19 @@ function Get-WaybackUrls {
     $stderrFile = Join-Path ([System.IO.Path]::GetTempPath()) ("scopeforge-wayback-{0}.err" -f ([Guid]::NewGuid().ToString('N')))
 
     try {
-        $result = Invoke-ExternalCommand -FilePath $WaybackUrlsPath -Arguments @($Target) -TimeoutSeconds $TimeoutSeconds -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
-        $rawLines = if (Test-Path -LiteralPath $stdoutFile) { Get-Content -LiteralPath $stdoutFile -Encoding utf8 } else { @() }
+        try {
+            $result = Invoke-ExternalCommand -FilePath $WaybackUrlsPath -Arguments @($Target) -TimeoutSeconds ([Math]::Max($TimeoutSeconds * 2, 60)) -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
+        } catch {
+            Add-ErrorRecord -Phase 'HistoricalDiscovery' -Target $Target -Message $_.Exception.Message -Tool 'waybackurls' -ErrorCode $(if ($_.Exception.Message -like 'Command timed out*') { 'ToolTimeout' } else { 'RuntimeError' })
+            Write-ReconLog -Level WARN -Message "waybackurls a echoue pour $Target, poursuite sans URLs historiques wayback."
+            return @()
+        }
+
+        $rawLines = @(
+            if (Test-Path -LiteralPath $stdoutFile) {
+                Get-Content -LiteralPath $stdoutFile -Encoding utf8
+            }
+        )
 
         if ($rawLines.Count -gt 0) {
             Add-Content -LiteralPath $RawOutputPath -Value ($rawLines -join [Environment]::NewLine) -Encoding utf8
@@ -1137,7 +1164,11 @@ $targets | & $ToolPath @args
             Add-ErrorRecord -Phase 'SupplementalCrawl' -Message 'hakrawler returned a non-zero exit code.' -Details $result.StdErr -Tool 'hakrawler' -ExitCode $result.ExitCode -ErrorCode 'ToolExitCode'
         }
 
-        $rawLines = if (Test-Path -LiteralPath $stdoutFile) { Get-Content -LiteralPath $stdoutFile -Encoding utf8 } else { @() }
+        $rawLines = @(
+            if (Test-Path -LiteralPath $stdoutFile) {
+                Get-Content -LiteralPath $stdoutFile -Encoding utf8
+            }
+        )
         if ($rawLines.Count -gt 0) {
             Add-Content -LiteralPath $RawOutputPath -Value ($rawLines -join [Environment]::NewLine) -Encoding utf8
             Add-Content -LiteralPath $RawOutputPath -Value [Environment]::NewLine -Encoding utf8
@@ -1400,7 +1431,11 @@ function Invoke-KatanaCrawl {
         try {
             $result = Invoke-ExternalCommand -FilePath $KatanaPath -Arguments $arguments -TimeoutSeconds ([Math]::Max($TimeoutSeconds * 10, 90)) -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
             if ($result.ExitCode -ne 0) { Add-ErrorRecord -Phase 'Crawl' -Target $definition.SeedUrl -Message 'katana returned a non-zero exit code.' -Details $result.StdErr -Tool 'katana' -ExitCode $result.ExitCode -ErrorCode 'ToolExitCode' }
-            $rawLines = if (Test-Path -LiteralPath $stdoutFile) { Get-Content -LiteralPath $stdoutFile -Encoding utf8 } else { @() }
+            $rawLines = @(
+                if (Test-Path -LiteralPath $stdoutFile) {
+                    Get-Content -LiteralPath $stdoutFile -Encoding utf8
+                }
+            )
             if ($rawLines.Count -gt 0) {
                 Add-Content -LiteralPath $RawOutputPath -Value ($rawLines -join [Environment]::NewLine) -Encoding utf8
                 Add-Content -LiteralPath $RawOutputPath -Value [Environment]::NewLine -Encoding utf8
@@ -1491,8 +1526,8 @@ function Merge-ReconResults {
         PowerShellVersion      = $PSVersionTable.PSVersion.ToString()
         ScopeItemCount         = $ScopeItems.Count
         ExcludedItemCount      = $Exclusions.Count
-        DiscoveredHostCount    = ($HostsAll | Select-Object -ExpandProperty Host -Unique).Count
-        LiveHostCount          = ($LiveTargets | Select-Object -ExpandProperty Host -Unique).Count
+        DiscoveredHostCount    = @($HostsAll | Select-Object -ExpandProperty Host -Unique).Count
+        LiveHostCount          = @($LiveTargets | Select-Object -ExpandProperty Host -Unique).Count
         LiveTargetCount        = $LiveTargets.Count
         DiscoveredUrlCount     = $DiscoveredUrls.Count
         InterestingUrlCount    = $InterestingUrls.Count
