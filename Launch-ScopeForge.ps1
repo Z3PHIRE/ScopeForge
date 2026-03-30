@@ -1894,19 +1894,23 @@ function Write-LauncherSessionMetadata {
     }
 
     $payload = [ordered]@{
-        version         = 1
-        session_id      = $SessionRecord.session_id
-        display_name    = $SessionRecord.display_name
-        session_root    = $SessionRecord.session_root
-        scope_path      = $SessionRecord.scope_path
-        settings_path   = $SessionRecord.settings_path
-        readme_path     = $SessionRecord.readme_path
-        logs_root       = $SessionRecord.logs_root
-        last_output_dir = $SessionRecord.last_output_dir
-        last_log_dir    = $SessionRecord.last_log_dir
-        logging_mode    = $SessionRecord.logging_mode
-        last_used_utc   = $SessionRecord.last_used_utc
-        note            = $SessionRecord.note
+        version           = 1
+        session_id        = $SessionRecord.session_id
+        display_name      = $SessionRecord.display_name
+        session_root      = $SessionRecord.session_root
+        scope_path        = $SessionRecord.scope_path
+        settings_path     = $SessionRecord.settings_path
+        readme_path       = $SessionRecord.readme_path
+
+        # Compat ancien format + champ explicite attendu
+        logs_root         = $SessionRecord.logs_root
+        session_logs_root = $SessionRecord.logs_root
+
+        last_output_dir   = $SessionRecord.last_output_dir
+        last_log_dir      = $SessionRecord.last_log_dir
+        logging_mode      = $SessionRecord.logging_mode
+        last_used_utc     = $SessionRecord.last_used_utc
+        note              = $SessionRecord.note
     }
 
     $metadataPath = Get-LauncherSessionMetadataPath -SessionRoot $SessionRecord.session_root
@@ -1928,18 +1932,23 @@ function Read-LauncherSessionMetadata {
         return (New-LauncherSessionRecord -SessionRoot $SessionRoot)
     }
 
-    return (New-LauncherSessionRecord `
-        -SessionRoot $SessionRoot `
-        -DisplayName ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'display_name' -Default '')) `
-        -LoggingMode ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'logging_mode' -Default 'normal')) `
-        -LastOutputDir ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'last_output_dir' -Default '')) `
-        -LastLogDir ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'last_log_dir' -Default '')) `
-        -LastUsedUtc ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'last_used_utc' -Default '')) `
-        -Note ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'note' -Default '')) `
-        -ScopePath ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'scope_path' -Default '')) `
-        -SettingsPath ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'settings_path' -Default '')) `
-        -ReadmePath ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'readme_path' -Default '')) `
-        -LogsRoot ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'logs_root' -Default '')))
+$storedLogsRoot = [string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'session_logs_root' -Default '')
+if ([string]::IsNullOrWhiteSpace($storedLogsRoot)) {
+    $storedLogsRoot = [string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'logs_root' -Default '')
+}
+
+return (New-LauncherSessionRecord `
+    -SessionRoot $SessionRoot `
+    -DisplayName ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'display_name' -Default '')) `
+    -LoggingMode ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'logging_mode' -Default 'normal')) `
+    -LastOutputDir ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'last_output_dir' -Default '')) `
+    -LastLogDir ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'last_log_dir' -Default '')) `
+    -LastUsedUtc ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'last_used_utc' -Default '')) `
+    -Note ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'note' -Default '')) `
+    -ScopePath ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'scope_path' -Default '')) `
+    -SettingsPath ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'settings_path' -Default '')) `
+    -ReadmePath ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'readme_path' -Default '')) `
+    -LogsRoot $storedLogsRoot)
 }
 
 function Update-LauncherSessionMetadata {
