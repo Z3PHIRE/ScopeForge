@@ -514,7 +514,7 @@ function Install-ExternalTool {
     return $resolvedDestination
 }
 
-function Ensure-ReconTools {
+function Initialize-ReconTools {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][pscustomobject]$Layout,
@@ -598,7 +598,7 @@ function Test-ValidDnsName {
     return $true
 }
 
-function Normalize-Exclusions {
+function ConvertTo-NormalizedExclusions {
     [CmdletBinding()]
     param([object]$InputObject)
 
@@ -614,7 +614,7 @@ function Normalize-Exclusions {
     return @($tokens)
 }
 
-function Normalize-PathPrefix {
+function ConvertTo-NormalizedPathPrefix {
     [CmdletBinding()]
     param([string]$Path)
 
@@ -624,7 +624,7 @@ function Normalize-PathPrefix {
     return $(if ($normalized) { $normalized } else { '/' })
 }
 
-function Normalize-ScopeItem {
+function ConvertTo-NormalizedScopeItem {
     [CmdletBinding()]
     param([Parameter(Mandatory)][object]$InputObject, [Parameter(Mandatory)][int]$Index, [switch]$IncludeApex)
 
@@ -639,7 +639,7 @@ function Normalize-ScopeItem {
 
     $normalizedType = $type.Trim().ToUpperInvariant()
     $normalizedValue = $value.Trim()
-    $exclusions = Normalize-Exclusions -InputObject $(if ($exclusionsProperty) { $exclusionsProperty.Value } else { @() })
+    $exclusions = ConvertTo-NormalizedExclusions -InputObject $(if ($exclusionsProperty) { $exclusionsProperty.Value } else { @() })
 
     switch ($normalizedType) {
         'URL' {
@@ -647,7 +647,7 @@ function Normalize-ScopeItem {
             if (-not [Uri]::TryCreate($normalizedValue, [UriKind]::Absolute, [ref]$uri) -or $uri.Scheme -notin @('http', 'https')) { throw "Scope item #$Index contains an invalid absolute HTTP(S) URL: $normalizedValue" }
             $targetHost = $uri.DnsSafeHost.ToLowerInvariant()
             if (-not (Test-ValidDnsName -Name $targetHost)) { throw "Scope item #$Index contains an invalid hostname in URL: $targetHost" }
-            $pathPrefix = Normalize-PathPrefix -Path $uri.AbsolutePath
+            $pathPrefix = ConvertTo-NormalizedPathPrefix -Path $uri.AbsolutePath
             $port = if ($uri.IsDefaultPort) { $null } else { $uri.Port }
             return [pscustomobject]@{ Id = 'scope-{0:d3}' -f $Index; Index = $Index; Type = 'URL'; OriginalValue = $normalizedValue; NormalizedValue = $uri.AbsoluteUri; Scheme = $uri.Scheme.ToLowerInvariant(); Host = $targetHost; Port = $port; RootDomain = $targetHost; PathPrefix = $pathPrefix; StartUrl = $uri.AbsoluteUri; IncludeApex = $false; Exclusions = $exclusions; HostRegexString = '^' + [regex]::Escape($targetHost) + '$'; ScopeRegexString = ''; Description = "URL seed $($uri.AbsoluteUri)" }
         }
@@ -680,7 +680,7 @@ function Read-ScopeFile {
     try { $parsed = ConvertFrom-Json -InputObject $raw -Depth 100 -NoEnumerate } catch { throw "Scope file is not valid JSON: $($_.Exception.Message)" }
     if ($parsed -isnot [System.Collections.IEnumerable] -or $parsed -is [string]) { throw 'Scope file must contain a JSON array.' }
     $items = [System.Collections.Generic.List[object]]::new(); $index = 0
-    foreach ($item in $parsed) { $index++; $items.Add((Normalize-ScopeItem -InputObject $item -Index $index -IncludeApex:$IncludeApex)) }
+    foreach ($item in $parsed) { $index++; $items.Add((ConvertTo-NormalizedScopeItem -InputObject $item -Index $index -IncludeApex:$IncludeApex)) }
     if ($items.Count -eq 0) { throw 'Scope file does not contain any scope items.' }
     return @($items)
 }
@@ -690,7 +690,7 @@ function Test-PathPrefixMatch {
     param([Parameter(Mandatory)][string]$CandidatePath, [Parameter(Mandatory)][string]$Prefix)
 
     $normalizedCandidate = if ([string]::IsNullOrWhiteSpace($CandidatePath)) { '/' } else { $CandidatePath }
-    $normalizedPrefix = Normalize-PathPrefix -Path $Prefix
+    $normalizedPrefix = ConvertTo-NormalizedPathPrefix -Path $Prefix
     if ($normalizedPrefix -eq '/') { return $true }
     if ($normalizedCandidate -ceq $normalizedPrefix) { return $true }
     return $normalizedCandidate.StartsWith($normalizedPrefix + '/', [System.StringComparison]::Ordinal)
@@ -944,7 +944,27 @@ function Get-PassiveSubdomains {
     $stderrFile = Join-Path ([System.IO.Path]::GetTempPath()) ("scopeforge-subfinder-{0}.err" -f ([Guid]::NewGuid().ToString('N')))
 
     try {
-        $result = Invoke-ExternalCommand -FilePath $SubfinderPath -Arguments @('-silent', '-d', $RootDomain) -TimeoutSeconds $TimeoutSeconds -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
+        try {
+            $result = Invoke-ExternalCommand -FilePath $SubfinderPath -Arguments @('-silent', '-d', $RootDomain) -TimeoutSeconds $TimeoutSeconds -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
+        } catch {
+            $details = $_.Exception.Message
+            if (Test-Path -LiteralPath $stderrFile) {
+                try {
+                    $stderrContent = Get-Content -LiteralPath $stderrFile -Raw -Encoding utf8
+                    if (-not [string]::IsNullOrWhiteSpace($stderrContent)) {
+                        $details = "{0}`n{1}" -f $details, $stderrContent.Trim()
+                    }
+                } catch {
+                }
+            }
+
+            Add-ErrorRecord -Phase 'PassiveDiscovery' -Target $RootDomain -Message 'subfinder execution failed or timed out.' -Details $details -Tool 'subfinder' -ErrorCode 'ToolTimeout'
+            Write-ReconLog -Level WARN -Message ("subfinder timed out or failed for {0}. Passive discovery will continue without it." -f $RootDomain)
+            if (-not (Test-Path -LiteralPath $RawOutputPath)) {
+                Set-Content -LiteralPath $RawOutputPath -Value '' -Encoding utf8
+            }
+            return @()
+        }
 
         $rawLines = @(
             if (Test-Path -LiteralPath $stdoutFile) {
@@ -955,6 +975,8 @@ function Get-PassiveSubdomains {
         if ($rawLines.Count -gt 0) {
             Add-Content -LiteralPath $RawOutputPath -Value ($rawLines -join [Environment]::NewLine) -Encoding utf8
             Add-Content -LiteralPath $RawOutputPath -Value [Environment]::NewLine -Encoding utf8
+        } elseif (-not (Test-Path -LiteralPath $RawOutputPath)) {
+            Set-Content -LiteralPath $RawOutputPath -Value '' -Encoding utf8
         }
 
         if ($result.ExitCode -ne 0) {
@@ -2176,7 +2198,7 @@ function Invoke-BugBountyRecon {
         if ($EnableWaybackUrls) { $enabledSources += 'waybackurls' }
         if ($EnableHakrawler) { $enabledSources += 'hakrawler' }
         Write-StageProgress -Step 2 -Title 'Préparation outils' -Percent 10 -Status ("Checking {0}" -f ($enabledSources -join '/'))
-        $tools = Ensure-ReconTools -Layout $layout -NoInstall:$NoInstall -TimeoutSeconds $TimeoutSeconds -EnableGau:$EnableGau -EnableWaybackUrls:$EnableWaybackUrls -EnableHakrawler:$EnableHakrawler
+        $tools = Initialize-ReconTools -Layout $layout -NoInstall:$NoInstall -TimeoutSeconds $TimeoutSeconds -EnableGau:$EnableGau -EnableWaybackUrls:$EnableWaybackUrls -EnableHakrawler:$EnableHakrawler
         Write-StageProgress -Step 2 -Title 'Préparation outils' -Percent 100 -Status 'Toolchain ready'
 
         if ($useResume -and (Test-Path -LiteralPath $layout.HostsAllJson)) {
@@ -2449,3 +2471,4 @@ if ($MyInvocation.InvocationName -ne '.' -and $PSBoundParameters.ContainsKey('Sc
     if ($VerbosePreference -eq 'Continue') { $invokeParameters['Verbose'] = $true }
     Invoke-BugBountyRecon @invokeParameters
 }
+
