@@ -25,13 +25,14 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-[System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseApprovedVerbs', '', Justification='Nom conserve pour compatibilite avec les tests Pester existants.')]
-function Manage-LauncherSavedSessions {
+function Invoke-LauncherSavedSessionsManager {
     [CmdletBinding()]
     param()
 
     return (Show-LauncherSavedSessionsMenu)
 }
+
+Set-Alias -Name 'Manage-LauncherSavedSessions' -Value 'Invoke-LauncherSavedSessionsManager' -Scope Script
 
 function Write-LauncherBanner {
     param([AllowNull()][string]$StatusLine = '')
@@ -3087,14 +3088,6 @@ function Show-LauncherSavedSessionsTable {
     Write-LauncherTable -Rows $rows -Columns @('Index', 'Statut', 'Session', 'Utilisation', 'LogMode', 'DossierSortie', 'DossierLogs', 'SessionRoot') -Widths @{ Index = 6; Statut = 12; Session = 18; Utilisation = 20; LogMode = 12; DossierSortie = 24; DossierLogs = 24; SessionRoot = 28 }
 }
 
-[System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseApprovedVerbs', '', Justification='Nom conserve pour compatibilite avec les tests Pester existants.')]
-function Manage-LauncherSavedSessions {
-    [CmdletBinding()]
-    param()
-
-    return (Show-LauncherSavedSessionsMenu)
-}
-
 function Select-LauncherSavedSession {
     $sessions = @(Get-LauncherSavedSessions)
     if ($sessions.Count -eq 0) {
@@ -3401,14 +3394,6 @@ function Show-LauncherSavedSessionsMenu {
             }
         }
     }
-}
-
-[System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseApprovedVerbs', '', Justification='Nom conserve pour compatibilite avec les tests Pester existants.')]
-function Manage-LauncherSavedSessions {
-    [CmdletBinding()]
-    param()
-
-    return (Show-LauncherSavedSessionsMenu)
 }
 
 function Show-LauncherSelectedScopeGuidance {
