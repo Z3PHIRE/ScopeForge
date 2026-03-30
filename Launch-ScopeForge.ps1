@@ -26,8 +26,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 function Write-LauncherBanner {
-    try {
-        Clear-Host    param([AllowNull()][string]$StatusLine = '')
+    param([AllowNull()][string]$StatusLine = '')
 
     try {
         Clear-Host
@@ -2368,7 +2367,9 @@ function New-LauncherSessionRecord {
         logging_mode    = $(if ([string]::IsNullOrWhiteSpace($LoggingMode)) { 'normal' } else { $LoggingMode })
         last_used_utc   = ConvertTo-LauncherUtcTimestampString -Value $LastUsedUtc -DefaultValue ([DateTimeOffset]::UtcNow.ToString('o'))
         exists          = [bool]$exists
-        note            = $(if ([string]::IsNullOrWhiteSpace($Note)) { $(if ($exists) { 'SESSION' } else { 'INTROUVABLE' }) } function Write-LauncherSessionMetadata {
+        note            = $(if ([string]::IsNullOrWhiteSpace($Note)) { $(if ($exists) { 'SESSION' } else { 'INTROUVABLE' }) } else { $Note })
+    }
+}
     param([Parameter(Mandatory)][pscustomobject]$SessionRecord)
 
     if (-not (Test-Path -LiteralPath $SessionRecord.session_root)) {
@@ -2433,7 +2434,6 @@ function New-LauncherSessionRecord {
         -SettingsPath ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'settings_path' -Default '')) `
         -ReadmePath ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'readme_path' -Default '')) `
         -LogsRoot $storedLogsRoot)
-}-LogsRoot $storedLogsRoot)
 }
 
 function Update-LauncherSessionMetadata {
