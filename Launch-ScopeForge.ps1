@@ -2349,6 +2349,7 @@ function New-LauncherSessionRecord {
         settings_path   = $settingsPath
         readme_path     = $readmePath
         logs_root       = $logsRoot
+        session_logs_root = $logsRoot
         last_output_dir = $LastOutputDir
         last_log_dir    = $LastLogDir
         logging_mode    = $(if ([string]::IsNullOrWhiteSpace($LoggingMode)) { 'normal' } else { $LoggingMode })
@@ -2357,6 +2358,7 @@ function New-LauncherSessionRecord {
         note            = $(if ([string]::IsNullOrWhiteSpace($Note)) { $(if ($exists) { 'SESSION' } else { 'INTROUVABLE' }) } else { $Note })
     }
 }
+
 function Write-LauncherSessionMetadata {
     param([Parameter(Mandatory)][pscustomobject]$SessionRecord)
 
@@ -2368,22 +2370,20 @@ function Write-LauncherSessionMetadata {
     }
 
     $payload = [ordered]@{
-        version           = 1
-        session_id        = $SessionRecord.session_id
-        display_name      = $SessionRecord.display_name
-        session_root      = $SessionRecord.session_root
-        scope_path        = $SessionRecord.scope_path
-        settings_path     = $SessionRecord.settings_path
-        readme_path       = $SessionRecord.readme_path
-
-        logs_root         = $SessionRecord.logs_root
-        session_logs_root = $SessionRecord.logs_root
-
-        last_output_dir   = $SessionRecord.last_output_dir
-        last_log_dir      = $SessionRecord.last_log_dir
-        logging_mode      = $SessionRecord.logging_mode
-        last_used_utc     = $SessionRecord.last_used_utc
-        note              = $SessionRecord.note
+        version             = 1
+        session_id          = $SessionRecord.session_id
+        display_name        = $SessionRecord.display_name
+        session_root        = $SessionRecord.session_root
+        scope_path          = $SessionRecord.scope_path
+        settings_path       = $SessionRecord.settings_path
+        readme_path         = $SessionRecord.readme_path
+        logs_root           = $SessionRecord.logs_root
+        session_logs_root   = $SessionRecord.logs_root
+        last_output_dir     = $SessionRecord.last_output_dir
+        last_log_dir        = $SessionRecord.last_log_dir
+        logging_mode        = $SessionRecord.logging_mode
+        last_used_utc       = $SessionRecord.last_used_utc
+        note                = $SessionRecord.note
     }
 
     $metadataPath = Get-LauncherSessionMetadataPath -SessionRoot $SessionRecord.session_root
@@ -2408,6 +2408,9 @@ function Read-LauncherSessionMetadata {
     $storedLogsRoot = [string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'session_logs_root' -Default '')
     if ([string]::IsNullOrWhiteSpace($storedLogsRoot)) {
         $storedLogsRoot = [string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'logs_root' -Default '')
+    }
+    if ([string]::IsNullOrWhiteSpace($storedLogsRoot)) {
+        $storedLogsRoot = Join-Path ([System.IO.Path]::GetFullPath($SessionRoot)) 'logs'
     }
 
     return (New-LauncherSessionRecord `
@@ -2442,7 +2445,7 @@ function Update-LauncherSessionMetadata {
         -ScopePath $(if ($Values.ContainsKey('scope_path')) { [string]$Values['scope_path'] } else { $current.scope_path }) `
         -SettingsPath $(if ($Values.ContainsKey('settings_path')) { [string]$Values['settings_path'] } else { $current.settings_path }) `
         -ReadmePath $(if ($Values.ContainsKey('readme_path')) { [string]$Values['readme_path'] } else { $current.readme_path }) `
-        -LogsRoot $(if ($Values.ContainsKey('logs_root')) { [string]$Values['logs_root'] } else { $current.logs_root })
+        -LogsRoot $(if ($Values.ContainsKey('logs_root')) { [string]$Values['logs_root'] } elseif ($Values.ContainsKey('session_logs_root')) { [string]$Values['session_logs_root'] } else { $current.logs_root })
 
     $null = Write-LauncherSessionMetadata -SessionRecord $record
     return $record
