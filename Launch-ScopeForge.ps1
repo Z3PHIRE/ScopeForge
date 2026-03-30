@@ -1650,7 +1650,7 @@ function Initialize-LauncherFileWorkspace {
             $null = New-Item -ItemType Directory -Path $path -Force
         }
     }
-    Initialize-LauncherDefaultTemplateFiles -Workspace $workspace
+    Set-LauncherDefaultTemplateFiles -Workspace $workspace
     return $workspace
 }
 
@@ -2074,7 +2074,7 @@ function Get-LauncherBuiltInScopeTemplates {
     )
 }
 
-function Initialize-LauncherDefaultTemplateFiles {
+function Set-LauncherDefaultTemplateFiles {
     param([AllowNull()][object]$Workspace = $null)
 
     $targetWorkspace = if ($Workspace) { $Workspace } else { Get-LauncherFileWorkspace }
@@ -3385,6 +3385,13 @@ function Show-LauncherSavedSessionsMenu {
             }
         }
     }
+}
+
+function Show-LauncherSavedSessions {
+    [CmdletBinding()]
+    param()
+
+    return (Show-LauncherSavedSessionsMenu)
 }
 
 function Show-LauncherSelectedScopeGuidance {
