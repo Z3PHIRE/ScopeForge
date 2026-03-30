@@ -4977,7 +4977,8 @@ function New-LauncherDocumentSet {
     $readmePath = Join-Path $sessionRoot '00-START-HERE.txt'
     $scopePath = if ($ManagedScopeFilePath) { Resolve-LauncherScopePath -Path $ManagedScopeFilePath } else { Join-Path $sessionRoot '01-scope.json' }
     $settingsPath = Join-Path $sessionRoot '02-run-settings.json'
-    $logsRoot = Join-Path $sessionRoot 'logs'
+    $logsRoot = [System.IO.Path]::GetFullPath((Join-Path $sessionRoot 'logs'))
+
     if (-not (Test-Path -LiteralPath $logsRoot)) {
         $null = New-Item -ItemType Directory -Path $logsRoot -Force
     }
@@ -5018,24 +5019,47 @@ function New-LauncherDocumentSet {
     $instructions = Get-LauncherStartHereContent -ScopePath $scopePath -SettingsPath $settingsPath -DefaultOutputDir $defaultOutputDir -SessionRoot $sessionRoot -LogsRoot $logsRoot -ManagedScopeFile ([bool](-not [string]::IsNullOrWhiteSpace($ManagedScopeFilePath)))
 
     Set-Content -LiteralPath $readmePath -Value $instructions -Encoding utf8
+
     if (-not $ManagedScopeFilePath -and (-not $PreserveExistingFiles -or -not (Test-Path -LiteralPath $scopePath))) {
         Set-Content -LiteralPath $scopePath -Value $scopeTemplate -Encoding utf8
     }
+
     if (-not $PreserveExistingFiles -or -not (Test-Path -LiteralPath $settingsPath)) {
         Set-Content -LiteralPath $settingsPath -Value ($settingsObject | ConvertTo-Json -Depth 20) -Encoding utf8
     }
 
+    $effectiveLoggingMode = if ([string]::IsNullOrWhiteSpace($LoggingMode)) { Get-LauncherDefaultLoggingMode } else { $LoggingMode }
+
     $sessionRecord = Update-LauncherSessionMetadata -SessionRoot $sessionRoot -Values @{
-        display_name  = $(if ($ProgramName) { $ProgramName } else { [System.IO.Path]::GetFileName($sessionRoot) })
-        scope_path    = $scopePath
-        settings_path = $settingsPath
-        readme_path   = $readmePath
-        logs_root     = $logsRoot
-        logging_mode  = $(if ($LoggingMode) { $LoggingMode } else { Get-LauncherDefaultLoggingMode })
-        last_log_dir  = $logsRoot
-        last_used_utc = [DateTimeOffset]::UtcNow.ToString('o')
-        note          = 'SESSION'
+        display_name      = $(if ($ProgramName) { $ProgramName } else { [System.IO.Path]::GetFileName($sessionRoot) })
+        scope_path        = $scopePath
+        settings_path     = $settingsPath
+        readme_path       = $readmePath
+        logs_root         = $logsRoot
+        session_logs_root = $logsRoot
+        logging_mode      = $effectiveLoggingMode
+        last_log_dir      = $logsRoot
+        last_used_utc     = [DateTimeOffset]::UtcNow.ToString('o')
+        note              = 'SESSION'
     }
+
+    $sessionRecord = Read-LauncherSessionMetadata -SessionRoot $sessionRoot
+
+    if ([string]::IsNullOrWhiteSpace([string]$sessionRecord.logs_root) -or ([System.IO.Path]::GetFullPath([string]$sessionRecord.logs_root) -ne $logsRoot)) {
+        $sessionRecord = Update-LauncherSessionMetadata -SessionRoot $sessionRoot -Values @{
+            display_name      = $sessionRecord.display_name
+            scope_path        = $scopePath
+            settings_path     = $settingsPath
+            readme_path       = $readmePath
+            logs_root         = $logsRoot
+            session_logs_root = $logsRoot
+            logging_mode      = $effectiveLoggingMode
+            last_log_dir      = $logsRoot
+            last_used_utc     = [DateTimeOffset]::UtcNow.ToString('o')
+            note              = 'SESSION'
+        }
+    }
+
     Set-LauncherSelectedSession -SessionId $sessionRecord.session_id
 
     return [pscustomobject]@{
