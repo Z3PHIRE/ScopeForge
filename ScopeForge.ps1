@@ -585,6 +585,7 @@ function Initialize-ReconTools {
 }
 
 function Ensure-ReconTools {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseApprovedVerbs', '', Justification = 'Legacy compatibility wrapper kept for existing tests and callers.')]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$OutputDir,
