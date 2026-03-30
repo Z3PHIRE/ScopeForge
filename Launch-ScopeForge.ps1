@@ -87,7 +87,9 @@ function Get-LauncherPanelWidth {
 function Get-LauncherStatusColor {
     param([AllowNull()][string]$Status)
 
-    switch (($Status ?? '').ToUpperInvariant()) {
+    $safeStatus = if ($null -eq $Status) { '' } else { $Status }
+
+    switch ($safeStatus.ToUpperInvariant()) {
         'OK' { return 'Green' }
         'ARCHIVE' { return 'DarkYellow' }
         'SUPPRIME' { return 'DarkRed' }
@@ -231,51 +233,6 @@ function Write-LauncherTable {
             Write-Host ("  {0}" -f $line) -ForegroundColor Gray
         }
     }
-}
-
-function Throw-LauncherConfigValidationError {
-    param(
-        [Parameter(Mandatory)][string]$Field,
-        [AllowNull()][object]$Value,
-        [Parameter(Mandatory)][string]$Problem,
-        [Parameter(Mandatory)][string]$Example
-    )
-
-    $payload = [ordered]@{
-        Kind    = 'LauncherConfigValidation'
-        Field   = $Field
-        Value   = $(if ($null -eq $Value) { 'null' } else { ConvertTo-LauncherCellText -Value $Value })
-        Problem = $Problem
-        Example = $Example
-    }
-    throw ('SCOPEFORGE_CONFIG::{0}' -f ($payload | ConvertTo-Json -Compress))
-}
-
-function Get-LauncherConfigValidationIssue {
-    param([Parameter(Mandatory)][System.Exception]$Exception)
-
-    $prefix = 'SCOPEFORGE_CONFIG::'
-    if (-not $Exception.Message.StartsWith($prefix)) { return $null }
-    try {
-        return ($Exception.Message.Substring($prefix.Length) | ConvertFrom-Json -Depth 10)
-    } catch {
-        return $null
-    }
-}
-
-function Show-LauncherConfigValidationSummary {
-    param([Parameter(Mandatory)][pscustomobject]$Issue)
-
-    Write-LauncherSection -Title 'Erreur de configuration'
-    Write-Host 'Le launcher a bloque le run avant execution. Corrige le champ ci-dessous dans 02-run-settings.json.' -ForegroundColor Yellow
-    Write-LauncherTable -Rows @(
-        [pscustomobject]@{
-            Champ    = $Issue.Field
-            Valeur   = $Issue.Value
-            Probleme = $Issue.Problem
-            Exemple  = $Issue.Example
-        }
-    ) -Columns @('Champ', 'Valeur', 'Probleme', 'Exemple') -Widths @{ Champ = 18; Valeur = 22; Probleme = 40; Exemple = 24 }
 }
 
 function Write-LauncherKeyValue {
@@ -1238,7 +1195,7 @@ function Show-ErrorSummaryPanel {
 }
 
 function Get-LauncherStorageRoot {
-    if ($IsWindows) {
+    if (Test-LauncherIsWindows) {
         $basePath = [Environment]::GetFolderPath('LocalApplicationData')
     } elseif ($HOME) {
         $basePath = $HOME
@@ -1617,9 +1574,36 @@ function Update-LauncherUiState {
     return (Write-LauncherUiState -State ([pscustomobject]$updated))
 }
 
+function Test-LauncherIsWindows {
+    if ($PSVersionTable.PSVersion.Major -ge 6) {
+        return $IsWindows
+    }
+
+    return $env:OS -eq 'Windows_NT'
+}
+
 function Test-LauncherVisualModeSupport {
-    if (-not $IsWindows) { return $false }
-    return [bool](Get-Command -Name 'Out-GridView' -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if (-not (Test-LauncherIsWindows)) {
+        return $false
+    }
+
+    $command = Get-Command -Name 'Out-GridView' -ErrorAction SilentlyContinue | Select-Object -First 1
+    return ($null -ne $command)
+}
+
+function Test-LauncherIsWindows {
+    if ($PSVersionTable.PSVersion.Major -ge 6) { return $IsWindows }
+    return $env:OS -eq 'Windows_NT'
+}
+
+function Test-LauncherIsLinux {
+    if ($PSVersionTable.PSVersion.Major -ge 6) { return $IsLinux }
+    return $false
+}
+
+function Test-LauncherIsMacOS {
+    if ($PSVersionTable.PSVersion.Major -ge 6) { return $IsMacOS }
+    return $false
 }
 
 function Get-LauncherInteractionMode {
@@ -2370,6 +2354,7 @@ function New-LauncherSessionRecord {
         note            = $(if ([string]::IsNullOrWhiteSpace($Note)) { $(if ($exists) { 'SESSION' } else { 'INTROUVABLE' }) } else { $Note })
     }
 }
+function Write-LauncherSessionMetadata {
     param([Parameter(Mandatory)][pscustomobject]$SessionRecord)
 
     if (-not (Test-Path -LiteralPath $SessionRecord.session_root)) {
@@ -4593,7 +4578,7 @@ function Select-LauncherStartupAction {
 }
 
 function Get-LauncherEditorDefinition {
-    if ($IsWindows) {
+    if (Test-LauncherIsWindows) {
         return [pscustomobject]@{
             FilePath  = 'notepad.exe'
             Arguments = @()
@@ -4662,12 +4647,12 @@ function Open-LauncherPath {
     if (-not (Test-Path -LiteralPath $Path)) { return }
 
     try {
-        if ($IsWindows) {
+        if (Test-LauncherIsWindows) {
             Start-Process -FilePath $Path | Out-Null
             return
         }
 
-        if ($IsLinux) {
+        if (Test-LauncherIsLinux) {
             $xdgOpen = Get-Command -Name 'xdg-open' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($xdgOpen) {
                 Start-Process -FilePath $xdgOpen.Source -ArgumentList @($Path) | Out-Null
@@ -4675,7 +4660,7 @@ function Open-LauncherPath {
             return
         }
 
-        if ($IsMacOS) {
+        if (Test-LauncherIsMacOS) {
             $openCommand = Get-Command -Name 'open' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($openCommand) {
                 Start-Process -FilePath $openCommand.Source -ArgumentList @($Path) | Out-Null
@@ -5591,6 +5576,28 @@ function Start-ScopeForgeLauncher {
     }
 
     $runManifest = Save-LauncherRunManifest -RunConfig $runConfig -Result $result -RunStartedAtUtc $runStartedAtUtc -RunEndedAtUtc ([DateTimeOffset]::UtcNow.ToString('o'))
+
     $recentScopePath = Get-LauncherRecentScopeUpdatePath -RunConfig $runConfig
     if (-not [string]::IsNullOrWhiteSpace([string]$recentScopePath)) {
-        Set-LauncherSelectedScope -ScopePath $recentScopePath -DisplayName ([System.IO.Path]::GetFileNameWithoutExtension([string]$recentScopePath)) -LastOutputDir $result.OutputDir -LastSessionId $(if ($runConfig.ContainsKey('LauncherSessionId')) { [string]$runConfig.LauncherSessionId } else { $null }) -LastSessionRoot $(if ($runConfig.ContainsKey('LauncherSessionRoot')) { [string]$runConfig.LauncherSessionRoot } else { $null }) | Out-Null
+        Set-LauncherSelectedScope `
+            -ScopePath $recentScopePath `
+            -DisplayName ([System.IO.Path]::GetFileNameWithoutExtension([string]$recentScopePath)) `
+            -LastOutputDir $result.OutputDir `
+            -LastSessionId $(if ($runConfig.ContainsKey('LauncherSessionId')) { [string]$runConfig.LauncherSessionId } else { $null }) `
+            -LastSessionRoot $(if ($runConfig.ContainsKey('LauncherSessionRoot')) { [string]$runConfig.LauncherSessionRoot } else { $null }) | Out-Null
+    }
+
+    if (-not $NonInteractive) {
+        Show-RunSummaryDashboard -Result $result
+        Show-InterestingSummary -Result $result
+        Show-NextActionsPanel -Result $result
+        if ($result.Errors -and $result.Errors.Count -gt 0) {
+            Show-ErrorSummaryPanel -Result $result
+        }
+        if ($showPostRunMenu) {
+            Show-PostRunMenu -Result $result
+        }
+    }
+
+    return $result
+}
