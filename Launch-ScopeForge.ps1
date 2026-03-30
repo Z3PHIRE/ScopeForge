@@ -4964,7 +4964,7 @@ function New-LauncherDocumentSet {
         [bool]$OpenReportOnFinish
     )
 
-    $sessionRoot = if ($SessionRootOverride) { [System.IO.Path]::GetFullPath($SessionRootOverride) } else { Get-LauncherUniqueSessionDirectory }
+    $sessionRoot = if ($SessionRootOverride) { [System.IO.Path]::GetFullPath($SessionRootOverride) } else { [System.IO.Path]::GetFullPath((Get-LauncherUniqueSessionDirectory)) }
     if (-not (Test-Path -LiteralPath $sessionRoot)) {
         $null = New-Item -ItemType Directory -Path $sessionRoot -Force
     }
@@ -5058,7 +5058,7 @@ function New-LauncherDocumentSet {
     Set-LauncherSelectedSession -SessionId $sessionRecord.session_id
 
     return [pscustomobject]@{
-        RootPath      = $sessionRoot
+        RootPath      = $sessionRecord.session_root
         ReadmePath    = $readmePath
         ScopePath     = $scopePath
         SettingsPath  = $settingsPath
