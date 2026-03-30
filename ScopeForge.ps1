@@ -584,16 +584,7 @@ function Initialize-ReconTools {
     }
 }
 
-function Ensure-ReconTools {
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseApprovedVerbs', '', Justification = 'Legacy compatibility wrapper kept for existing tests and callers.')]
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$OutputDir,
-        [switch]$NoInstall
-    )
-
-    return (Initialize-ReconTools -OutputDir $OutputDir -NoInstall:$NoInstall)
-}
+Set-Alias -Name Ensure-ReconTools -Value Initialize-ReconTools -Scope Script
 
 function Test-ValidDnsName {
     [CmdletBinding()]
@@ -2209,7 +2200,7 @@ function Invoke-BugBountyRecon {
         if ($EnableWaybackUrls) { $enabledSources += 'waybackurls' }
         if ($EnableHakrawler) { $enabledSources += 'hakrawler' }
         Write-StageProgress -Step 2 -Title 'Préparation outils' -Percent 10 -Status ("Checking {0}" -f ($enabledSources -join '/'))
-        $tools = Initialize-ReconTools -Layout $layout -NoInstall:$NoInstall -TimeoutSeconds $TimeoutSeconds -EnableGau:$EnableGau -EnableWaybackUrls:$EnableWaybackUrls -EnableHakrawler:$EnableHakrawler
+        $tools = Ensure-ReconTools -Layout $layout -NoInstall:$NoInstall -TimeoutSeconds $TimeoutSeconds -EnableGau:$EnableGau -EnableWaybackUrls:$EnableWaybackUrls -EnableHakrawler:$EnableHakrawler
         Write-StageProgress -Step 2 -Title 'Préparation outils' -Percent 100 -Status 'Toolchain ready'
 
         if ($useResume -and (Test-Path -LiteralPath $layout.HostsAllJson)) {
