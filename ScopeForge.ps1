@@ -1489,10 +1489,10 @@ function Merge-ReconResults {
         [string]$UniqueUserAgent
     )
 
-    $statusCounts = $LiveTargets | Group-Object -Property StatusCode | Sort-Object -Property Name | ForEach-Object { [pscustomobject]@{ StatusCode = $_.Name; Count = $_.Count } }
-    $technologyCounts = $LiveTargets | ForEach-Object { $_.Technologies } | Where-Object { $_ } | Group-Object | Sort-Object Count -Descending | Select-Object -First 10 | ForEach-Object { [pscustomobject]@{ Technology = $_.Name; Count = $_.Count } }
-    $subdomainCounts = $HostsAll | Group-Object -Property Host | Sort-Object Count -Descending | Select-Object -First 10 | ForEach-Object { [pscustomobject]@{ Host = $_.Name; Count = $_.Count } }
-    $interestingCategoryCounts = $InterestingUrls | ForEach-Object { $_.Categories } | Where-Object { $_ } | Group-Object | Sort-Object Count -Descending | Select-Object -First 10 | ForEach-Object { [pscustomobject]@{ Category = $_.Name; Count = $_.Count } }
+    $statusCounts = @($LiveTargets | Group-Object -Property StatusCode | Sort-Object -Property Name | ForEach-Object { [pscustomobject]@{ StatusCode = $_.Name; Count = $_.Count } })
+    $technologyCounts = @($LiveTargets | ForEach-Object { $_.Technologies } | Where-Object { $_ } | Group-Object | Sort-Object Count -Descending | Select-Object -First 10 | ForEach-Object { [pscustomobject]@{ Technology = $_.Name; Count = $_.Count } })
+    $subdomainCounts = @($HostsAll | Group-Object -Property Host | Sort-Object Count -Descending | Select-Object -First 10 | ForEach-Object { [pscustomobject]@{ Host = $_.Name; Count = $_.Count } })
+    $interestingCategoryCounts = @($InterestingUrls | ForEach-Object { $_.Categories } | Where-Object { $_ } | Group-Object | Sort-Object Count -Descending | Select-Object -First 10 | ForEach-Object { [pscustomobject]@{ Category = $_.Name; Count = $_.Count } })
     $interestingFamilyCounts = $InterestingUrls | Group-Object -Property PrimaryFamily | Where-Object { $_.Name } | Sort-Object -Property @{ Expression = 'Count'; Descending = $true }, Name | Select-Object -First 10 | ForEach-Object {
         [pscustomobject]@{
             Family    = $_.Name
