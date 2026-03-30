@@ -1278,7 +1278,11 @@ function Invoke-HttpProbe {
 
         $liveTargets = [System.Collections.Generic.List[object]]::new()
         $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-        $lines = if (Test-Path -LiteralPath $stdoutFile) { Get-Content -LiteralPath $stdoutFile -Encoding utf8 } else { @() }
+        $lines = @(
+            if (Test-Path -LiteralPath $stdoutFile) {
+                Get-Content -LiteralPath $stdoutFile -Encoding utf8
+            }
+        )
 
         foreach ($line in $lines) {
             if ([string]::IsNullOrWhiteSpace($line)) { continue }
@@ -1489,59 +1493,138 @@ function Merge-ReconResults {
         [string]$UniqueUserAgent
     )
 
-    $statusCounts = @($LiveTargets | Group-Object -Property StatusCode | Sort-Object -Property Name | ForEach-Object { [pscustomobject]@{ StatusCode = $_.Name; Count = $_.Count } })
-    $technologyCounts = @($LiveTargets | ForEach-Object { $_.Technologies } | Where-Object { $_ } | Group-Object | Sort-Object Count -Descending | Select-Object -First 10 | ForEach-Object { [pscustomobject]@{ Technology = $_.Name; Count = $_.Count } })
-    $subdomainCounts = @($HostsAll | Group-Object -Property Host | Sort-Object Count -Descending | Select-Object -First 10 | ForEach-Object { [pscustomobject]@{ Host = $_.Name; Count = $_.Count } })
-    $interestingCategoryCounts = @($InterestingUrls | ForEach-Object { $_.Categories } | Where-Object { $_ } | Group-Object | Sort-Object Count -Descending | Select-Object -First 10 | ForEach-Object { [pscustomobject]@{ Category = $_.Name; Count = $_.Count } })
-    $interestingFamilyCounts = $InterestingUrls | Group-Object -Property PrimaryFamily | Where-Object { $_.Name } | Sort-Object -Property @{ Expression = 'Count'; Descending = $true }, Name | Select-Object -First 10 | ForEach-Object {
-        [pscustomobject]@{
-            Family    = $_.Name
-            Count     = $_.Count
-            MaxScore  = ($_.Group | Measure-Object -Property Score -Maximum).Maximum
-            TopUrl    = ($_.Group | Sort-Object -Property @{ Expression = 'Score'; Descending = $true }, Url | Select-Object -First 1 -ExpandProperty Url)
+    $statusCounts = @(
+        $LiveTargets |
+        Group-Object -Property StatusCode |
+        Sort-Object -Property Name |
+        ForEach-Object {
+            [pscustomobject]@{
+                StatusCode = $_.Name
+                Count      = $_.Count
+            }
         }
-    }
-    $interestingPriorityCounts = $InterestingUrls | Group-Object -Property Priority | Where-Object { $_.Name } | Sort-Object -Property @{ Expression = { switch ($_.Name) { 'Critical' { 0 } 'High' { 1 } 'Medium' { 2 } default { 3 } } } }, Name | ForEach-Object {
-        [pscustomobject]@{
-            Priority = $_.Name
-            Count    = $_.Count
+    )
+
+    $technologyCounts = @(
+        $LiveTargets |
+        ForEach-Object { $_.Technologies } |
+        Where-Object { $_ } |
+        Group-Object |
+        Sort-Object Count -Descending |
+        Select-Object -First 10 |
+        ForEach-Object {
+            [pscustomobject]@{
+                Technology = $_.Name
+                Count      = $_.Count
+            }
         }
-    }
-    $errorPhaseCounts = $Errors | Group-Object -Property Phase | Where-Object { $_.Name } | Sort-Object -Property @{ Expression = 'Count'; Descending = $true }, Name | ForEach-Object {
-        [pscustomobject]@{
-            Phase = $_.Name
-            Count = $_.Count
+    )
+
+    $subdomainCounts = @(
+        $HostsAll |
+        Group-Object -Property Host |
+        Sort-Object Count -Descending |
+        Select-Object -First 10 |
+        ForEach-Object {
+            [pscustomobject]@{
+                Host  = $_.Name
+                Count = $_.Count
+            }
         }
-    }
-    $errorToolCounts = $Errors | Where-Object { $_.Tool } | Group-Object -Property Tool | Sort-Object -Property @{ Expression = 'Count'; Descending = $true }, Name | ForEach-Object {
-        [pscustomobject]@{
-            Tool  = $_.Name
-            Count = $_.Count
+    )
+
+    $interestingCategoryCounts = @(
+        $InterestingUrls |
+        ForEach-Object { $_.Categories } |
+        Where-Object { $_ } |
+        Group-Object |
+        Sort-Object Count -Descending |
+        Select-Object -First 10 |
+        ForEach-Object {
+            [pscustomobject]@{
+                Category = $_.Name
+                Count    = $_.Count
+            }
         }
-    }
+    )
+
+    $interestingFamilyCounts = @(
+        $InterestingUrls |
+        Group-Object -Property PrimaryFamily |
+        Where-Object { $_.Name } |
+        Sort-Object -Property @{ Expression = 'Count'; Descending = $true }, Name |
+        Select-Object -First 10 |
+        ForEach-Object {
+            [pscustomobject]@{
+                Family   = $_.Name
+                Count    = $_.Count
+                MaxScore = ($_.Group | Measure-Object -Property Score -Maximum).Maximum
+                TopUrl   = ($_.Group | Sort-Object -Property @{ Expression = 'Score'; Descending = $true }, Url | Select-Object -First 1 -ExpandProperty Url)
+            }
+        }
+    )
+
+    $interestingPriorityCounts = @(
+        $InterestingUrls |
+        Group-Object -Property Priority |
+        Where-Object { $_.Name } |
+        Sort-Object -Property @{ Expression = { switch ($_.Name) { 'Critical' { 0 } 'High' { 1 } 'Medium' { 2 } default { 3 } } } }, Name |
+        ForEach-Object {
+            [pscustomobject]@{
+                Priority = $_.Name
+                Count    = $_.Count
+            }
+        }
+    )
+
+    $errorPhaseCounts = @(
+        $Errors |
+        Group-Object -Property Phase |
+        Where-Object { $_.Name } |
+        Sort-Object -Property @{ Expression = 'Count'; Descending = $true }, Name |
+        ForEach-Object {
+            [pscustomobject]@{
+                Phase = $_.Name
+                Count = $_.Count
+            }
+        }
+    )
+
+    $errorToolCounts = @(
+        $Errors |
+        Where-Object { $_.Tool } |
+        Group-Object -Property Tool |
+        Sort-Object -Property @{ Expression = 'Count'; Descending = $true }, Name |
+        ForEach-Object {
+            [pscustomobject]@{
+                Tool  = $_.Name
+                Count = $_.Count
+            }
+        }
+    )
 
     [pscustomobject]@{
-        ProgramName            = $ProgramName
-        GeneratedAtUtc         = [DateTime]::UtcNow.ToString('o')
-        PowerShellVersion      = $PSVersionTable.PSVersion.ToString()
-        ScopeItemCount         = $ScopeItems.Count
-        ExcludedItemCount      = $Exclusions.Count
-        DiscoveredHostCount    = @($HostsAll | Select-Object -ExpandProperty Host -Unique).Count
-        LiveHostCount          = @($LiveTargets | Select-Object -ExpandProperty Host -Unique).Count
-        LiveTargetCount        = $LiveTargets.Count
-        DiscoveredUrlCount     = $DiscoveredUrls.Count
-        InterestingUrlCount    = $InterestingUrls.Count
-        ErrorCount             = $Errors.Count
-        ProtectedInterestingCount = @($InterestingUrls | Where-Object { $_.Categories -contains 'Protected' }).Count
-        UniqueUserAgent        = $UniqueUserAgent
-        StatusCodeDistribution = $statusCounts
-        TopTechnologies        = $technologyCounts
-        TopSubdomains          = $subdomainCounts
-        TopInterestingCategories = $interestingCategoryCounts
-        TopInterestingFamilies = $interestingFamilyCounts
+        ProgramName                     = $ProgramName
+        GeneratedAtUtc                  = [DateTime]::UtcNow.ToString('o')
+        PowerShellVersion               = $PSVersionTable.PSVersion.ToString()
+        ScopeItemCount                  = $ScopeItems.Count
+        ExcludedItemCount               = $Exclusions.Count
+        DiscoveredHostCount             = @($HostsAll | Select-Object -ExpandProperty Host -Unique).Count
+        LiveHostCount                   = @($LiveTargets | Select-Object -ExpandProperty Host -Unique).Count
+        LiveTargetCount                 = $LiveTargets.Count
+        DiscoveredUrlCount              = $DiscoveredUrls.Count
+        InterestingUrlCount             = $InterestingUrls.Count
+        ErrorCount                      = $Errors.Count
+        ProtectedInterestingCount       = @($InterestingUrls | Where-Object { $_.Categories -contains 'Protected' }).Count
+        UniqueUserAgent                 = $UniqueUserAgent
+        StatusCodeDistribution          = $statusCounts
+        TopTechnologies                 = $technologyCounts
+        TopSubdomains                   = $subdomainCounts
+        TopInterestingCategories        = $interestingCategoryCounts
+        TopInterestingFamilies          = $interestingFamilyCounts
         InterestingPriorityDistribution = $interestingPriorityCounts
-        ErrorPhaseDistribution = $errorPhaseCounts
-        ErrorToolDistribution  = $errorToolCounts
+        ErrorPhaseDistribution          = $errorPhaseCounts
+        ErrorToolDistribution           = $errorToolCounts
     }
 }
 
@@ -2259,11 +2342,19 @@ function Invoke-BugBountyRecon {
                     }
                 }
             }
-
-            $hostsAll = $hostMap.Keys | Sort-Object | ForEach-Object {
-                $record = $hostMap[$_]
-                [pscustomobject]@{ Host = $_; Discovery = @($record.Discovery | Sort-Object); SourceScopeIds = @($record.SourceScopeIds | Sort-Object); SourceTypes = @($record.SourceTypes | Sort-Object); CandidateUrls = @($record.CandidateUrls | Sort-Object); RootDomains = @($record.RootDomains | Sort-Object) }
-            }
+            $hostsAll = @(
+                $hostMap.Keys | Sort-Object | ForEach-Object {
+                    $record = $hostMap[$_]
+                    [pscustomobject]@{
+                        Host           = $_
+                        Discovery      = @($record.Discovery | Sort-Object)
+                        SourceScopeIds = @($record.SourceScopeIds | Sort-Object)
+                        SourceTypes    = @($record.SourceTypes | Sort-Object)
+                        CandidateUrls  = @($record.CandidateUrls | Sort-Object)
+                        RootDomains    = @($record.RootDomains | Sort-Object)
+                    }
+                }
+            )
             Write-JsonFile -Path $layout.HostsAllJson -Data $hostsAll
         }
         if ($exportCsvEnabled) { Export-FlatCsv -Path $layout.HostsAllCsv -Rows $hostsAll }
@@ -2282,15 +2373,17 @@ function Invoke-BugBountyRecon {
         }
         if ($exportCsvEnabled) { Export-FlatCsv -Path $layout.LiveTargetsCsv -Rows $liveTargets }
 
-        $hostsLive = $liveTargets | Group-Object -Property Host | Sort-Object Name | ForEach-Object {
-            [pscustomobject]@{
-                Host         = $_.Name
-                Urls         = @($_.Group | Select-Object -ExpandProperty Url -Unique)
-                StatusCodes  = @($_.Group | Select-Object -ExpandProperty StatusCode -Unique)
-                Technologies = @($_.Group | ForEach-Object { $_.Technologies } | Where-Object { $_ } | Select-Object -Unique)
-                ScopeIds     = @($_.Group | ForEach-Object { $_.MatchedScopeIds } | Select-Object -Unique)
+        $hostsLive = @(
+            $liveTargets | Group-Object -Property Host | Sort-Object Name | ForEach-Object {
+                [pscustomobject]@{
+                    Host         = $_.Name
+                    Urls         = @($_.Group | Select-Object -ExpandProperty Url -Unique)
+                    StatusCodes  = @($_.Group | Select-Object -ExpandProperty StatusCode -Unique)
+                    Technologies = @($_.Group | ForEach-Object { $_.Technologies } | Where-Object { $_ } | Select-Object -Unique)
+                    ScopeIds     = @($_.Group | ForEach-Object { $_.MatchedScopeIds } | Select-Object -Unique)
+                }
             }
-        }
+        )
         Write-JsonFile -Path $layout.HostsLiveJson -Data $hostsLive
 
         if ($useResume -and (Test-Path -LiteralPath $layout.UrlsDiscoveredJson)) {
