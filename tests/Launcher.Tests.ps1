@@ -1,5 +1,7 @@
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 . (Join-Path $repoRoot 'Launch-ScopeForge.ps1')
+$script:OriginalGetLauncherFileWorkspace = (Get-Item Function:\Get-LauncherFileWorkspace).ScriptBlock
+$script:OriginalShowLauncherScopeSelection = (Get-Item Function:\Show-LauncherScopeSelection).ScriptBlock
 . (Join-Path $repoRoot 'ScopeForge.ps1')
 
 function Get-TestFixtureContent {
@@ -109,8 +111,25 @@ Describe 'ScopeForge launcher boolean handling' {
             Show-LauncherPreRunSummary -ScopeItems $scopeItems -RunConfig $runConfig
         }
 
+        It 'renders the compact dashboard with a persistent banner and without tables by default' {
+            $script:bannerCount = 0
+            $script:tableCount = 0
+            Mock Write-LauncherBanner { $script:bannerCount++ }
+            Mock Write-LauncherSection { }
+            Mock Write-LauncherStatusLine { }
+            Mock Write-LauncherKeyValue { }
+            Mock Write-LauncherTable { $script:tableCount++ }
+            Mock Write-Host { }
+
+            Show-LauncherScopeSelection -SelectedScope $null -SelectedSession $null -PlannedOutputDir 'C:\Runs\demo' -LoggingMode 'normal' -PlannedLogDir 'C:\Logs\demo' -InteractionMode 'console' -RecentScopes @() -SavedSessions @()
+
+            if ($script:bannerCount -ne 1) { throw 'Expected the compact dashboard to redraw the banner on the main screen.' }
+            if ($script:tableCount -ne 0) { throw 'Expected the compact dashboard to avoid recent/session tables by default.' }
+        }
+
         It 'distinguishes editable managed scopes from templates' {
-            $workspace = [pscustomobject]@{
+            $script:workspace = [pscustomobject]@{
+                WorkspaceRoot    = $TestDrive
                 RepoRoot         = $TestDrive
                 ScopesRoot       = Join-Path $TestDrive 'scopes'
                 Incoming         = Join-Path $TestDrive 'scopes\\incoming'
@@ -121,11 +140,11 @@ Describe 'ScopeForge launcher boolean handling' {
                 StateRoot        = Join-Path $TestDrive 'state'
                 RecentScopesPath = Join-Path $TestDrive 'state\\recent-scopes.json'
             }
-            Mock Get-LauncherFileWorkspace { $workspace }
+            Mock Get-LauncherFileWorkspace { $script:workspace }
             $null = Initialize-LauncherFileWorkspace
 
-            $activeScope = Join-Path $workspace.Active 'active.json'
-            $templateScope = Join-Path $workspace.Templates 'template.json'
+            $activeScope = Join-Path $script:workspace.Active 'active.json'
+            $templateScope = Join-Path $script:workspace.Templates 'template.json'
             Set-Content -LiteralPath $activeScope -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
             Set-Content -LiteralPath $templateScope -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
 
@@ -149,6 +168,24 @@ Describe 'ScopeForge launcher boolean handling' {
 
             if ($updatePath -ne (Resolve-LauncherScopePath -Path $selectedScope)) {
                 throw 'Expected recent scope updates to prefer the user-selected scope path.'
+            }
+        }
+
+        It 'resolves relative scope paths against the durable workspace during bootstrap context' {
+            $script:launcherDocumentsRoot = Join-Path $TestDrive '.launcher-docs'
+            Mock Test-LauncherBootstrapContext { $true }
+            Mock Get-LauncherDocumentsRoot { $script:launcherDocumentsRoot }
+            $workspace = & $script:OriginalGetLauncherFileWorkspace
+            Mock Get-LauncherFileWorkspace { $workspace }
+            $null = Initialize-LauncherFileWorkspace
+            $resolvedPath = Resolve-LauncherScopePath -Path '.\scopes\incoming\demo.json'
+            $expectedPath = [System.IO.Path]::GetFullPath((Join-Path $workspace.WorkspaceRoot '.\scopes\incoming\demo.json'))
+
+            if ($workspace.WorkspaceRoot -eq $workspace.RepoRoot) {
+                throw 'Expected bootstrap mode to use a durable workspace root outside the launcher script root.'
+            }
+            if ($resolvedPath -ne $expectedPath) {
+                throw 'Expected relative scope paths to resolve inside the durable workspace during bootstrap mode.'
             }
         }
     }
@@ -580,6 +617,29 @@ Describe 'ScopeForge launcher boolean handling' {
             if ($items[0].scope_path -ne (Resolve-LauncherScopePath -Path $missingScope)) { throw 'Expected the latest scope update to move to the top of the recent list.' }
         }
 
+        It 'promotes a newly updated recent scope ahead of stale future-dated metadata' {
+            $existingScope = Join-Path $script:fileWorkspace.Active ("{0}-future-existing.json" -f $script:testScopePrefix)
+            $newScope = Join-Path $script:fileWorkspace.Incoming ("{0}-future-new.json" -f $script:testScopePrefix)
+            $null = New-Item -ItemType Directory -Path $script:fileWorkspace.Active -Force
+            $null = New-Item -ItemType Directory -Path $script:fileWorkspace.Incoming -Force
+            Set-Content -LiteralPath $existingScope -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+            Set-Content -LiteralPath $newScope -Encoding utf8 -Value '[{"type":"Domain","value":"new.example.com","exclusions":[]}]'
+
+            $futureTimestamp = '2099-01-01T00:00:00.0000000Z'
+            $futureRecord = New-LauncherRecentScopeRecord -ScopePath $existingScope -DisplayName 'future-existing' -LastOutputDir 'C:\Runs\future' -LastUsedUtc $futureTimestamp
+            $null = Write-LauncherRecentScopes -Items @($futureRecord)
+
+            $null = Update-LauncherRecentScopes -ScopePath $newScope -LastOutputDir 'C:\Runs\new' -DisplayName 'future-new'
+            $items = @(Read-LauncherRecentScopes)
+            $newItem = $items | Where-Object { $_.scope_path -eq (Resolve-LauncherScopePath -Path $newScope) } | Select-Object -First 1
+
+            if (-not $newItem) { throw 'Expected the newly updated scope to be present in recent scopes.' }
+            if ($items[0].scope_path -ne (Resolve-LauncherScopePath -Path $newScope)) { throw 'Expected the newest update to take precedence over older persisted metadata.' }
+            if ([DateTimeOffset]$newItem.last_used_utc -le [DateTimeOffset]$futureTimestamp) {
+                throw 'Expected the new recent-scope update to receive a strictly newer timestamp than the previous top entry.'
+            }
+        }
+
         It 'seeds built-in templates and help files that stay compatible with the scope parser' {
             $templates = @(Get-LauncherScopeTemplateFiles)
             if ($templates.Count -lt 3) { throw 'Expected the built-in minimal, standard and advanced templates to be available.' }
@@ -727,6 +787,177 @@ Describe 'ScopeForge launcher boolean handling' {
             if ($plan.InitialScopeFile -ne (Resolve-LauncherScopePath -Path $activeScope)) { throw 'Expected the selected scope to be preserved for console mode.' }
             if ($plan.OutputDir -ne '.\output\guided') { throw 'Expected the planned output directory to be preserved for console mode.' }
         }
+
+        It 'recovers from a missing selected scope before entering assistant console' {
+            $missingScope = Join-Path $script:fileWorkspace.Active ("{0}-missing-console.json" -f $script:testScopePrefix)
+            $recentScope = Join-Path $script:fileWorkspace.Active ("{0}-recent-console.json" -f $script:testScopePrefix)
+            Set-Content -LiteralPath $recentScope -Encoding utf8 -Value '[{"type":"Domain","value":"recent.example.com","exclusions":[]}]'
+            $null = Update-LauncherRecentScopes -ScopePath $recentScope -LastOutputDir 'C:\Runs\recent-console' -DisplayName 'recent-console'
+
+            $script:guidedChoices = @('12', '2', '12')
+            Mock Show-LauncherScopeSelection { }
+            Mock Write-Host { }
+            Mock Select-LauncherRecentScope {
+                (Read-LauncherRecentScopes | Select-Object -First 1)
+            }
+            Mock Read-LauncherChoice {
+                $current = $script:guidedChoices[0]
+                if ($script:guidedChoices.Count -gt 1) {
+                    $script:guidedChoices = @($script:guidedChoices[1..($script:guidedChoices.Count - 1)])
+                } else {
+                    $script:guidedChoices = @()
+                }
+                return $current
+            }
+
+            $plan = Select-LauncherGuidedStartupPlan -InitialScopeFile $missingScope -OutputDir '.\output\guided' -AllowRerun:$false
+
+            if ($plan.Action -ne 'console') { throw 'Expected recovery to return to assistant console once a valid scope is reselected.' }
+            if ($plan.InitialScopeFile -ne (Resolve-LauncherScopePath -Path $recentScope)) { throw 'Expected recovery to replace the missing selected scope with the chosen recent scope.' }
+        }
+
+        It 'rebinds a missing scope to a same-name managed scope when one is found' {
+            $missingScope = Join-Path $script:fileWorkspace.Active ("{0}-shared.json" -f $script:testScopePrefix)
+            $replacementScope = Join-Path $script:fileWorkspace.Incoming ("{0}-shared.json" -f $script:testScopePrefix)
+            Set-Content -LiteralPath $replacementScope -Encoding utf8 -Value '[{"type":"Domain","value":"replacement.example.com","exclusions":[]}]'
+            $null = Update-LauncherRecentScopes -ScopePath $missingScope -LastOutputDir 'C:\Runs\missing-shared' -DisplayName 'shared'
+
+            Mock Read-LauncherChoice { '1' }
+            Mock Write-Host { }
+            Mock Write-LauncherSection { }
+            Mock Write-LauncherKeyValue { }
+
+            $recovery = Resolve-LauncherMissingScopeRecovery -ScopePath $missingScope -RecentScopes (Read-LauncherRecentScopes)
+
+            if ($recovery.Action -ne 'selected') { throw 'Expected the launcher to offer a direct rebind when the same scope filename is found again.' }
+            if ($recovery.Scope.scope_path -ne (Resolve-LauncherScopePath -Path $replacementScope)) { throw 'Expected the rebind helper to pick the recreated managed scope path.' }
+        }
+
+        It 'clears the selected session pointer when switching back to a standalone scope' {
+            $preferredScope = Join-Path $script:fileWorkspace.Active ("{0}-manual.json" -f $script:testScopePrefix)
+            $sessionScope = Join-Path $script:fileWorkspace.Active ("{0}-session-manual.json" -f $script:testScopePrefix)
+            $sessionRoot = Get-LauncherUniqueSessionDirectory
+            $null = New-Item -ItemType Directory -Path $sessionRoot -Force
+            Set-Content -LiteralPath $preferredScope -Encoding utf8 -Value '[{"type":"Domain","value":"manual.example.com","exclusions":[]}]'
+            Set-Content -LiteralPath $sessionScope -Encoding utf8 -Value '[{"type":"Domain","value":"session-manual.example.com","exclusions":[]}]'
+
+            $session = Update-LauncherSessionMetadata -SessionRoot $sessionRoot -Values @{
+                display_name = 'manual-session'
+                scope_path   = $sessionScope
+                note         = 'SESSION'
+            }
+            Set-LauncherSelectedSession -SessionId $session.session_id
+
+            $script:guidedChoices = @('2', '0')
+            Mock Show-LauncherScopeSelection { }
+            Mock Select-LauncherManagedScopeFile { $preferredScope }
+            Mock Show-LauncherSelectedScopeGuidance { }
+            Mock Write-Host { }
+            Mock Read-LauncherChoice {
+                $current = $script:guidedChoices[0]
+                if ($script:guidedChoices.Count -gt 1) {
+                    $script:guidedChoices = @($script:guidedChoices[1..($script:guidedChoices.Count - 1)])
+                } else {
+                    $script:guidedChoices = @()
+                }
+                return $current
+            }
+
+            $plan = Select-LauncherGuidedStartupPlan -InitialScopeFile '' -OutputDir '.\output\guided' -AllowRerun:$false
+
+            if ($plan.Action -ne 'quit') { throw 'Expected the guided launcher to return to the menu after the explicit quit choice.' }
+            if (Get-LauncherSelectedSession) { throw 'Expected choosing a standalone scope to clear the selected session pointer.' }
+            if ((Get-LauncherSelectedScope).scope_path -ne (Resolve-LauncherScopePath -Path $preferredScope)) { throw 'Expected the selected scope pointer to track the standalone scope choice.' }
+        }
+
+        It 'keeps the details-on-demand view available from the compact dashboard' {
+            $script:guidedChoices = @('14', '0')
+            $script:detailsShown = $false
+            $script:detailsPaused = $false
+
+            Mock Show-LauncherScopeSelection { }
+            Mock Show-LauncherCurrentContextDetails { $script:detailsShown = $true }
+            Mock Wait-LauncherReturnToDashboard { $script:detailsPaused = $true }
+            Mock Write-Host { }
+            Mock Read-LauncherChoice {
+                $current = $script:guidedChoices[0]
+                if ($script:guidedChoices.Count -gt 1) {
+                    $script:guidedChoices = @($script:guidedChoices[1..($script:guidedChoices.Count - 1)])
+                } else {
+                    $script:guidedChoices = @()
+                }
+                return $current
+            }
+
+            $plan = Select-LauncherGuidedStartupPlan -InitialScopeFile '' -OutputDir '.\output\guided' -AllowRerun:$false
+
+            if ($plan.Action -ne 'quit') { throw 'Expected the guided launcher to return to quit after viewing details on demand.' }
+            if (-not $script:detailsShown) { throw 'Expected the compact dashboard to keep a details-on-demand view available.' }
+            if (-not $script:detailsPaused) { throw 'Expected the details view to pause before the compact dashboard redraws.' }
+        }
+
+        It 'restores the persisted selected scope ahead of a stale selected session pointer' {
+            $preferredScope = Join-Path $script:fileWorkspace.Active ("{0}-preferred.json" -f $script:testScopePrefix)
+            $sessionScope = Join-Path $script:fileWorkspace.Active ("{0}-session.json" -f $script:testScopePrefix)
+            $sessionRoot = Get-LauncherUniqueSessionDirectory
+            $null = New-Item -ItemType Directory -Path $sessionRoot -Force
+            Set-Content -LiteralPath $preferredScope -Encoding utf8 -Value '[{"type":"Domain","value":"preferred.example.com","exclusions":[]}]'
+            Set-Content -LiteralPath $sessionScope -Encoding utf8 -Value '[{"type":"Domain","value":"session.example.com","exclusions":[]}]'
+
+            $session = Update-LauncherSessionMetadata -SessionRoot $sessionRoot -Values @{
+                display_name = 'old-session'
+                scope_path   = $sessionScope
+                note         = 'SESSION'
+            }
+            Set-LauncherSelectedSession -SessionId $session.session_id
+            Set-LauncherSelectedScope -ScopePath $preferredScope -DisplayName 'preferred-scope' -LastOutputDir 'C:\Runs\preferred' | Out-Null
+
+            Mock Show-LauncherScopeSelection { }
+            Mock Write-Host { }
+            Mock Read-LauncherChoice { '12' }
+
+            $plan = Select-LauncherGuidedStartupPlan -InitialScopeFile '' -OutputDir '.\output\guided' -AllowRerun:$false
+
+            if ($plan.Action -ne 'console') { throw 'Expected the guided launcher to keep working after restoring the persisted scope.' }
+            if ($plan.InitialScopeFile -ne (Resolve-LauncherScopePath -Path $preferredScope)) { throw 'Expected the persisted selected scope to win over an older saved-session pointer.' }
+            if ($plan.SessionRoot) { throw 'Expected a stale saved-session pointer to be cleared once a different selected scope is restored.' }
+        }
+    }
+
+    Context 'Compact launcher dashboard' {
+        BeforeEach {
+            $script:launcherStorage = Join-Path $TestDrive '.launcher-storage'
+            $script:fileWorkspace = [pscustomobject]@{
+                RepoRoot         = $TestDrive
+                ScopesRoot       = Join-Path $TestDrive 'scopes'
+                Incoming         = Join-Path $TestDrive 'scopes\\incoming'
+                Active           = Join-Path $TestDrive 'scopes\\active'
+                Archived         = Join-Path $TestDrive 'scopes\\archived'
+                Templates        = Join-Path $TestDrive 'scopes\\templates'
+                TemplatesGuide   = Join-Path $TestDrive 'scopes\\templates\\README.md'
+                StateRoot        = Join-Path $TestDrive 'state'
+                RecentScopesPath = Join-Path $TestDrive 'state\\recent-scopes.json'
+            }
+
+            Mock Get-LauncherStorageRoot { $script:launcherStorage }
+            Mock Get-LauncherFileWorkspace { $script:fileWorkspace }
+            $null = Initialize-LauncherFileWorkspace
+        }
+
+        It 'renders the compact dashboard with the persistent header and no tables by default' {
+            $scopePath = Join-Path $script:fileWorkspace.Active 'compact.json'
+            Set-Content -LiteralPath $scopePath -Encoding utf8 -Value '[{"type":"Domain","value":"compact.example.com","exclusions":[]}]'
+            $selectedScope = Get-LauncherScopeEntryFromPath -ScopePath $scopePath -RecentScopes @()
+
+            $script:compactBannerCount = 0
+            Mock Write-LauncherBanner { $script:compactBannerCount++ }
+            Mock Write-LauncherTable { throw 'The compact dashboard should not render tables by default.' }
+            Mock Write-Host { }
+
+            & $script:OriginalShowLauncherScopeSelection -SelectedScope $selectedScope -SelectedSession $null -PlannedOutputDir '.\output\guided'
+
+            if ($script:compactBannerCount -ne 1) { throw 'Expected the compact dashboard to redraw the banner once per main-screen render.' }
+        }
     }
 
     Context 'Saved session persistence and launcher logging' {
@@ -800,7 +1031,8 @@ Describe 'ScopeForge launcher boolean handling' {
 
             if (-not (Remove-LauncherSavedSession -Session $session)) { throw 'Expected the session deletion helper to return $true.' }
             if (Test-Path -LiteralPath $session.session_root) { throw 'Expected the session directory to be removed.' }
-            if (Get-LauncherSelectedSession | Where-Object { $_.session_id -eq $session.session_id }) { throw 'Expected the deleted session to be cleared from the selected-session pointer.' }
+            $selectedAfterDelete = Get-LauncherSelectedSession
+            if ($selectedAfterDelete -and $selectedAfterDelete.session_id -eq $session.session_id) { throw 'Expected the deleted session to be cleared from the selected-session pointer.' }
         }
 
         It 'persists the selected session across launcher restarts via UI state' {
@@ -827,6 +1059,21 @@ Describe 'ScopeForge launcher boolean handling' {
 
             $expected = [System.IO.Path]::GetFullPath((Join-Path (Join-Path $sessionRoot 'logs') 'run-123'))
             if ($planned -ne $expected) { throw 'Expected the planned log path to use the session logs folder and run id.' }
+        }
+
+        It 'resolves a relative output path against the launcher session instead of the shell working directory' {
+            $sessionRoot = Get-LauncherUniqueSessionDirectory
+            $null = New-Item -ItemType Directory -Path $sessionRoot -Force
+
+            $resolution = Resolve-LauncherOutputDirectory -RunConfig @{
+                OutputDir          = '.\output'
+                LauncherSessionRoot = $sessionRoot
+            }
+
+            $expected = [System.IO.Path]::GetFullPath((Join-Path $sessionRoot '.\output'))
+            if (-not $resolution.IsValid) { throw 'Expected a relative output directory to resolve successfully.' }
+            if ($resolution.ResolvedPath -ne $expected) { throw 'Expected the relative output directory to be anchored to the active launcher session.' }
+            if ($resolution.ResolvedPath -like 'C:\Windows\System32*') { throw 'Expected output resolution to avoid the current shell working directory.' }
         }
 
         It 'captures debug diagnostics in the launcher log folder' {
@@ -870,6 +1117,97 @@ Describe 'ScopeForge launcher boolean handling' {
             if ($plan.SessionRoot -ne $session.session_root) { throw 'Expected the selected session root to be preserved.' }
             if ($plan.LoggingMode -ne 'verbose') { throw 'Expected the session logging mode to be reused.' }
             if ($plan.ManagedScopeFile -ne (Resolve-LauncherScopePath -Path $scopePath)) { throw 'Expected active managed scopes to stay editable in place when reopening a session.' }
+        }
+
+        It 'blocks a saved-session launch when the stored scope is missing and recovers to a valid recent scope' {
+            $sessionRoot = Get-LauncherUniqueSessionDirectory
+            $missingScope = Join-Path $script:fileWorkspace.Active 'missing-session-scope.json'
+            $recentScope = Join-Path $script:fileWorkspace.Active 'recovered-session-scope.json'
+            Set-Content -LiteralPath $recentScope -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+            $null = Update-LauncherRecentScopes -ScopePath $recentScope -LastOutputDir 'C:\Runs\recovered-session' -DisplayName 'recovered-session'
+
+            $session = Update-LauncherSessionMetadata -SessionRoot $sessionRoot -Values @{
+                display_name = 'session-missing-scope'
+                scope_path   = $missingScope
+                logging_mode = 'verbose'
+                note         = 'SESSION'
+            }
+
+            $script:guidedChoices = @('4', '2', '11', '0')
+            Mock Show-LauncherScopeSelection { }
+            Mock Manage-LauncherSavedSessions { [pscustomobject]@{ Action = 'launch'; Session = $session } }
+            Mock Select-LauncherRecentScope {
+                param([string]$ExcludeScopePath, [switch]$PreferExisting)
+
+                $items = @(Read-LauncherRecentScopes)
+                if ($ExcludeScopePath) {
+                    $excludedPath = Resolve-LauncherScopePath -Path $ExcludeScopePath
+                    $items = @($items | Where-Object { $_.scope_path -ne $excludedPath })
+                }
+                if ($PreferExisting) {
+                    $existingItems = @($items | Where-Object { $_.exists })
+                    if ($existingItems.Count -gt 0) {
+                        $items = $existingItems
+                    }
+                }
+
+                ($items | Select-Object -First 1)
+            }
+            Mock Read-LauncherChoice {
+                if ($script:guidedChoices.Count -eq 0) {
+                    return '0'
+                }
+                $current = $script:guidedChoices[0]
+                if ($script:guidedChoices.Count -gt 1) {
+                    $script:guidedChoices = @($script:guidedChoices[1..($script:guidedChoices.Count - 1)])
+                } else {
+                    $script:guidedChoices = @()
+                }
+                return $current
+            }
+
+            $plan = Select-LauncherGuidedStartupPlan -InitialScopeFile '' -OutputDir '.\output\guided' -AllowRerun:$false
+
+            if ($plan.Action -ne 'documents') { throw 'Expected recovery to fall back to a normal documents run after blocking the broken saved session.' }
+            if ($plan.InitialScopeFile -ne (Resolve-LauncherScopePath -Path $recentScope)) { throw 'Expected recovery to keep the newly selected recent scope.' }
+        }
+
+        It 'rejects a missing non-interactive scope before runtime handoff' {
+            $missingScope = Join-Path $TestDrive 'missing-scope.json'
+            $runConfig = @{
+                ScopeFile               = $missingScope
+                LauncherSelectedScopePath = $missingScope
+            }
+
+            try {
+                Confirm-LauncherScopeFileAvailable -RunConfig $runConfig | Out-Null
+                throw 'Expected a missing scope to stop the launcher before runtime handoff.'
+            } catch {
+                if ($_.Exception.Message -notlike ("*Scope file not found: {0}*" -f (Resolve-LauncherScopePath -Path $missingScope))) {
+                    throw
+                }
+            }
+        }
+
+        It 'blocks a protected output directory before runtime handoff' {
+            $scopePath = Join-Path $script:fileWorkspace.Active 'safe-scope.json'
+            $sessionRoot = Get-LauncherUniqueSessionDirectory
+            $null = New-Item -ItemType Directory -Path $sessionRoot -Force
+            Set-Content -LiteralPath $scopePath -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+
+            $protectedOutput = Join-Path ${env:SystemRoot} 'System32\output'
+            $runConfig = @{
+                ScopeFile          = $scopePath
+                OutputDir          = $protectedOutput
+                LauncherSessionRoot = $sessionRoot
+            }
+
+            try {
+                Confirm-LauncherLaunchReadiness -RunConfig $runConfig | Out-Null
+                throw 'Expected a protected output directory to block the launcher before runtime handoff.'
+            } catch {
+                if ($_.Exception.Message -notlike ('*{0}*' -f $protectedOutput)) { throw }
+            }
         }
 
     }
