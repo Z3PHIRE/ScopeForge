@@ -26,7 +26,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 function Write-LauncherBanner {
-    param([AllowNull()][string]$StatusLine = '')
+    try {
+        Clear-Host    param([AllowNull()][string]$StatusLine = '')
 
     try {
         Clear-Host
@@ -2367,11 +2368,7 @@ function New-LauncherSessionRecord {
         logging_mode    = $(if ([string]::IsNullOrWhiteSpace($LoggingMode)) { 'normal' } else { $LoggingMode })
         last_used_utc   = ConvertTo-LauncherUtcTimestampString -Value $LastUsedUtc -DefaultValue ([DateTimeOffset]::UtcNow.ToString('o'))
         exists          = [bool]$exists
-        note            = $(if ([string]::IsNullOrWhiteSpace($Note)) { $(if ($exists) { 'SESSION' } else { 'INTROUVABLE' }) } else { $Note })
-    }
-}
-
-function Write-LauncherSessionMetadata {
+        note            = $(if ([string]::IsNullOrWhiteSpace($Note)) { $(if ($exists) { 'SESSION' } else { 'INTROUVABLE' }) } function Write-LauncherSessionMetadata {
     param([Parameter(Mandatory)][pscustomobject]$SessionRecord)
 
     if (-not (Test-Path -LiteralPath $SessionRecord.session_root)) {
@@ -2405,8 +2402,7 @@ function Write-LauncherSessionMetadata {
     Set-Content -LiteralPath $metadataPath -Value ($payload | ConvertTo-Json -Depth 20) -Encoding utf8
     return $metadataPath
 }
-
-function Read-LauncherSessionMetadata {
+  function Read-LauncherSessionMetadata {
     param([Parameter(Mandatory)][string]$SessionRoot)
 
     $metadataPath = Get-LauncherSessionMetadataPath -SessionRoot $SessionRoot
@@ -2420,23 +2416,24 @@ function Read-LauncherSessionMetadata {
         return (New-LauncherSessionRecord -SessionRoot $SessionRoot)
     }
 
-$storedLogsRoot = [string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'session_logs_root' -Default '')
-if ([string]::IsNullOrWhiteSpace($storedLogsRoot)) {
-    $storedLogsRoot = [string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'logs_root' -Default '')
-}
+    $storedLogsRoot = [string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'session_logs_root' -Default '')
+    if ([string]::IsNullOrWhiteSpace($storedLogsRoot)) {
+        $storedLogsRoot = [string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'logs_root' -Default '')
+    }
 
-return (New-LauncherSessionRecord `
-    -SessionRoot $SessionRoot `
-    -DisplayName ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'display_name' -Default '')) `
-    -LoggingMode ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'logging_mode' -Default 'normal')) `
-    -LastOutputDir ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'last_output_dir' -Default '')) `
-    -LastLogDir ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'last_log_dir' -Default '')) `
-    -LastUsedUtc ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'last_used_utc' -Default '')) `
-    -Note ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'note' -Default '')) `
-    -ScopePath ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'scope_path' -Default '')) `
-    -SettingsPath ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'settings_path' -Default '')) `
-    -ReadmePath ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'readme_path' -Default '')) `
-    -LogsRoot $storedLogsRoot)
+    return (New-LauncherSessionRecord `
+        -SessionRoot $SessionRoot `
+        -DisplayName ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'display_name' -Default '')) `
+        -LoggingMode ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'logging_mode' -Default 'normal')) `
+        -LastOutputDir ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'last_output_dir' -Default '')) `
+        -LastLogDir ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'last_log_dir' -Default '')) `
+        -LastUsedUtc ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'last_used_utc' -Default '')) `
+        -Note ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'note' -Default '')) `
+        -ScopePath ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'scope_path' -Default '')) `
+        -SettingsPath ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'settings_path' -Default '')) `
+        -ReadmePath ([string](Get-LauncherDocumentProperty -InputObject $parsed -Name 'readme_path' -Default '')) `
+        -LogsRoot $storedLogsRoot)
+}-LogsRoot $storedLogsRoot)
 }
 
 function Update-LauncherSessionMetadata {
@@ -5597,26 +5594,3 @@ function Start-ScopeForgeLauncher {
     $recentScopePath = Get-LauncherRecentScopeUpdatePath -RunConfig $runConfig
     if (-not [string]::IsNullOrWhiteSpace([string]$recentScopePath)) {
         Set-LauncherSelectedScope -ScopePath $recentScopePath -DisplayName ([System.IO.Path]::GetFileNameWithoutExtension([string]$recentScopePath)) -LastOutputDir $result.OutputDir -LastSessionId $(if ($runConfig.ContainsKey('LauncherSessionId')) { [string]$runConfig.LauncherSessionId } else { $null }) -LastSessionRoot $(if ($runConfig.ContainsKey('LauncherSessionRoot')) { [string]$runConfig.LauncherSessionRoot } else { $null }) | Out-Null
-    }
-    $result | Add-Member -NotePropertyName LauncherSessionRoot -NotePropertyValue $runConfig.LauncherSessionRoot -Force
-    $result | Add-Member -NotePropertyName LauncherLogRoot -NotePropertyValue $runConfig.LauncherLogRoot -Force
-    $result | Add-Member -NotePropertyName LauncherLogMode -NotePropertyValue $runConfig.LauncherLogMode -Force
-    $result | Add-Member -NotePropertyName RunManifest -NotePropertyValue $runManifest -Force
-    Show-RunSummaryDashboard -Result $result
-    Show-NextActionsPanel -Result $result
-    Show-InterestingSummary -Result $result
-    Show-ErrorSummaryPanel -Result $result
-    Show-OutputPaths -Result $result
-
-    if ($runConfig.OpenReportOnFinish) {
-        Open-LauncherPath -Path (Join-Path $result.OutputDir 'reports/report.html')
-    }
-
-    if ((-not $NonInteractive) -and $showPostRunMenu) {
-        Show-PostRunMenu -Result $result
-    }
-}
-
-if ($MyInvocation.InvocationName -ne '.') {
-    Start-ScopeForgeLauncher @PSBoundParameters
-}
