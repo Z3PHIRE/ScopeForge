@@ -368,7 +368,7 @@ function New-LauncherConfigIssue {
     }
 }
 
-function Throw-LauncherConfigIssue {
+function New-LauncherConfigError {
     param(
         [Parameter(Mandatory)][string]$Field,
         [AllowNull()][object]$Value,
@@ -815,12 +815,12 @@ function Select-LauncherProgramProfile {
     Write-Host '   Plus pertinent si tu veux surtout cartographier rapidement de nombreux hosts et relancer souvent.' -ForegroundColor DarkGray
     $choice = Read-LauncherChoice -Prompt 'Choisis un profil' -Allowed @('1', '2', '3') -Default '1'
     switch ($choice) {
-        '1' { $profile = Get-LauncherProgramProfile -Name 'webapp' }
-        '2' { $profile = Get-LauncherProgramProfile -Name 'api' }
-        '3' { $profile = Get-LauncherProgramProfile -Name 'wide-assets' }
+        '1' { $programProfile = Get-LauncherProgramProfile -Name 'webapp' }
+        '2' { $programProfile = Get-LauncherProgramProfile -Name 'api' }
+        '3' { $programProfile = Get-LauncherProgramProfile -Name 'wide-assets' }
     }
-    Write-Host ("Profil retenu : {0} - {1}" -f $profile.Name, $profile.Description) -ForegroundColor Cyan
-    return $profile
+    Write-Host ("Profil retenu : {0} - {1}" -f $programProfile.Name, $programProfile.Description) -ForegroundColor Cyan
+    return $programProfile
 }
 
 function Show-ScopePreview {
@@ -1219,7 +1219,6 @@ function Get-LauncherStorageRoot {
 }
 
 function Get-LauncherDefaultOutputDir {
-    $runsRoot = Get-LauncherRunsRoot
     return (Get-LauncherUniqueRunDirectory)
 }
 
@@ -1591,11 +1590,6 @@ function Test-LauncherVisualModeSupport {
     return ($null -ne $command)
 }
 
-function Test-LauncherIsWindows {
-    if ($PSVersionTable.PSVersion.Major -ge 6) { return $IsWindows }
-    return $env:OS -eq 'Windows_NT'
-}
-
 function Test-LauncherIsLinux {
     if ($PSVersionTable.PSVersion.Major -ge 6) { return $IsLinux }
     return $false
@@ -1656,7 +1650,7 @@ function Initialize-LauncherFileWorkspace {
             $null = New-Item -ItemType Directory -Path $path -Force
         }
     }
-    Ensure-LauncherDefaultTemplateFiles -Workspace $workspace
+    Initialize-LauncherDefaultTemplateFiles -Workspace $workspace
     return $workspace
 }
 
@@ -2080,7 +2074,7 @@ function Get-LauncherBuiltInScopeTemplates {
     )
 }
 
-function Ensure-LauncherDefaultTemplateFiles {
+function Initialize-LauncherDefaultTemplateFiles {
     param([AllowNull()][object]$Workspace = $null)
 
     $targetWorkspace = if ($Workspace) { $Workspace } else { Get-LauncherFileWorkspace }
@@ -2388,6 +2382,7 @@ function Write-LauncherSessionMetadata {
     Set-Content -LiteralPath $metadataPath -Value ($payload | ConvertTo-Json -Depth 20) -Encoding utf8
     return $metadataPath
 }
+
   function Read-LauncherSessionMetadata {
     param([Parameter(Mandatory)][string]$SessionRoot)
 
@@ -2868,14 +2863,14 @@ function Find-LauncherScopeRebindCandidate {
     $expectedFileName = [System.IO.Path]::GetFileName((Resolve-LauncherScopePath -Path $ScopePath))
     if ([string]::IsNullOrWhiteSpace($expectedFileName)) { return $null }
 
-    $matches = @(
+    $scopeMatches = @(
         Get-LauncherManagedScopeFiles |
         Where-Object {
             [System.IO.Path]::GetFileName([string]$_.scope_path).Equals($expectedFileName, [System.StringComparison]::OrdinalIgnoreCase)
         }
     )
-    if ($matches.Count -ne 1) { return $null }
-    return $matches[0]
+    if ($scopeMatches.Count -ne 1) { return $null }
+    return $scopeMatches[0]
 }
 
 function Resolve-LauncherMissingScopeRecovery {
@@ -3330,7 +3325,7 @@ function Get-LauncherSettingsPreview {
     }
 }
 
-function Manage-LauncherSavedSessions {
+function Show-LauncherSavedSessionsMenu {
     while ($true) {
         $selectedSession = Select-LauncherSavedSession
         if (-not $selectedSession) { return $null }
@@ -3960,7 +3955,7 @@ function Select-LauncherGuidedStartupPlan {
                 }
             }
             '4' {
-                $sessionAction = Manage-LauncherSavedSessions
+                $sessionAction = Show-LauncherSavedSessionsMenu
                 if (-not $sessionAction) { continue }
                 $selectedSession = $sessionAction.Session
                 if ($selectedSession) {
@@ -4456,8 +4451,8 @@ function Show-LauncherStoredRuns {
             Date       = $(if ($run.EndTimeUtc) { ([DateTimeOffset]$run.EndTimeUtc).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss') } else { '-' })
             Program    = $(if ($run.ProgramName) { $run.ProgramName } else { '-' })
             OutputDir  = $(if ($run.OutputDir) { $run.OutputDir } else { '-' })
-            Interesting = $(if ($run.Summary -and $run.Summary.InterestingUrlCount -ne $null) { $run.Summary.InterestingUrlCount } else { 0 })
-            Errors     = $(if ($run.Summary -and $run.Summary.ErrorCount -ne $null) { $run.Summary.ErrorCount } else { 0 })
+            Interesting = $(if ($run.Summary -and $null -ne $run.Summary.InterestingUrlCount) { $run.Summary.InterestingUrlCount } else { 0 })
+            Errors      = $(if ($run.Summary -and $null -ne $run.Summary.ErrorCount) { $run.Summary.ErrorCount } else { 0 })
             Report     = $(if ($run.Reports -and $run.Reports.ReportHtml) { $run.Reports.ReportHtml } else { '-' })
         }
     }
@@ -4477,8 +4472,8 @@ function Select-LauncherStoredRun {
             Date        = $(if ($run.EndTimeUtc) { ([DateTimeOffset]$run.EndTimeUtc).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss') } else { '-' })
             Program     = $(if ($run.ProgramName) { $run.ProgramName } else { '-' })
             OutputDir   = $(if ($run.OutputDir) { $run.OutputDir } else { '-' })
-            Interesting = $(if ($run.Summary -and $run.Summary.InterestingUrlCount -ne $null) { $run.Summary.InterestingUrlCount } else { 0 })
-            Errors      = $(if ($run.Summary -and $run.Summary.ErrorCount -ne $null) { $run.Summary.ErrorCount } else { 0 })
+            Interesting = $(if ($run.Summary -and $null -ne $run.Summary.InterestingUrlCount) { $run.Summary.InterestingUrlCount } else { 0 })
+            Errors      = $(if ($run.Summary -and $null -ne $run.Summary.ErrorCount) { $run.Summary.ErrorCount } else { 0 })
             Report      = $(if ($run.Reports -and $run.Reports.ReportHtml) { $run.Reports.ReportHtml } else { '-' })
         }
     }
@@ -4698,7 +4693,7 @@ function ConvertTo-LauncherBoolean {
             0 { return $false }
             1 { return $true }
             default {
-                Throw-LauncherConfigIssue -Field $Name -Value $Value -Problem 'Doit etre un booléen JSON true/false.' -Example ('"{0}": false' -f $Name)
+                New-LauncherConfigError -Field $Name -Value $Value -Problem 'Doit etre un booléen JSON true/false.' -Example ('"{0}": false' -f $Name)
             }
         }
     }
@@ -4706,7 +4701,7 @@ function ConvertTo-LauncherBoolean {
     if ($Value -is [string]) {
         $text = $Value.Trim()
         if ([string]::IsNullOrWhiteSpace($text)) {
-            Throw-LauncherConfigIssue -Field $Name -Value $Value -Problem 'Doit etre un booléen JSON true/false, pas une chaine vide.' -Example ('"{0}": false' -f $Name)
+            New-LauncherConfigError -Field $Name -Value $Value -Problem 'Doit etre un booléen JSON true/false, pas une chaine vide.' -Example ('"{0}": false' -f $Name)
         }
 
         switch ($text.ToLowerInvariant()) {
@@ -4727,12 +4722,12 @@ function ConvertTo-LauncherBoolean {
                 return $false
             }
             default {
-                Throw-LauncherConfigIssue -Field $Name -Value $Value -Problem 'Doit etre un booléen JSON true/false.' -Example ('"{0}": false' -f $Name)
+                New-LauncherConfigError -Field $Name -Value $Value -Problem 'Doit etre un booléen JSON true/false.' -Example ('"{0}": false' -f $Name)
             }
         }
     }
 
-    Throw-LauncherConfigIssue -Field $Name -Value $Value.GetType().FullName -Problem 'Type non supporté pour un booléen de configuration.' -Example ('"{0}": false' -f $Name)
+    New-LauncherConfigError -Field $Name -Value $Value.GetType().FullName -Problem 'Type non supporté pour un booléen de configuration.' -Example ('"{0}": false' -f $Name)
 }
 
 function ConvertTo-LauncherInteger {
@@ -4749,18 +4744,18 @@ function ConvertTo-LauncherInteger {
     if ($Value -is [string]) {
         $text = $Value.Trim()
         if ([string]::IsNullOrWhiteSpace($text)) {
-            Throw-LauncherConfigIssue -Field $Name -Value $Value -Problem ("Doit etre un entier compris entre {0} et {1}." -f $Minimum, $Maximum) -Example ('"{0}": {1}' -f $Name, $Default)
+            New-LauncherConfigError -Field $Name -Value $Value -Problem ("Doit etre un entier compris entre {0} et {1}." -f $Minimum, $Maximum) -Example ('"{0}": {1}' -f $Name, $Default)
         }
     }
 
     try {
         $intValue = [int]$Value
     } catch {
-        Throw-LauncherConfigIssue -Field $Name -Value $Value -Problem ("Doit etre un entier compris entre {0} et {1}." -f $Minimum, $Maximum) -Example ('"{0}": {1}' -f $Name, $Default)
+        New-LauncherConfigError -Field $Name -Value $Value -Problem ("Doit etre un entier compris entre {0} et {1}." -f $Minimum, $Maximum) -Example ('"{0}": {1}' -f $Name, $Default)
     }
 
     if ($intValue -lt $Minimum -or $intValue -gt $Maximum) {
-        Throw-LauncherConfigIssue -Field $Name -Value $Value -Problem ("Doit etre compris entre {0} et {1}." -f $Minimum, $Maximum) -Example ('"{0}": {1}' -f $Name, $Default)
+        New-LauncherConfigError -Field $Name -Value $Value -Problem ("Doit etre compris entre {0} et {1}." -f $Minimum, $Maximum) -Example ('"{0}": {1}' -f $Name, $Default)
     }
 
     return $intValue
@@ -5103,15 +5098,15 @@ function Build-DocumentRunConfig {
             try {
                 $preset = Get-LauncherPreset -Name $presetName
             } catch {
-                Throw-LauncherConfigIssue -Field 'preset' -Value $presetName -Problem 'Preset inconnu. Valeurs attendues: safe, balanced, deep.' -Example '"preset": "balanced"'
+                New-LauncherConfigError -Field 'preset' -Value $presetName -Problem 'Preset inconnu. Valeurs attendues: safe, balanced, deep.' -Example '"preset": "balanced"'
             }
 
-            $profileName = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'profile' -Default 'webapp')
-            if ([string]::IsNullOrWhiteSpace($profileName)) { $profileName = 'webapp' }
+            $programProfileName = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'profile' -Default 'webapp')
+            if ([string]::IsNullOrWhiteSpace($programProfileName)) { $programProfileName = 'webapp' }
             try {
-                $profile = Get-LauncherProgramProfile -Name $profileName
+                $programProfile = Get-LauncherProgramProfile -Name $programProfileName
             } catch {
-                Throw-LauncherConfigIssue -Field 'profile' -Value $profileName -Problem 'Profil inconnu. Valeurs attendues: webapp, api, wide-assets.' -Example '"profile": "webapp"'
+                New-LauncherConfigError -Field 'profile' -Value $programProfileName -Problem 'Profil inconnu. Valeurs attendues: webapp, api, wide-assets.' -Example '"profile": "webapp"'
             }
 
             $localDepth = $preset.Depth
@@ -5119,31 +5114,31 @@ function Build-DocumentRunConfig {
             $localTimeout = $preset.TimeoutSeconds
             $localRespectSchemeOnly = $preset.RespectSchemeOnly
             $localResume = $preset.Resume
-            $localEnableGau = $profile.UseGau
-            $localEnableWaybackUrls = $profile.UseWaybackUrls
-            $localEnableHakrawler = $profile.UseHakrawler
+            $localEnableGau = $programProfile.UseGau
+            $localEnableWaybackUrls = $programProfile.UseWaybackUrls
+            $localEnableHakrawler = $programProfile.UseHakrawler
 
-            if ($profile.SuggestedDepth -gt 0) {
+            if ($programProfile.SuggestedDepth -gt 0) {
                 if ($preset.Name -eq 'safe') {
-                    $localDepth = [Math]::Min($localDepth, $profile.SuggestedDepth)
+                    $localDepth = [Math]::Min($localDepth, $programProfile.SuggestedDepth)
                 } else {
-                    $localDepth = [Math]::Max($localDepth, $profile.SuggestedDepth)
+                    $localDepth = [Math]::Max($localDepth, $programProfile.SuggestedDepth)
                 }
             }
-            if ($profile.SuggestedThreads -gt 0) {
-                $localThreads = [Math]::Max($localThreads, $profile.SuggestedThreads)
+            if ($programProfile.SuggestedThreads -gt 0) {
+                $localThreads = [Math]::Max($localThreads, $programProfile.SuggestedThreads)
             }
-            if ($profile.ForceRespectSchemeOnly) { $localRespectSchemeOnly = $true }
-            if ($profile.ForceResume) { $localResume = $true }
+            if ($programProfile.ForceRespectSchemeOnly) { $localRespectSchemeOnly = $true }
+            if ($programProfile.ForceResume) { $localResume = $true }
 
             $programNameValue = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'programName' -Default 'authorized-bugbounty')
             if ([string]::IsNullOrWhiteSpace($programNameValue)) {
-                Throw-LauncherConfigIssue -Field 'programName' -Value $programNameValue -Problem 'Doit etre renseigné.' -Example '"programName": "authorized-bugbounty"'
+                New-LauncherConfigError -Field 'programName' -Value $programNameValue -Problem 'Doit etre renseigné.' -Example '"programName": "authorized-bugbounty"'
             }
 
             $outputDirValue = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'outputDir' -Default (Get-LauncherDefaultOutputDir))
             if ([string]::IsNullOrWhiteSpace($outputDirValue)) {
-                Throw-LauncherConfigIssue -Field 'outputDir' -Value $outputDirValue -Problem 'Doit etre renseigné.' -Example '"outputDir": "./output"'
+                New-LauncherConfigError -Field 'outputDir' -Value $outputDirValue -Problem 'Doit etre renseigné.' -Example '"outputDir": "./output"'
             }
 
             $depthValue = Get-LauncherDocumentProperty -InputObject $settings -Name 'depth' -Default $null
@@ -5181,9 +5176,9 @@ function Build-DocumentRunConfig {
             return @{
                 PresetName             = $preset.Name
                 PresetDescription      = $preset.Description
-                ProfileName            = $profile.Name
-                ProfileDescription     = $profile.Description
-                ProfileSourceExplanation = $profile.SourceExplanation
+                ProfileName            = $programProfile.Name
+                ProfileDescription     = $programProfile.Description
+                ProfileSourceExplanation = $programProfile.SourceExplanation
                 ScopeFile              = $documentSet.ScopePath
                 ProgramName            = $programNameValue
                 OutputDir              = $outputDirValue
@@ -5278,32 +5273,32 @@ function Build-InteractiveRunConfig {
     )
 
     $preset = Select-LauncherPreset
-    $profile = Select-LauncherProgramProfile
+    $programProfile = Select-LauncherProgramProfile
     $localDepth = $preset.Depth
     $localThreads = $preset.Threads
     $localTimeout = $preset.TimeoutSeconds
     $localRespectSchemeOnly = $preset.RespectSchemeOnly
     $localResume = $preset.Resume
-    $localEnableGau = $profile.UseGau
-    $localEnableWaybackUrls = $profile.UseWaybackUrls
-    $localEnableHakrawler = $profile.UseHakrawler
+    $localEnableGau = $programProfile.UseGau
+    $localEnableWaybackUrls = $programProfile.UseWaybackUrls
+    $localEnableHakrawler = $programProfile.UseHakrawler
 
     if (-not $EnableGau) { $localEnableGau = $false }
     if (-not $EnableWaybackUrls) { $localEnableWaybackUrls = $false }
     if (-not $EnableHakrawler) { $localEnableHakrawler = $false }
 
-    if ($profile.SuggestedDepth -gt 0) {
+    if ($programProfile.SuggestedDepth -gt 0) {
         if ($preset.Name -eq 'safe') {
-            $localDepth = [Math]::Min($localDepth, $profile.SuggestedDepth)
+            $localDepth = [Math]::Min($localDepth, $programProfile.SuggestedDepth)
         } else {
-            $localDepth = [Math]::Max($localDepth, $profile.SuggestedDepth)
+            $localDepth = [Math]::Max($localDepth, $programProfile.SuggestedDepth)
         }
     }
-    if ($profile.SuggestedThreads -gt 0) {
-        $localThreads = [Math]::Max($localThreads, $profile.SuggestedThreads)
+    if ($programProfile.SuggestedThreads -gt 0) {
+        $localThreads = [Math]::Max($localThreads, $programProfile.SuggestedThreads)
     }
-    if ($profile.ForceRespectSchemeOnly) { $localRespectSchemeOnly = $true }
-    if ($profile.ForceResume) { $localResume = $true }
+    if ($programProfile.ForceRespectSchemeOnly) { $localRespectSchemeOnly = $true }
+    if ($programProfile.ForceResume) { $localResume = $true }
 
     if ($Depth -gt 0) { $localDepth = $Depth }
     if ($Threads -gt 0) { $localThreads = $Threads }
@@ -5327,7 +5322,7 @@ function Build-InteractiveRunConfig {
     $localRespectSchemeOnly = [bool](Read-LauncherYesNo -Prompt 'Respecter strictement le schéma explicite ?' -Default $localRespectSchemeOnly)
     Write-Host ''
     Write-Host 'Sources complémentaires' -ForegroundColor Cyan
-    Write-Host ("  Profil {0} : {1}" -f $profile.Name, $profile.SourceExplanation) -ForegroundColor DarkGray
+    Write-Host ("  Profil {0} : {1}" -f $programProfile.Name, $programProfile.SourceExplanation) -ForegroundColor DarkGray
     $localEnableGau = [bool](Read-LauncherYesNo -Prompt 'Activer gau pour les URLs historiques ?' -Default $localEnableGau)
     $localEnableWaybackUrls = [bool](Read-LauncherYesNo -Prompt 'Activer waybackurls pour les archives web ?' -Default $localEnableWaybackUrls)
     $localEnableHakrawler = [bool](Read-LauncherYesNo -Prompt 'Activer hakrawler en crawl complémentaire ?' -Default $localEnableHakrawler)
@@ -5338,9 +5333,9 @@ function Build-InteractiveRunConfig {
     return @{
         PresetName        = $preset.Name
         PresetDescription = $preset.Description
-        ProfileName       = $profile.Name
-        ProfileDescription = $profile.Description
-        ProfileSourceExplanation = $profile.SourceExplanation
+        ProfileName       = $programProfile.Name
+        ProfileDescription = $programProfile.Description
+        ProfileSourceExplanation = $programProfile.SourceExplanation
         ScopeFile         = $localScopeFile
         LauncherSelectedScopePath = $(if ($localScopeFile) { Resolve-LauncherScopePath -Path $localScopeFile } else { $null })
         ProgramName       = $localProgramName
@@ -5575,7 +5570,7 @@ function Start-ScopeForgeLauncher {
         $runConfig['LauncherSessionId'] = $sessionRecord.session_id
     }
 
-    $runManifest = Save-LauncherRunManifest -RunConfig $runConfig -Result $result -RunStartedAtUtc $runStartedAtUtc -RunEndedAtUtc ([DateTimeOffset]::UtcNow.ToString('o'))
+    Save-LauncherRunManifest -RunConfig $runConfig -Result $result -RunStartedAtUtc $runStartedAtUtc -RunEndedAtUtc ([DateTimeOffset]::UtcNow.ToString('o')) | Out-Null
 
     $recentScopePath = Get-LauncherRecentScopeUpdatePath -RunConfig $runConfig
     if (-not [string]::IsNullOrWhiteSpace([string]$recentScopePath)) {
