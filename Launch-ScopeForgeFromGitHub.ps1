@@ -64,7 +64,7 @@ function Read-BootstrapManifest {
     if (-not (Test-Path -LiteralPath $manifestPath)) { return $null }
 
     try {
-        return (Get-Content -LiteralPath $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json -Depth 10)
+        return (Get-Content -LiteralPath $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json)
     } catch {
         Write-Warning ("Bootstrap manifest is unreadable at {0}: {1}" -f $manifestPath, $_.Exception.Message)
         return $null
