@@ -584,6 +584,16 @@ function Initialize-ReconTools {
     }
 }
 
+function Ensure-ReconTools {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$OutputDir,
+        [switch]$NoInstall
+    )
+
+    return (Initialize-ReconTools -OutputDir $OutputDir -NoInstall:$NoInstall)
+}
+
 function Test-ValidDnsName {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Name)
