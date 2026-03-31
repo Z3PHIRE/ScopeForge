@@ -2843,7 +2843,7 @@ function Export-ReconReport {
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$LiveTargets,
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$DiscoveredUrls,
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$InterestingUrls,
-        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$AllFindings,
+        [AllowEmptyCollection()][pscustomobject[]]$AllFindings = @(),
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$Exclusions,
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$Errors,
         [Parameter(Mandatory)][pscustomobject]$Layout,
@@ -2906,7 +2906,7 @@ function Export-ReconReport {
     $interestingRows = ($InterestingUrls | Select-Object -First 250 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe $_.PrimaryFamily) $(ConvertTo-HtmlSafe $_.Priority) $(ConvertTo-HtmlSafe ($_.Categories -join ' '))""><td><span class=""priority-badge priority-$(ConvertTo-HtmlSafe $_.Priority.ToLowerInvariant())"">$(ConvertTo-HtmlSafe $_.Priority)</span></td><td>$(ConvertTo-HtmlSafe $_.Score)</td><td>$(ConvertTo-HtmlSafe $_.PrimaryFamily)</td><td>$(Get-HtmlUrlCell -Url $_.Url)</td><td>$(ConvertTo-HtmlSafe ($_.Categories -join ', '))</td><td>$(ConvertTo-HtmlSafe ($_.Reasons -join ', '))</td></tr>" }) -join [Environment]::NewLine
     $findingsRows = ($AllFindings | Select-Object -First 1000 | ForEach-Object {
         $urlCell = if ($_.Url) { Get-HtmlUrlCell -Url $_.Url } else { '' }
-        
+
         "<tr data-search=""$(ConvertTo-HtmlSafe $_.Priority) $(ConvertTo-HtmlSafe $_.Category) $(ConvertTo-HtmlSafe $_.Family) $(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe $_.Evidence)""><td>$(ConvertTo-HtmlSafe $_.Priority)</td><td>$(ConvertTo-HtmlSafe $_.Category)</td><td>$(ConvertTo-HtmlSafe $_.Family)</td><td>$(ConvertTo-HtmlSafe $_.Host)</td><td>$urlCell</td><td>$(ConvertTo-HtmlSafe $_.Evidence)</td><td>$(ConvertTo-HtmlSafe $_.RecommendedChecks)</td></tr>"
     }) -join [Environment]::NewLine
 
