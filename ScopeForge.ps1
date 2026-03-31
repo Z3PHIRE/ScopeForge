@@ -55,14 +55,25 @@ function Initialize-ScopeForgeProgressState {
     [CmdletBinding()]
     param([Parameter(Mandatory)][pscustomobject]$Layout)
 
+    $startedAt = [DateTimeOffset]::UtcNow
+    $samples = [System.Collections.Generic.List[object]]::new()
+    $samples.Add([pscustomobject]@{
+        At      = $startedAt
+        Percent = 0
+    }) | Out-Null
+
     $script:ScopeForgeProgressState = [ordered]@{
-        StartedAtUtc   = [DateTimeOffset]::UtcNow
-        Layout         = $Layout
-        StageStep      = 0
-        StageTitle     = ''
-        StagePercent   = 0
-        OverallPercent = 0
-        LastMessage    = ''
+        StartedAtUtc    = $startedAt
+        Layout          = $Layout
+        StageStep       = 0
+        StageTitle      = ''
+        StagePercent    = 0
+        StatusText      = ''
+        OverallPercent  = 0
+        LastMessage     = ''
+        LastEtaSeconds  = $null
+        LastProgressAtUtc = $startedAt
+        ProgressSamples = $samples
     }
 }
 
@@ -79,31 +90,39 @@ function Get-ScopeForgeCompactProgressMessage {
     return ($singleLine.Substring(0, $MaxLength - 3) + '...')
 }
 
-function Get-ScopeForgeOverallProgress {
+function Register-ScopeForgeProgressSample {
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][int]$Step,
-        [Parameter(Mandatory)][int]$StagePercent
-    )
+    param([Parameter(Mandatory)][int]$OverallPercent)
 
-    $safeStep = [Math]::Max([Math]::Min($Step, 6), 0)
-    $safeStagePercent = [Math]::Max([Math]::Min($StagePercent, 100), 0)
+    if (-not $script:ScopeForgeProgressState) { return }
 
-    $completedWeight = 0
-    foreach ($key in ($script:ScopeForgeStageWeights.Keys | Sort-Object)) {
-        if ([int]$key -lt $safeStep) {
-            $completedWeight += [int]$script:ScopeForgeStageWeights[$key]
+    $safePercent = [Math]::Max([Math]::Min($OverallPercent, 100), 0)
+    $now = [DateTimeOffset]::UtcNow
+    $samples = $script:ScopeForgeProgressState.ProgressSamples
+    $lastSample = if ($samples.Count -gt 0) { $samples[$samples.Count - 1] } else { $null }
+
+    $shouldAdd = $false
+    if (-not $lastSample) {
+        $shouldAdd = $true
+    } elseif ($safePercent -gt [int]$lastSample.Percent) {
+        $shouldAdd = $true
+    } else {
+        $ageSeconds = ($now - [DateTimeOffset]$lastSample.At).TotalSeconds
+        if ($ageSeconds -ge 15) {
+            $shouldAdd = $true
         }
     }
 
-    $currentWeight = if ($script:ScopeForgeStageWeights.Contains($safeStep)) {
-        [int]$script:ScopeForgeStageWeights[$safeStep]
-    } else {
-        0
+    if ($shouldAdd) {
+        $samples.Add([pscustomobject]@{
+            At      = $now
+            Percent = $safePercent
+        }) | Out-Null
     }
 
-    $overall = $completedWeight + (($currentWeight * $safeStagePercent) / 100.0)
-    return [int][Math]::Round([Math]::Min($overall, 100))
+    while ($samples.Count -gt 30) {
+        $samples.RemoveAt(0)
+    }
 }
 
 function Get-ScopeForgeEtaText {
@@ -111,13 +130,84 @@ function Get-ScopeForgeEtaText {
     param([Parameter(Mandatory)][int]$OverallPercent)
 
     if (-not $script:ScopeForgeProgressState) { return 'ETA calcul en cours' }
-    if ($OverallPercent -lt 3) { return 'ETA calcul en cours' }
 
-    $elapsed = ([DateTimeOffset]::UtcNow - $script:ScopeForgeProgressState.StartedAtUtc)
-    if ($elapsed.TotalSeconds -lt 5) { return 'ETA calcul en cours' }
+    $safePercent = [Math]::Max([Math]::Min($OverallPercent, 100), 0)
+    if ($safePercent -ge 100) { return 'ETA < 1s' }
 
-    $remainingSeconds = ($elapsed.TotalSeconds / $OverallPercent) * (100 - $OverallPercent)
-    if ($remainingSeconds -lt 1) { return 'ETA < 1s' }
+    $now = [DateTimeOffset]::UtcNow
+    $elapsedSeconds = ($now - $script:ScopeForgeProgressState.StartedAtUtc).TotalSeconds
+
+    if ($safePercent -lt 2 -or $elapsedSeconds -lt 10) {
+        return 'ETA calcul en cours'
+    }
+
+    $overallRate = if ($elapsedSeconds -gt 0) {
+        $safePercent / $elapsedSeconds
+    } else {
+        0
+    }
+
+    $recentRate = 0
+    $samples = @($script:ScopeForgeProgressState.ProgressSamples)
+
+    if ($samples.Count -ge 2) {
+        $anchor = $null
+
+        for ($i = $samples.Count - 1; $i -ge 0; $i--) {
+            $candidate = $samples[$i]
+            $candidateAge = ($now - [DateTimeOffset]$candidate.At).TotalSeconds
+            if ($candidateAge -ge 120) {
+                $anchor = $candidate
+                break
+            }
+        }
+
+        if (-not $anchor) {
+            $anchor = $samples[0]
+        }
+
+        $percentDelta = $safePercent - [double]$anchor.Percent
+        $secondsDelta = ($now - [DateTimeOffset]$anchor.At).TotalSeconds
+
+        if ($percentDelta -gt 0.2 -and $secondsDelta -gt 0) {
+            $recentRate = $percentDelta / $secondsDelta
+        }
+    }
+
+    $blendedRate = 0
+    if ($recentRate -gt 0 -and $overallRate -gt 0) {
+        $blendedRate = ($recentRate * 0.70) + ($overallRate * 0.30)
+    } elseif ($recentRate -gt 0) {
+        $blendedRate = $recentRate
+    } else {
+        $blendedRate = $overallRate
+    }
+
+    if ($blendedRate -le 0) {
+        return 'ETA calcul en cours'
+    }
+
+    $remainingSeconds = (100 - $safePercent) / $blendedRate
+
+    if ($null -ne $script:ScopeForgeProgressState.LastEtaSeconds) {
+        $previousEta = [double]$script:ScopeForgeProgressState.LastEtaSeconds
+        $delta = [Math]::Abs($remainingSeconds - $previousEta)
+
+        if ($previousEta -gt 0 -and $delta -ge ($previousEta * 0.50)) {
+            $remainingSeconds = ($previousEta * 0.45) + ($remainingSeconds * 0.55)
+        } else {
+            $remainingSeconds = ($previousEta * 0.65) + ($remainingSeconds * 0.35)
+        }
+    }
+
+    $stallSeconds = ($now - $script:ScopeForgeProgressState.LastProgressAtUtc).TotalSeconds
+    if ($stallSeconds -gt 20) {
+        $stallPenalty = [Math]::Min((($stallSeconds - 20) * 0.60), 300)
+        $remainingSeconds += $stallPenalty
+    }
+
+    $remainingSeconds = [Math]::Max([double]$remainingSeconds, 0)
+    $script:ScopeForgeProgressState.LastEtaSeconds = $remainingSeconds
 
     return ('ETA ~ {0}' -f (Format-ScopeForgeDuration -Duration ([TimeSpan]::FromSeconds($remainingSeconds))))
 }
@@ -149,16 +239,24 @@ function Update-ScopeForgeProgressDisplay {
     $safeStep = [Math]::Max([Math]::Min($Step, 6), 0)
     $safeStagePercent = [Math]::Max([Math]::Min($StagePercent, 100), 0)
     $overallPercent = Get-ScopeForgeOverallProgress -Step $safeStep -StagePercent $safeStagePercent
-    $etaText = Get-ScopeForgeEtaText -OverallPercent $overallPercent
+
+    $previousOverallPercent = [int]$script:ScopeForgeProgressState.OverallPercent
+    if ($overallPercent -gt $previousOverallPercent) {
+        $script:ScopeForgeProgressState.LastProgressAtUtc = [DateTimeOffset]::UtcNow
+    }
 
     $script:ScopeForgeProgressState.StageStep = $safeStep
     $script:ScopeForgeProgressState.StageTitle = $Title
     $script:ScopeForgeProgressState.StagePercent = $safeStagePercent
     $script:ScopeForgeProgressState.OverallPercent = $overallPercent
+    $script:ScopeForgeProgressState.StatusText = $Status
 
     if (-not [string]::IsNullOrWhiteSpace($CurrentMessage)) {
         $script:ScopeForgeProgressState.LastMessage = Get-ScopeForgeCompactProgressMessage -Message $CurrentMessage
     }
+
+    Register-ScopeForgeProgressSample -OverallPercent $overallPercent
+    $etaText = Get-ScopeForgeEtaText -OverallPercent $overallPercent
 
     $activity = if ($safeStep -gt 0 -and -not [string]::IsNullOrWhiteSpace($Title)) {
         ('[{0}/6] {1}' -f $safeStep, $Title)
@@ -167,9 +265,9 @@ function Update-ScopeForgeProgressDisplay {
     }
 
     $statusText = if ([string]::IsNullOrWhiteSpace($Status)) {
-        ('Global {0}% | Etape {1}% | {2}' -f $overallPercent, $safeStagePercent, $etaText)
+        ('Global {0}% | {1} | Phase {2}/6' -f $overallPercent, $etaText, $(if ($safeStep -gt 0) { $safeStep } else { 0 }))
     } else {
-        ('Global {0}% | Etape {1}% | {2} | {3}' -f $overallPercent, $safeStagePercent, $etaText, $Status)
+        ('Global {0}% | {1} | Phase {2}/6 | {3}' -f $overallPercent, $etaText, $(if ($safeStep -gt 0) { $safeStep } else { 0 }), $Status)
     }
 
     $currentOperation = $script:ScopeForgeProgressState.LastMessage
@@ -610,19 +708,56 @@ function Invoke-ExternalCommand {
     Write-ReconLog -Level TOOL -Message ("EXEC {0} {1}" -f $resolvedFilePath, $displayArguments)
 
     $process = Start-Process -FilePath $resolvedFilePath -ArgumentList $filteredArguments -WorkingDirectory $WorkingDirectory -RedirectStandardOutput $StdOutPath -RedirectStandardError $StdErrPath -PassThru -NoNewWindow
-    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-        try { $process.Kill($true) } catch { try { $process.Kill() } catch {} }
-        throw "Command timed out after $TimeoutSeconds seconds: $resolvedFilePath"
+
+    $commandStartedAt = [DateTimeOffset]::UtcNow
+    $nextHeartbeatAt = $commandStartedAt
+
+    while (-not $process.HasExited) {
+        Start-Sleep -Milliseconds 500
+
+        $now = [DateTimeOffset]::UtcNow
+        $elapsedSeconds = ($now - $commandStartedAt).TotalSeconds
+
+        if ($elapsedSeconds -ge $TimeoutSeconds) {
+            try { $process.Kill($true) } catch { try { $process.Kill() } catch {} }
+            throw "Command timed out after $TimeoutSeconds seconds: $resolvedFilePath"
+        }
+
+        if ($script:ScopeForgeProgressState -and $now -ge $nextHeartbeatAt) {
+            $commandName = [System.IO.Path]::GetFileName($resolvedFilePath)
+            $heartbeatMessage = ("{0} en cours depuis {1} | garde-fou timeout {2}s" -f $commandName, (Format-ScopeForgeDuration -Duration ([TimeSpan]::FromSeconds($elapsedSeconds))), $TimeoutSeconds)
+
+            Update-ScopeForgeProgressDisplay `
+                -Step $script:ScopeForgeProgressState.StageStep `
+                -Title $script:ScopeForgeProgressState.StageTitle `
+                -StagePercent $script:ScopeForgeProgressState.StagePercent `
+                -Status $script:ScopeForgeProgressState.StatusText `
+                -CurrentMessage $heartbeatMessage
+
+            $nextHeartbeatAt = $now.AddSeconds(1)
+        }
     }
+
+    $process.WaitForExit()
 
     $stdout = if (Test-Path -LiteralPath $StdOutPath) { Get-Content -LiteralPath $StdOutPath -Raw -Encoding utf8 } else { '' }
     $stderr = if (Test-Path -LiteralPath $StdErrPath) { Get-Content -LiteralPath $StdErrPath -Raw -Encoding utf8 } else { '' }
     if ($stderr) { Write-ReconLog -Level TOOL -Message ($stderr.Trim()) }
     if (($process.ExitCode -ne 0) -and -not $IgnoreExitCode) { throw "Command failed with exit code $($process.ExitCode): $resolvedFilePath" }
 
-    $result = [pscustomobject]@{ ExitCode = $process.ExitCode; StdOut = $stdout; StdErr = $stderr; StdOutPath = $StdOutPath; StdErrPath = $StdErrPath; FilePath = $resolvedFilePath; Arguments = $filteredArguments }
+    $result = [pscustomobject]@{
+        ExitCode   = $process.ExitCode
+        StdOut     = $stdout
+        StdErr     = $stderr
+        StdOutPath = $StdOutPath
+        StdErrPath = $StdErrPath
+        FilePath   = $resolvedFilePath
+        Arguments  = $filteredArguments
+    }
+
     if ($createdStdOut -and (Test-Path -LiteralPath $StdOutPath)) { Remove-Item -LiteralPath $StdOutPath -Force -ErrorAction SilentlyContinue }
     if ($createdStdErr -and (Test-Path -LiteralPath $StdErrPath)) { Remove-Item -LiteralPath $StdErrPath -Force -ErrorAction SilentlyContinue }
+
     return $result
 }
 
