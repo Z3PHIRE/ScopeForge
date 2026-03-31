@@ -1703,7 +1703,7 @@ function Get-WaybackUrls {
 function Invoke-HakrawlerCrawl {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][pscustomobject[]]$LiveTargets,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$LiveTargets,
         [Parameter(Mandatory)][pscustomobject[]]$ScopeItems,
         [Parameter(Mandatory)][string]$HakrawlerPath,
         [Parameter(Mandatory)][string]$RawOutputPath,
@@ -2075,7 +2075,7 @@ function Get-KatanaScopeDefinition {
 function Invoke-KatanaCrawl {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][pscustomobject[]]$LiveTargets,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$LiveTargets,
         [Parameter(Mandatory)][pscustomobject[]]$ScopeItems,
         [Parameter(Mandatory)][string]$KatanaPath,
         [Parameter(Mandatory)][string]$RawOutputPath,
@@ -3115,14 +3115,22 @@ function Invoke-BugBountyRecon {
             $discoveredUrls = @(Get-Content -LiteralPath $layout.UrlsDiscoveredJson -Raw -Encoding utf8 | ConvertFrom-Json -Depth 100)
         } else {
             Write-StageBanner -Step 5 -Title 'Crawl'
-            $discoveredUrls = Invoke-KatanaCrawl -LiveTargets $liveTargets -ScopeItems $scopeItems -KatanaPath $tools.Katana.Path -RawOutputPath $layout.KatanaRaw -TempDirectory $layout.Temp -Depth $Depth -Threads $Threads -TimeoutSeconds $TimeoutSeconds -UniqueUserAgent $UniqueUserAgent -RespectSchemeOnly:$RespectSchemeOnly
-            if ($tools.Hakrawler) {
-                Write-ReconLog -Level INFO -Message 'Running hakrawler as a supplemental strictly in-scope crawl pass.'
-                $hakrawlerUrls = Invoke-HakrawlerCrawl -LiveTargets $liveTargets -ScopeItems $scopeItems -HakrawlerPath $tools.Hakrawler.Path -RawOutputPath $layout.HakrawlerRaw -TempDirectory $layout.Temp -Depth ([Math]::Max([Math]::Min($Depth, 3), 1)) -TimeoutSeconds $TimeoutSeconds -RespectSchemeOnly:$RespectSchemeOnly
-                $discoveredUrls = Merge-DiscoveredUrlResults -Inputs @($discoveredUrls + $hakrawlerUrls)
+
+            if ((Get-ScopeForgeItemCount -Data $liveTargets) -eq 0) {
+                Write-ReconLog -Level WARN -Message 'Skipping crawl because no live HTTP targets were retained after validation.'
+                $discoveredUrls = @()
             } else {
-                $discoveredUrls = Merge-DiscoveredUrlResults -Inputs $discoveredUrls
+                $discoveredUrls = Invoke-KatanaCrawl -LiveTargets $liveTargets -ScopeItems $scopeItems -KatanaPath $tools.Katana.Path -RawOutputPath $layout.KatanaRaw -TempDirectory $layout.Temp -Depth $Depth -Threads $Threads -TimeoutSeconds $TimeoutSeconds -UniqueUserAgent $UniqueUserAgent -RespectSchemeOnly:$RespectSchemeOnly
+
+                if ($tools.Hakrawler) {
+                    Write-ReconLog -Level INFO -Message 'Running hakrawler as a supplemental strictly in-scope crawl pass.'
+                    $hakrawlerUrls = Invoke-HakrawlerCrawl -LiveTargets $liveTargets -ScopeItems $scopeItems -HakrawlerPath $tools.Hakrawler.Path -RawOutputPath $layout.HakrawlerRaw -TempDirectory $layout.Temp -Depth ([Math]::Max([Math]::Min($Depth, 3), 1)) -TimeoutSeconds $TimeoutSeconds -RespectSchemeOnly:$RespectSchemeOnly
+                    $discoveredUrls = Merge-DiscoveredUrlResults -Inputs @($discoveredUrls + $hakrawlerUrls)
+                } else {
+                    $discoveredUrls = Merge-DiscoveredUrlResults -Inputs $discoveredUrls
+                }
             }
+
             $discoveredUrls = ConvertTo-ArrayOrEmpty -Data $discoveredUrls
             Write-JsonFile -Path $layout.UrlsDiscoveredJson -Data $discoveredUrls
         }
