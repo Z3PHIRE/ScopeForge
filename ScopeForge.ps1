@@ -2465,6 +2465,95 @@ function Get-InterestingReconFindings {
     return @($results | Sort-Object -Property PriorityRank, @{ Expression = 'Score'; Descending = $true }, Url)
 }
 
+function Get-PassiveLeadFindings {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$HostsAll
+    )
+
+    $patterns = @(
+        @{ Category = 'Identity/SCIM'; Family = 'Identity'; Priority = 'High'; Reason = 'Identity provisioning or SCIM-style asset'; Pattern = '(?i)(^|[.-])(scim|sso|oauth|auth|identity|login)([.-]|$)' },
+        @{ Category = 'Admin'; Family = 'Administrative'; Priority = 'High'; Reason = 'Administrative or management naming'; Pattern = '(?i)(^|[.-])(admin|manage|portal|dashboard|console|staff|backoffice)([.-]|$)' },
+        @{ Category = 'API'; Family = 'API'; Priority = 'High'; Reason = 'API-facing asset'; Pattern = '(?i)(^|[.-])(api|graphql|graphiql|swagger|openapi)([.-]|$)' },
+        @{ Category = 'Files'; Family = 'Files'; Priority = 'Medium'; Reason = 'File, media, document, upload or storage naming'; Pattern = '(?i)(^|[.-])(file|files|media|upload|document|docs|cdn|assets)([.-]|$)' },
+        @{ Category = 'Health/Metrics'; Family = 'Operations'; Priority = 'Medium'; Reason = 'Operational, monitoring or metrics naming'; Pattern = '(?i)(^|[.-])(health|status|metrics|prometheus|monitor|ready|live)([.-]|$)' },
+        @{ Category = 'Config'; Family = 'Operations'; Priority = 'Medium'; Reason = 'Configuration, debug, internal or tooling naming'; Pattern = '(?i)(^|[.-])(debug|config|internal|ops|tooling|infra)([.-]|$)' },
+        @{ Category = 'Payment'; Family = 'Business'; Priority = 'High'; Reason = 'Billing or payment related asset'; Pattern = '(?i)(^|[.-])(payment|payments|billing|invoice|checkout)([.-]|$)' },
+        @{ Category = 'Chat/Business'; Family = 'Business'; Priority = 'Medium'; Reason = 'Business-critical workflow or chat-style service'; Pattern = '(?i)(^|[.-])(chat|medical|therapy|clinical|care|doctor)([.-]|$)' }
+    )
+
+    $results = [System.Collections.Generic.List[object]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($hostRecord in $HostsAll) {
+        $targetHost = [string]$hostRecord.Host
+        if ([string]::IsNullOrWhiteSpace($targetHost)) { continue }
+
+        foreach ($pattern in $patterns) {
+            if ($targetHost -notmatch $pattern.Pattern) { continue }
+
+            $key = '{0}|{1}' -f $pattern.Category, $targetHost
+            if ($seen.Contains($key)) { continue }
+            $null = $seen.Add($key)
+
+            $results.Add([pscustomobject]@{
+                Severity        = 'Info'
+                Confidence      = 'Passive'
+                Priority        = $pattern.Priority
+                Category        = $pattern.Category
+                Family          = $pattern.Family
+                Host            = $targetHost
+                Url             = ''
+                Evidence        = $pattern.Reason
+                RecommendedChecks = switch ($pattern.Category) {
+                    'Identity/SCIM' { 'Check login, SCIM, SSO, provisioning, user lifecycle, authz boundaries.' }
+                    'Admin' { 'Check admin exposure, authz, role boundaries, tenant isolation, IDOR.' }
+                    'API' { 'Check docs, schema exposure, versioned routes, auth, introspection.' }
+                    'Files' { 'Check upload, download, content-type validation, path traversal, ACL.' }
+                    'Health/Metrics' { 'Check health, actuator, metrics, version leaks, internal info.' }
+                    'Config' { 'Check debug routes, backups, config exposure, stack traces.' }
+                    'Payment' { 'Check billing flows, coupons, state changes, replay, authz.' }
+                    'Chat/Business' { 'Check high-value workflows, object references, tenant isolation.' }
+                    default { 'Manual review recommended.' }
+                }
+                Source          = 'passive-hostname'
+            }) | Out-Null
+        }
+    }
+
+    return @(
+        $results |
+        Sort-Object -Property @{ Expression = { switch ($_.Priority) { 'High' { 0 } 'Medium' { 1 } default { 2 } } } }, Host, Category
+    )
+}
+
+function Get-UnifiedFindings {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$InterestingUrls,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$PassiveLeads
+    )
+
+    $confirmed = @(
+        $InterestingUrls | ForEach-Object {
+            [pscustomobject]@{
+                Severity          = $_.Priority
+                Confidence        = 'Observed'
+                Priority          = $_.Priority
+                Category          = if ($_.Categories -and $_.Categories.Count -gt 0) { ($_.Categories -join ', ') } else { 'General' }
+                Family            = $_.PrimaryFamily
+                Host              = $_.Host
+                Url               = $_.Url
+                Evidence          = ($_.Reasons -join ', ')
+                RecommendedChecks = 'Review manually and validate exploitability.'
+                Source            = $_.Source
+            }
+        }
+    )
+
+    return @($confirmed + $PassiveLeads)
+}
+
 function Get-InterestingFamilySummary {
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$InterestingUrls)
@@ -3157,6 +3246,18 @@ function Invoke-BugBountyRecon {
         $hostsLive = ConvertTo-ArrayOrEmpty -Data $hostsLive
         $discoveredUrls = ConvertTo-ArrayOrEmpty -Data $discoveredUrls
         $interestingUrls = ConvertTo-ArrayOrEmpty -Data $interestingUrls
+        $passiveLeads = ConvertTo-ArrayOrEmpty -Data (
+            Get-PassiveLeadFindings -HostsAll $hostsAll
+        )
+        $allFindings = ConvertTo-ArrayOrEmpty -Data (
+            Get-UnifiedFindings -InterestingUrls $interestingUrls -PassiveLeads $passiveLeads
+        )
+
+        Write-JsonFile -Path (Join-Path $layout.Normalized 'findings.json') -Data $allFindings
+        if ($exportCsvEnabled) {
+            Export-FlatCsv -Path (Join-Path $layout.Normalized 'findings.csv') -Rows $allFindings
+        }
+
         $summary = Merge-ReconResults -ScopeItems $scopeItems -HostsAll $hostsAll -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls $interestingUrls -Exclusions @($script:ScopeForgeContext.Exclusions) -Errors @($script:ScopeForgeContext.Errors) -ProgramName $ProgramName -UniqueUserAgent $UniqueUserAgent
         Export-ReconReport -Summary $summary -ScopeItems $scopeItems -HostsAll $hostsAll -HostsLive $hostsLive -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls $interestingUrls -Exclusions @($script:ScopeForgeContext.Exclusions) -Errors @($script:ScopeForgeContext.Errors) -Layout $layout -ExportJson:$exportJsonEnabled -ExportCsv:$exportCsvEnabled -ExportHtml:$exportHtmlEnabled
         Write-StageProgress -Step 6 -Title 'Génération des rapports' -Percent 100 -Status 'Reports completed'
