@@ -1227,9 +1227,44 @@ function Get-LauncherStorageRoot {
     }
 }
 
-function Get-LauncherDefaultOutputDir {
-    return (Get-LauncherUniqueRunDirectory)
+function ConvertTo-LauncherSafeSegment {
+    param([AllowNull()][string]$Value, [string]$Fallback = 'default')
+
+    $text = if ([string]::IsNullOrWhiteSpace($Value)) { $Fallback } else { [string]$Value }
+    $text = [System.IO.Path]::GetFileNameWithoutExtension($text)
+    $text = $text -replace '^scope-(minimal|standard|advanced)-', ''
+    $text = $text -replace '-20\d{6}-\d{6}$', ''
+    $text = $text -replace '[^a-zA-Z0-9._-]+', '-'
+    $text = $text.Trim('-_. ')
+    if ([string]::IsNullOrWhiteSpace($text)) { return $Fallback }
+    return $text.ToLowerInvariant()
 }
+
+function Get-LauncherCompanySegment {
+    param([AllowNull()][string]$ScopeFile, [AllowNull()][string]$ProgramName)
+
+    if (-not [string]::IsNullOrWhiteSpace($ScopeFile)) {
+        $scopeName = [System.IO.Path]::GetFileNameWithoutExtension([string]$ScopeFile)
+        $company = ConvertTo-LauncherSafeSegment -Value $scopeName -Fallback ''
+        if (-not [string]::IsNullOrWhiteSpace($company)) { return $company }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ProgramName)) {
+        return (ConvertTo-LauncherSafeSegment -Value $ProgramName -Fallback 'default-program')
+    }
+
+    return 'default-program'
+}
+
+function Get-LauncherDefaultOutputDir {
+    param(
+        [AllowNull()][string]$ScopeFile = '',
+        [AllowNull()][string]$ProgramName = ''
+    )
+
+    return (Get-LauncherUniqueRunDirectory -ScopeFile $ScopeFile -ProgramName $ProgramName)
+}
+
 
 function Get-LauncherOutputAnchorRoot {
     param([Parameter(Mandatory)][hashtable]$RunConfig)
@@ -4152,14 +4187,26 @@ function Get-LauncherRunCatalogRoot {
 }
 
 function Get-LauncherUniqueRunDirectory {
-    param([string]$Suffix = '')
+    param(
+        [string]$Suffix = '',
+        [AllowNull()][string]$ScopeFile = '',
+        [AllowNull()][string]$ProgramName = ''
+    )
 
     $runsRoot = Get-LauncherRunsRoot
+    $companySegment = Get-LauncherCompanySegment -ScopeFile $ScopeFile -ProgramName $ProgramName
+    $programSegment = ConvertTo-LauncherSafeSegment -Value $ProgramName -Fallback 'default-program'
+
+    $baseRoot = Join-Path (Join-Path $runsRoot $companySegment) $programSegment
+    if (-not (Test-Path -LiteralPath $baseRoot)) {
+        $null = New-Item -ItemType Directory -Path $baseRoot -Force
+    }
+
     $baseName = [DateTime]::Now.ToString('yyyyMMdd-HHmmss')
-    $candidatePath = Join-Path $runsRoot ($baseName + $Suffix)
+    $candidatePath = Join-Path $baseRoot ($baseName + $Suffix)
     $counter = 1
     while (Test-Path -LiteralPath $candidatePath) {
-        $candidatePath = Join-Path $runsRoot ("{0}{1}-{2}" -f $baseName, $Suffix, $counter)
+        $candidatePath = Join-Path $baseRoot ("{0}{1}-{2}" -f $baseName, $Suffix, $counter)
         $counter++
     }
     return $candidatePath
@@ -4507,7 +4554,7 @@ function New-LauncherRerunConfigFromManifest {
     )
 
     $settings = if ($Manifest.RunSettings) { $Manifest.RunSettings } else { [pscustomobject]@{} }
-    $newOutputDir = Get-LauncherUniqueRunDirectory -Suffix '-rerun'
+    $newOutputDir = Get-LauncherUniqueRunDirectory -Suffix '-rerun' -ScopeFile $scopeFile -ProgramName $Manifest.ProgramName
     $scopeFile = if ($Manifest.FrozenScopeFile -and (Test-Path -LiteralPath $Manifest.FrozenScopeFile)) { $Manifest.FrozenScopeFile } elseif ($Manifest.OriginalScopeFile -and (Test-Path -LiteralPath $Manifest.OriginalScopeFile)) { $Manifest.OriginalScopeFile } else { $null }
     if (-not $scopeFile) {
         throw "Impossible de relancer ce run: scope figé introuvable pour $($Manifest.ProgramName)."
@@ -4999,7 +5046,7 @@ function New-LauncherDocumentSet {
     }
 
     $defaultProgramName = if ($ProgramName) { $ProgramName } else { 'authorized-bugbounty' }
-    $defaultOutputDir = if ($OutputDir) { $OutputDir } else { Get-LauncherDefaultOutputDir }
+    $defaultOutputDir = if ($OutputDir) { $OutputDir } else { Get-LauncherDefaultOutputDir -ScopeFile $scopePath -ProgramName $defaultProgramName }
     $defaultUserAgent = if ($UniqueUserAgent) { $UniqueUserAgent } else { "researcher-" + ([Guid]::NewGuid().ToString('N').Substring(0, 8)) }
 
     $settingsObject = [ordered]@{
