@@ -125,6 +125,33 @@ function Register-ScopeForgeProgressSample {
     }
 }
 
+function Get-ScopeForgeOverallProgress {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][int]$Step,
+        [Parameter(Mandatory)][int]$StagePercent
+    )
+
+    $safeStep = [Math]::Max([Math]::Min($Step, 6), 0)
+    $safeStagePercent = [Math]::Max([Math]::Min($StagePercent, 100), 0)
+
+    $completedWeight = 0
+    foreach ($key in ($script:ScopeForgeStageWeights.Keys | Sort-Object)) {
+        if ([int]$key -lt $safeStep) {
+            $completedWeight += [int]$script:ScopeForgeStageWeights[$key]
+        }
+    }
+
+    $currentWeight = if ($script:ScopeForgeStageWeights.Contains($safeStep)) {
+        [int]$script:ScopeForgeStageWeights[$safeStep]
+    } else {
+        0
+    }
+
+    $overall = $completedWeight + (($currentWeight * $safeStagePercent) / 100.0)
+    return [int][Math]::Round([Math]::Min($overall, 100))
+}
+
 function Get-ScopeForgeEtaText {
     [CmdletBinding()]
     param([Parameter(Mandatory)][int]$OverallPercent)
@@ -238,7 +265,12 @@ function Update-ScopeForgeProgressDisplay {
 
     $safeStep = [Math]::Max([Math]::Min($Step, 6), 0)
     $safeStagePercent = [Math]::Max([Math]::Min($StagePercent, 100), 0)
-    $overallPercent = Get-ScopeForgeOverallProgress -Step $safeStep -StagePercent $safeStagePercent
+
+    if (Get-Command -Name 'Get-ScopeForgeOverallProgress' -CommandType Function -ErrorAction SilentlyContinue) {
+        $overallPercent = Get-ScopeForgeOverallProgress -Step $safeStep -StagePercent $safeStagePercent
+    } else {
+        $overallPercent = $safeStagePercent
+    }
 
     $previousOverallPercent = [int]$script:ScopeForgeProgressState.OverallPercent
     if ($overallPercent -gt $previousOverallPercent) {
@@ -255,8 +287,15 @@ function Update-ScopeForgeProgressDisplay {
         $script:ScopeForgeProgressState.LastMessage = Get-ScopeForgeCompactProgressMessage -Message $CurrentMessage
     }
 
-    Register-ScopeForgeProgressSample -OverallPercent $overallPercent
-    $etaText = Get-ScopeForgeEtaText -OverallPercent $overallPercent
+    if (Get-Command -Name 'Register-ScopeForgeProgressSample' -CommandType Function -ErrorAction SilentlyContinue) {
+        Register-ScopeForgeProgressSample -OverallPercent $overallPercent
+    }
+
+    $etaText = if (Get-Command -Name 'Get-ScopeForgeEtaText' -CommandType Function -ErrorAction SilentlyContinue) {
+        Get-ScopeForgeEtaText -OverallPercent $overallPercent
+    } else {
+        'ETA calcul en cours'
+    }
 
     $activity = if ($safeStep -gt 0 -and -not [string]::IsNullOrWhiteSpace($Title)) {
         ('[{0}/6] {1}' -f $safeStep, $Title)
