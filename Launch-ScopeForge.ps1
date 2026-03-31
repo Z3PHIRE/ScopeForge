@@ -4436,7 +4436,18 @@ function Get-LauncherStoredRuns {
 
     return @(
         $manifests |
-        Sort-Object -Property @{ Expression = { [DateTimeOffset](if ($_.EndTimeUtc) { $_.EndTimeUtc } else { '1970-01-01T00:00:00Z' }) }; Descending = $true }
+        Sort-Object -Property @{
+            Expression = {
+                $sortDate = if ($_.EndTimeUtc) {
+                    $_.EndTimeUtc
+                } else {
+                    '1970-01-01T00:00:00Z'
+                }
+
+                [DateTimeOffset]$sortDate
+            }
+            Descending = $true
+        }
     )
 }
 
