@@ -585,6 +585,36 @@ function Get-OutputLayout {
     }
 }
 
+function New-ScopeForgeRunOutputDir {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$BaseOutputDir,
+        [string]$ProgramName = 'run'
+    )
+
+    $resolvedBase = Resolve-AbsolutePath -Path $BaseOutputDir
+
+    if (-not (Test-Path -LiteralPath $resolvedBase)) {
+        $null = New-Item -ItemType Directory -Path $resolvedBase -Force
+    }
+
+    $safeProgramName = [regex]::Replace($ProgramName, '[^a-zA-Z0-9._-]+', '-').Trim('-')
+    if ([string]::IsNullOrWhiteSpace($safeProgramName)) {
+        $safeProgramName = 'run'
+    }
+
+    $stamp = [DateTime]::Now.ToString('yyyyMMdd-HHmmss')
+    $candidate = Join-Path $resolvedBase ("{0}-{1}" -f $safeProgramName, $stamp)
+    $counter = 1
+
+    while (Test-Path -LiteralPath $candidate) {
+        $candidate = Join-Path $resolvedBase ("{0}-{1}-{2}" -f $safeProgramName, $stamp, $counter)
+        $counter++
+    }
+
+    return $candidate
+}
+
 function Initialize-OutputDirectories {
     [CmdletBinding()]
     param([Parameter(Mandatory)][pscustomobject]$Layout)
@@ -1885,8 +1915,14 @@ function Invoke-HttpProbe {
     )
 
     if (Test-ToolFlagSupport -HelpText $helpText -Flag '-tech-detect') { $baseArguments += '-tech-detect' }
-    if (Test-ToolFlagSupport -HelpText $helpText -Flag '-follow-redirects') { $baseArguments += '-follow-redirects' }
-    if (Test-ToolFlagSupport -HelpText $helpText -Flag '-location') { $baseArguments += '-location' }
+
+    # Important:
+    # On ne suit pas les redirections pendant la phase de validation HTTP.
+    # Sinon httpx peut retourner une URL finale hors scope et la cible d'origine
+    # est ensuite rejetee par le matching in-scope.
+    #
+    # if (Test-ToolFlagSupport -HelpText $helpText -Flag '-follow-redirects') { $baseArguments += '-follow-redirects' }
+    # if (Test-ToolFlagSupport -HelpText $helpText -Flag '-location') { $baseArguments += '-location' }
 
     if ($UniqueUserAgent) {
         if (Test-ToolFlagSupport -HelpText $helpText -Flag '-H') {
@@ -2807,6 +2843,7 @@ function Export-ReconReport {
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$LiveTargets,
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$DiscoveredUrls,
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$InterestingUrls,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$AllFindings,
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$Exclusions,
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$Errors,
         [Parameter(Mandatory)][pscustomobject]$Layout,
@@ -2867,6 +2904,13 @@ function Export-ReconReport {
     $liveRows = ($LiveTargets | Select-Object -First 1000 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe ($_.Technologies -join ' '))""><td>$(ConvertTo-HtmlSafe $_.Host)</td><td>$(Get-HtmlUrlCell -Url $_.Url)</td><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(ConvertTo-HtmlSafe $_.Title)</td><td>$(ConvertTo-HtmlSafe ($_.Technologies -join ', '))</td></tr>" }) -join [Environment]::NewLine
     $urlRows = ($DiscoveredUrls | Select-Object -First 2000 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe $_.ScopeId)""><td>$(ConvertTo-HtmlSafe $_.Host)</td><td>$(Get-HtmlUrlCell -Url $_.Url)</td><td>$(ConvertTo-HtmlSafe $_.ScopeId)</td><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(ConvertTo-HtmlSafe $_.Source)</td></tr>" }) -join [Environment]::NewLine
     $interestingRows = ($InterestingUrls | Select-Object -First 250 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe $_.PrimaryFamily) $(ConvertTo-HtmlSafe $_.Priority) $(ConvertTo-HtmlSafe ($_.Categories -join ' '))""><td><span class=""priority-badge priority-$(ConvertTo-HtmlSafe $_.Priority.ToLowerInvariant())"">$(ConvertTo-HtmlSafe $_.Priority)</span></td><td>$(ConvertTo-HtmlSafe $_.Score)</td><td>$(ConvertTo-HtmlSafe $_.PrimaryFamily)</td><td>$(Get-HtmlUrlCell -Url $_.Url)</td><td>$(ConvertTo-HtmlSafe ($_.Categories -join ', '))</td><td>$(ConvertTo-HtmlSafe ($_.Reasons -join ', '))</td></tr>" }) -join [Environment]::NewLine
+    $findingsRows = ($AllFindings | Select-Object -First 1000 | ForEach-Object {
+        $urlCell = if ($_.Url) { Get-HtmlUrlCell -Url $_.Url } else { '' }
+        
+        "<tr data-search=""$(ConvertTo-HtmlSafe $_.Priority) $(ConvertTo-HtmlSafe $_.Category) $(ConvertTo-HtmlSafe $_.Family) $(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe $_.Evidence)""><td>$(ConvertTo-HtmlSafe $_.Priority)</td><td>$(ConvertTo-HtmlSafe $_.Category)</td><td>$(ConvertTo-HtmlSafe $_.Family)</td><td>$(ConvertTo-HtmlSafe $_.Host)</td><td>$urlCell</td><td>$(ConvertTo-HtmlSafe $_.Evidence)</td><td>$(ConvertTo-HtmlSafe $_.RecommendedChecks)</td></tr>"
+    }) -join [Environment]::NewLine
+
+    $findingsRows = Get-HtmlTableBodyOrEmpty -Rows $findingsRows -ColumnCount 7 -Message 'No findings were generated for this run.'
     $protectedRows = ($LiveTargets | Where-Object { $_.StatusCode -in 401, 403 } | Select-Object -First 250 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) protected""><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(Get-HtmlUrlCell -Url $_.Url)</td><td>$(ConvertTo-HtmlSafe $_.Title)</td><td>$(ConvertTo-HtmlSafe ($_.Technologies -join ', '))</td></tr>" }) -join [Environment]::NewLine
     $errorRows = ($Errors | Select-Object -First 500 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Phase) $(ConvertTo-HtmlSafe $_.Tool) $(ConvertTo-HtmlSafe $_.Target) $(ConvertTo-HtmlSafe $_.Message)""><td>$(ConvertTo-HtmlSafe $_.Phase)</td><td>$(ConvertTo-HtmlSafe $_.Tool)</td><td>$(ConvertTo-HtmlSafe $_.ErrorCode)</td><td>$(ConvertTo-HtmlSafe $_.Message)</td><td>$(ConvertTo-HtmlSafe $_.Recommendation)</td></tr>" }) -join [Environment]::NewLine
     $statusBars = ($Summary.StatusCodeDistribution | ForEach-Object { "<div class=""mini-row""><span>HTTP $(ConvertTo-HtmlSafe $_.StatusCode)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
@@ -2939,12 +2983,64 @@ function Export-ReconReport {
 <details open class="report-section"><summary><span>Live Targets</span><small>Reachable HTTP(S) targets retained after in-scope validation.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Host</button></th><th><button type="button">URL</button></th><th><button type="button">Status</button></th><th><button type="button">Title</button></th><th><button type="button">Technologies</button></th></tr></thead><tbody>$liveRows</tbody></table></div></details>
 <details open class="report-section"><summary><span>Interesting Families</span><small>Primary families used to group triage targets for manual review.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Family</button></th><th><button type="button">Count</button></th><th><button type="button">Max Score</button></th><th><button type="button">Priorities</button></th><th><button type="button">Top Categories</button></th><th><button type="button">Sample URLs</button></th></tr></thead><tbody>$familyRows</tbody></table></div></details>
 <details open class="report-section"><summary><span>Protected Endpoints</span><small>Live endpoints returning 401 or 403.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Status</button></th><th><button type="button">URL</button></th><th><button type="button">Title</button></th><th><button type="button">Technologies</button></th></tr></thead><tbody>$protectedRows</tbody></table></div></details>
+<details open class="report-section">
+    <summary>
+        <span>Unified Findings</span>
+        <small>Passive and observed findings grouped by priority, category and family.</small>
+    </summary>
+    <div class="section-body">
+        <table data-filter-table="true" data-sort-table="true">
+            <thead>
+                <tr>
+                    <th><button type="button">Priority</button></th>
+                    <th><button type="button">Category</button></th>
+                    <th><button type="button">Family</button></th>
+                    <th><button type="button">Host</button></th>
+                    <th><button type="button">URL</button></th>
+                    <th><button type="button">Evidence</button></th>
+                    <th><button type="button">Recommended Checks</button></th>
+                </tr>
+            </thead>
+            <tbody>$findingsRows</tbody>
+        </table>
+    </div>
+</details>
 <details open class="report-section"><summary><span>Interesting Pages</span><small>Heuristically ranked URLs grouped by family and priority.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Priority</button></th><th><button type="button">Score</button></th><th><button type="button">Family</button></th><th><button type="button">URL</button></th><th><button type="button">Categories</button></th><th><button type="button">Reasons</button></th></tr></thead><tbody>$interestingRows</tbody></table></div></details>
 <details open class="report-section"><summary><span>Discovered URLs</span><small>Unique endpoints collected from katana and seeds.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Host</button></th><th><button type="button">URL</button></th><th><button type="button">Scope</button></th><th><button type="button">Status</button></th><th><button type="button">Source</button></th></tr></thead><tbody>$urlRows</tbody></table></div></details>
 <details open class="report-section"><summary><span>Errors</span><small>Non-fatal errors captured during execution.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Phase</button></th><th><button type="button">Tool</button></th><th><button type="button">Code</button></th><th><button type="button">Message</button></th><th><button type="button">Recommendation</button></th></tr></thead><tbody>$errorRows</tbody></table></div></details></div>
 <script>const input=document.getElementById('globalSearch');const tables=Array.from(document.querySelectorAll('[data-filter-table="true"]'));function applyFilter(){const query=input.value.trim().toLowerCase();tables.forEach(table=>{table.querySelectorAll('tbody tr').forEach(row=>{const haystack=(row.dataset.search||row.textContent||'').toLowerCase();row.style.display=!query||haystack.includes(query)?'':'none';});});}function wireSort(table){const headers=Array.from(table.querySelectorAll('thead th button'));headers.forEach((button,index)=>{button.addEventListener('click',()=>{const tbody=table.querySelector('tbody');const rows=Array.from(tbody.querySelectorAll('tr'));const ascending=button.dataset.sortDir!=='asc';headers.forEach(header=>{header.dataset.sortDir='';});button.dataset.sortDir=ascending?'asc':'desc';rows.sort((a,b)=>{const left=(a.children[index]?.innerText||'').trim();const right=(b.children[index]?.innerText||'').trim();const leftNumber=Number(left);const rightNumber=Number(right);const comparison=!Number.isNaN(leftNumber)&&!Number.isNaN(rightNumber)?leftNumber-rightNumber:left.localeCompare(right,undefined,{numeric:true,sensitivity:'base'});return ascending?comparison:-comparison;});rows.forEach(row=>tbody.appendChild(row));});});}document.querySelectorAll('[data-sort-table="true"]').forEach(wireSort);document.querySelectorAll('.copy-btn').forEach(button=>{button.addEventListener('click',async()=>{const value=button.dataset.copy||'';const previous=button.textContent;try{if(navigator.clipboard&&value){await navigator.clipboard.writeText(value);button.textContent='Copied';setTimeout(()=>button.textContent=previous,1200);}}catch(_){button.textContent=previous;}});});input.addEventListener('input',applyFilter);applyFilter();</script></body></html>
 "@
     Set-Content -LiteralPath $Layout.ReportHtml -Value $html -Encoding utf8
+}
+
+function New-ScopeForgeRunOutputDir {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$BaseOutputDir,
+        [string]$ProgramName = 'run'
+    )
+
+    $resolvedBase = Resolve-AbsolutePath -Path $BaseOutputDir
+
+    if (-not (Test-Path -LiteralPath $resolvedBase)) {
+        $null = New-Item -ItemType Directory -Path $resolvedBase -Force
+    }
+
+    $safeProgramName = [regex]::Replace($ProgramName, '[^a-zA-Z0-9._-]+', '-').Trim('-')
+    if ([string]::IsNullOrWhiteSpace($safeProgramName)) {
+        $safeProgramName = 'run'
+    }
+
+    $stamp = [DateTime]::Now.ToString('yyyyMMdd-HHmmss')
+    $candidate = Join-Path $resolvedBase ("{0}-{1}" -f $safeProgramName, $stamp)
+    $counter = 1
+
+    while (Test-Path -LiteralPath $candidate) {
+        $candidate = Join-Path $resolvedBase ("{0}-{1}-{2}" -f $safeProgramName, $stamp, $counter)
+        $counter++
+    }
+
+    return $candidate
 }
 
 function Invoke-BugBountyRecon {
@@ -2974,8 +3070,19 @@ function Invoke-BugBountyRecon {
     $exportHtmlEnabled = if ($exportFlagsSpecified) { [bool]$ExportHtml } else { $true }
     $exportCsvEnabled = if ($exportFlagsSpecified) { [bool]$ExportCsv } else { $true }
     $exportJsonEnabled = if ($exportFlagsSpecified) { [bool]$ExportJson } else { $true }
+    $effectiveOutputDir = if ($Resume) {
+        $OutputDir
+    } else {
+        New-ScopeForgeRunOutputDir -BaseOutputDir $OutputDir -ProgramName $ProgramName
+    }
 
-    $layout = Get-OutputLayout -OutputDir $OutputDir
+    $effectiveOutputDir = if ($Resume) {
+        $OutputDir
+    } else {
+        New-ScopeForgeRunOutputDir -BaseOutputDir $OutputDir -ProgramName $ProgramName
+    }
+
+    $layout = Get-OutputLayout -OutputDir $effectiveOutputDir
     Initialize-OutputDirectories -Layout $layout
     $script:ScopeForgeContext = New-ScopeForgeContext -Layout $layout -ProgramName $ProgramName -Quiet ([bool]$Quiet) -ExportJsonEnabled:$exportJsonEnabled -ExportCsvEnabled:$exportCsvEnabled -ExportHtmlEnabled:$exportHtmlEnabled
     Initialize-ScopeForgeProgressState -Layout $layout
@@ -3275,8 +3382,9 @@ function Invoke-BugBountyRecon {
         $discoveredUrls = ConvertTo-ArrayOrEmpty -Data $discoveredUrls
         $interestingUrls = ConvertTo-ArrayOrEmpty -Data $interestingUrls
         $passiveLeads = ConvertTo-ArrayOrEmpty -Data (
-            Get-PassiveLeadFindings -HostsAll $hostsAll
+        Get-PassiveLeadFindings -HostsAll $hostsAll
         )
+
         $allFindings = ConvertTo-ArrayOrEmpty -Data (
             Get-UnifiedFindings -InterestingUrls $interestingUrls -PassiveLeads $passiveLeads
         )
@@ -3287,10 +3395,29 @@ function Invoke-BugBountyRecon {
         }
 
         $summary = Merge-ReconResults -ScopeItems $scopeItems -HostsAll $hostsAll -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls $interestingUrls -Exclusions @($script:ScopeForgeContext.Exclusions) -Errors @($script:ScopeForgeContext.Errors) -ProgramName $ProgramName -UniqueUserAgent $UniqueUserAgent
-        Export-ReconReport -Summary $summary -ScopeItems $scopeItems -HostsAll $hostsAll -HostsLive $hostsLive -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls $interestingUrls -Exclusions @($script:ScopeForgeContext.Exclusions) -Errors @($script:ScopeForgeContext.Errors) -Layout $layout -ExportJson:$exportJsonEnabled -ExportCsv:$exportCsvEnabled -ExportHtml:$exportHtmlEnabled
+
+        Export-ReconReport -Summary $summary -ScopeItems $scopeItems -HostsAll $hostsAll -HostsLive $hostsLive -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls $interestingUrls -AllFindings $allFindings -Exclusions @($script:ScopeForgeContext.Exclusions) -Errors @($script:ScopeForgeContext.Errors) -Layout $layout -ExportJson:$exportJsonEnabled -ExportCsv:$exportCsvEnabled -ExportHtml:$exportHtmlEnabled
+
         Write-StageProgress -Step 6 -Title 'Génération des rapports' -Percent 100 -Status 'Reports completed'
 
-        $result = [pscustomobject]@{ ProgramName = $ProgramName; OutputDir = $layout.Root; ScopeItems = $scopeItems; HostsAll = $hostsAll; HostsLive = $hostsLive; LiveTargets = $liveTargets; DiscoveredUrls = $discoveredUrls; InterestingUrls = $interestingUrls; Summary = $summary; Exclusions = @($script:ScopeForgeContext.Exclusions); Errors = @($script:ScopeForgeContext.Errors); ExportHtmlEnabled = $exportHtmlEnabled; ExportCsvEnabled = $exportCsvEnabled; ExportJsonEnabled = $exportJsonEnabled }
+        $result = [pscustomobject]@{
+            ProgramName       = $ProgramName
+            OutputDir         = $layout.Root
+            ScopeItems        = $scopeItems
+            HostsAll          = $hostsAll
+            HostsLive         = $hostsLive
+            LiveTargets       = $liveTargets
+            DiscoveredUrls    = $discoveredUrls
+            InterestingUrls   = $interestingUrls
+            AllFindings       = $allFindings
+            Summary           = $summary
+            Exclusions        = @($script:ScopeForgeContext.Exclusions)
+            Errors            = @($script:ScopeForgeContext.Errors)
+            ExportHtmlEnabled = $exportHtmlEnabled
+            ExportCsvEnabled  = $exportCsvEnabled
+            ExportJsonEnabled = $exportJsonEnabled
+        }
+
         if (-not $Quiet) {
             Write-Host ''
             Write-Host 'Recon summary' -ForegroundColor Green
