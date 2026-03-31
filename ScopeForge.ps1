@@ -174,10 +174,15 @@ function Update-ScopeForgeProgressDisplay {
 
     $currentOperation = $script:ScopeForgeProgressState.LastMessage
     $locationHint = Get-ScopeForgeProgressLocationHint
+
     if (-not [string]::IsNullOrWhiteSpace($locationHint)) {
-        $currentOperation = Get-ScopeForgeCompactProgressMessage -Message (
-            if ([string]::IsNullOrWhiteSpace($currentOperation)) { $locationHint } else { "$currentOperation | $locationHint" }
-        )
+        $progressMessage = if ([string]::IsNullOrWhiteSpace($currentOperation)) {
+            $locationHint
+        } else {
+            "$currentOperation | $locationHint"
+        }
+
+        $currentOperation = Get-ScopeForgeCompactProgressMessage -Message $progressMessage
     }
 
     try {
