@@ -24,6 +24,262 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:ScopeForgeContext = $null
 $script:ScopeForgeToolHelpCache = @{}
+$script:ScopeForgeProgressState = $null
+$script:ScopeForgeConsoleState = [ordered]@{
+    LogWriteFailureShown = $false
+}
+$script:ScopeForgeStageWeights = [ordered]@{
+    1 = 10
+    2 = 10
+    3 = 25
+    4 = 25
+    5 = 20
+    6 = 10
+}
+
+function Format-ScopeForgeDuration {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][TimeSpan]$Duration)
+
+    $safeDuration = if ($Duration.TotalSeconds -lt 0) { [TimeSpan]::Zero } else { $Duration }
+    if ($safeDuration.TotalHours -ge 1) {
+        return ('{0}h {1}m {2}s' -f [int]$safeDuration.TotalHours, $safeDuration.Minutes, $safeDuration.Seconds)
+    }
+    if ($safeDuration.TotalMinutes -ge 1) {
+        return ('{0}m {1}s' -f [int]$safeDuration.TotalMinutes, $safeDuration.Seconds)
+    }
+    return ('{0}s' -f [Math]::Max([int][Math]::Round($safeDuration.TotalSeconds), 0))
+}
+
+function Initialize-ScopeForgeProgressState {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][pscustomobject]$Layout)
+
+    $script:ScopeForgeProgressState = [ordered]@{
+        StartedAtUtc   = [DateTimeOffset]::UtcNow
+        Layout         = $Layout
+        StageStep      = 0
+        StageTitle     = ''
+        StagePercent   = 0
+        OverallPercent = 0
+        LastMessage    = ''
+    }
+}
+
+function Get-ScopeForgeCompactProgressMessage {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][string]$Message,
+        [int]$MaxLength = 220
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Message)) { return '' }
+    $singleLine = (($Message -replace '[\r\n]+', ' ') -replace '\s{2,}', ' ').Trim()
+    if ($singleLine.Length -le $MaxLength) { return $singleLine }
+    return ($singleLine.Substring(0, $MaxLength - 3) + '...')
+}
+
+function Get-ScopeForgeOverallProgress {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][int]$Step,
+        [Parameter(Mandatory)][int]$StagePercent
+    )
+
+    $safeStep = [Math]::Max([Math]::Min($Step, 6), 0)
+    $safeStagePercent = [Math]::Max([Math]::Min($StagePercent, 100), 0)
+
+    $completedWeight = 0
+    foreach ($key in ($script:ScopeForgeStageWeights.Keys | Sort-Object)) {
+        if ([int]$key -lt $safeStep) {
+            $completedWeight += [int]$script:ScopeForgeStageWeights[$key]
+        }
+    }
+
+    $currentWeight = if ($script:ScopeForgeStageWeights.Contains($safeStep)) {
+        [int]$script:ScopeForgeStageWeights[$safeStep]
+    } else {
+        0
+    }
+
+    $overall = $completedWeight + (($currentWeight * $safeStagePercent) / 100.0)
+    return [int][Math]::Round([Math]::Min($overall, 100))
+}
+
+function Get-ScopeForgeEtaText {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$OverallPercent)
+
+    if (-not $script:ScopeForgeProgressState) { return 'ETA calcul en cours' }
+    if ($OverallPercent -lt 3) { return 'ETA calcul en cours' }
+
+    $elapsed = ([DateTimeOffset]::UtcNow - $script:ScopeForgeProgressState.StartedAtUtc)
+    if ($elapsed.TotalSeconds -lt 5) { return 'ETA calcul en cours' }
+
+    $remainingSeconds = ($elapsed.TotalSeconds / $OverallPercent) * (100 - $OverallPercent)
+    if ($remainingSeconds -lt 1) { return 'ETA < 1s' }
+
+    return ('ETA ~ {0}' -f (Format-ScopeForgeDuration -Duration ([TimeSpan]::FromSeconds($remainingSeconds))))
+}
+
+function Get-ScopeForgeProgressLocationHint {
+    [CmdletBinding()]
+    param()
+
+    if (-not $script:ScopeForgeProgressState) { return '' }
+    $layout = $script:ScopeForgeProgressState.Layout
+    if (-not $layout) { return '' }
+
+    return ('Logs: {0} | Data: {1} | Report: {2}' -f $layout.MainLog, $layout.Normalized, $layout.ReportHtml)
+}
+
+function Update-ScopeForgeProgressDisplay {
+    [CmdletBinding()]
+    param(
+        [int]$Step = 0,
+        [string]$Title = '',
+        [int]$StagePercent = 0,
+        [string]$Status = '',
+        [string]$CurrentMessage = ''
+    )
+
+    if (-not $script:ScopeForgeProgressState) { return }
+    if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Quiet) { return }
+
+    $safeStep = [Math]::Max([Math]::Min($Step, 6), 0)
+    $safeStagePercent = [Math]::Max([Math]::Min($StagePercent, 100), 0)
+    $overallPercent = Get-ScopeForgeOverallProgress -Step $safeStep -StagePercent $safeStagePercent
+    $etaText = Get-ScopeForgeEtaText -OverallPercent $overallPercent
+
+    $script:ScopeForgeProgressState.StageStep = $safeStep
+    $script:ScopeForgeProgressState.StageTitle = $Title
+    $script:ScopeForgeProgressState.StagePercent = $safeStagePercent
+    $script:ScopeForgeProgressState.OverallPercent = $overallPercent
+
+    if (-not [string]::IsNullOrWhiteSpace($CurrentMessage)) {
+        $script:ScopeForgeProgressState.LastMessage = Get-ScopeForgeCompactProgressMessage -Message $CurrentMessage
+    }
+
+    $activity = if ($safeStep -gt 0 -and -not [string]::IsNullOrWhiteSpace($Title)) {
+        ('[{0}/6] {1}' -f $safeStep, $Title)
+    } else {
+        'ScopeForge'
+    }
+
+    $statusText = if ([string]::IsNullOrWhiteSpace($Status)) {
+        ('Global {0}% | Etape {1}% | {2}' -f $overallPercent, $safeStagePercent, $etaText)
+    } else {
+        ('Global {0}% | Etape {1}% | {2} | {3}' -f $overallPercent, $safeStagePercent, $etaText, $Status)
+    }
+
+    $currentOperation = $script:ScopeForgeProgressState.LastMessage
+    $locationHint = Get-ScopeForgeProgressLocationHint
+    if (-not [string]::IsNullOrWhiteSpace($locationHint)) {
+        $currentOperation = Get-ScopeForgeCompactProgressMessage -Message (
+            if ([string]::IsNullOrWhiteSpace($currentOperation)) { $locationHint } else { "$currentOperation | $locationHint" }
+        )
+    }
+
+    try {
+        Write-Progress -Id 1 -Activity $activity -PercentComplete $overallPercent -Status $statusText -CurrentOperation $currentOperation
+    } catch {
+    }
+}
+
+function Set-ScopeForgeProgressMessage {
+    [CmdletBinding()]
+    param([AllowNull()][string]$Message)
+
+    if ([string]::IsNullOrWhiteSpace($Message)) { return }
+    if (-not $script:ScopeForgeProgressState) { return }
+
+    $script:ScopeForgeProgressState.LastMessage = Get-ScopeForgeCompactProgressMessage -Message $Message
+    Update-ScopeForgeProgressDisplay `
+        -Step $script:ScopeForgeProgressState.StageStep `
+        -Title $script:ScopeForgeProgressState.StageTitle `
+        -StagePercent $script:ScopeForgeProgressState.StagePercent `
+        -CurrentMessage $script:ScopeForgeProgressState.LastMessage
+}
+
+function Complete-ScopeForgeProgress {
+    [CmdletBinding()]
+    param()
+
+    if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Quiet) { return }
+
+    try {
+        Write-Progress -Id 1 -Activity 'ScopeForge' -PercentComplete 100 -Status 'Global 100% | Analyse terminee' -Completed
+    } catch {
+    }
+}
+
+function Write-ScopeForgeConsolePathsHint {
+    [CmdletBinding()]
+    param()
+
+    if (-not $script:ScopeForgeContext) { return }
+    if ($script:ScopeForgeContext.ConsolePathsHintShown) { return }
+
+    $layout = $script:ScopeForgeContext.Layout
+    Write-Host ("Analyse en cours. Logs : {0}" -f $layout.MainLog) -ForegroundColor DarkGray
+    Write-Host ("Erreurs : {0}" -f $layout.ErrorsLog) -ForegroundColor DarkGray
+    Write-Host ("Exclusions : {0}" -f $layout.ExclusionsLog) -ForegroundColor DarkGray
+    Write-Host ("Donnees brutes : {0}" -f $layout.Raw) -ForegroundColor DarkGray
+    Write-Host ("Donnees normalisees : {0}" -f $layout.Normalized) -ForegroundColor DarkGray
+    Write-Host ("Rapports : {0}" -f $layout.Reports) -ForegroundColor DarkGray
+
+    $script:ScopeForgeContext.ConsolePathsHintShown = $true
+}
+
+function Test-ExclusionTokenInText {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][string]$Text,
+        [AllowNull()][string]$Token
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Text) -or [string]::IsNullOrWhiteSpace($Token)) { return $false }
+
+    $safeText = $Text.ToLowerInvariant()
+    $safeToken = $Token.Trim().ToLowerInvariant()
+    $pattern = '(?<![a-z0-9])' + [regex]::Escape($safeToken) + '(?![a-z0-9])'
+
+    return [regex]::IsMatch($safeText, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+}
+
+function Write-CompactedExclusionConsoleMessage {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][pscustomobject]$Record)
+
+    if (-not $script:ScopeForgeContext) { return }
+
+    $token = if ($Record.Token) { [string]$Record.Token } else { '<empty>' }
+    $trackerKey = '{0}|{1}|{2}' -f $Record.Phase, $Record.ScopeId, $token
+
+    if (-not $script:ScopeForgeContext.ExclusionConsoleTracker.ContainsKey($trackerKey)) {
+        $script:ScopeForgeContext.ExclusionConsoleTracker[$trackerKey] = @{
+            Shown      = 0
+            Suppressed = 0
+        }
+    }
+
+    $tracker = $script:ScopeForgeContext.ExclusionConsoleTracker[$trackerKey]
+    $sampleMessage = ('[{0}] Excluded by token ''{1}'' on {2}: {3}' -f $Record.Phase, $token, $Record.MatchedOn, $Record.Target)
+
+    if ([int]$tracker['Shown'] -lt [int]$script:ScopeForgeContext.ExclusionConsoleSampleLimit) {
+        $tracker['Shown'] = [int]$tracker['Shown'] + 1
+        Write-Host $sampleMessage -ForegroundColor DarkYellow
+        Set-ScopeForgeProgressMessage -Message $sampleMessage
+        return
+    }
+
+    $tracker['Suppressed'] = [int]$tracker['Suppressed'] + 1
+    if (($tracker['Suppressed'] -eq 1) -or (($tracker['Suppressed'] % 25) -eq 0)) {
+        $summary = ('[{0}] Beaucoup d exclusions pour le token ''{1}'' sur {2}. Console compactee; voir {3} (supprimees console={4})' -f $Record.Phase, $token, $Record.ScopeId, $script:ScopeForgeContext.Layout.ExclusionsLog, $tracker['Suppressed'])
+        Write-Host $summary -ForegroundColor DarkYellow
+        Set-ScopeForgeProgressMessage -Message $summary
+    }
+}
 
 function Resolve-AbsolutePath {
     [CmdletBinding()]
@@ -117,6 +373,10 @@ function Get-ToolBootstrapFailureSummary {
         [Parameter(Mandatory)][string]$FailureMessage
     )
 
+    if ($ToolName -eq 'hakrawler' -and $FailureMessage -match '(?i)release assets') {
+        return "Optional tool 'hakrawler' is unavailable: automatic bootstrap did not find a compatible release asset. Supplemental crawl is disabled, but the main analysis continues with subfinder/httpx/katana. To silence this message, set enableHakrawler=false."
+    }
+
     if ($FailureMessage -match '(?i)(api\.github\.com|githubusercontent\.com|github\.com:443|proxy|offline|firewall|timed out|timeout|No such host|Name or service not known|Unable to connect|connection.*failed)') {
         return ("Optional tool '{0}' is unavailable: GitHub download failed or is blocked (offline mode, firewall, or proxy issue). Related enrichment will be skipped. Details: {1}" -f $ToolName, $FailureMessage)
     }
@@ -204,16 +464,19 @@ function New-ScopeForgeContext {
     )
 
     [pscustomobject]@{
-        Layout            = $Layout
-        ProgramName       = $ProgramName
-        Quiet             = $Quiet
-        ExportJsonEnabled = $ExportJsonEnabled
-        ExportCsvEnabled  = $ExportCsvEnabled
-        ExportHtmlEnabled = $ExportHtmlEnabled
-        Errors            = [System.Collections.Generic.List[object]]::new()
-        Exclusions        = [System.Collections.Generic.List[object]]::new()
-        Warnings          = [System.Collections.Generic.List[string]]::new()
-        StartedAtUtc      = [DateTime]::UtcNow
+        Layout                   = $Layout
+        ProgramName              = $ProgramName
+        Quiet                    = $Quiet
+        ExportJsonEnabled        = $ExportJsonEnabled
+        ExportCsvEnabled         = $ExportCsvEnabled
+        ExportHtmlEnabled        = $ExportHtmlEnabled
+        Errors                   = [System.Collections.Generic.List[object]]::new()
+        Exclusions               = [System.Collections.Generic.List[object]]::new()
+        Warnings                 = [System.Collections.Generic.List[string]]::new()
+        StartedAtUtc             = [DateTime]::UtcNow
+        ExclusionConsoleTracker  = @{}
+        ExclusionConsoleSampleLimit = 3
+        ConsolePathsHintShown    = $false
     }
 }
 
@@ -222,7 +485,8 @@ function Write-ReconLog {
     param(
         [Parameter(Mandatory)][ValidateSet('INFO', 'WARN', 'ERROR', 'TOOL', 'EXCLUDED', 'VERBOSE')][string]$Level,
         [Parameter(Mandatory)][string]$Message,
-        [string]$Path
+        [string]$Path,
+        [switch]$NoConsole
     )
 
     $timestamp = [DateTimeOffset]::Now.ToString('yyyy-MM-dd HH:mm:ss zzz')
@@ -239,22 +503,37 @@ function Write-ReconLog {
     }
 
     if ($targetPath) {
-        Add-Content -LiteralPath $targetPath -Value $entry -Encoding utf8
+        try {
+            Add-Content -LiteralPath $targetPath -Value $entry -Encoding utf8
+        } catch {
+            if (-not $script:ScopeForgeConsoleState.LogWriteFailureShown) {
+                $script:ScopeForgeConsoleState.LogWriteFailureShown = $true
+                Write-Host ("[LogGuard] Impossible d'ecrire dans '{0}'. Le run continue en console. Detail: {1}" -f $targetPath, $_.Exception.Message) -ForegroundColor Yellow
+            }
+        }
+
         if (($Level -eq 'ERROR') -and $script:ScopeForgeContext -and ($targetPath -ne $script:ScopeForgeContext.Layout.MainLog)) {
-            Add-Content -LiteralPath $script:ScopeForgeContext.Layout.MainLog -Value $entry -Encoding utf8
+            try {
+                Add-Content -LiteralPath $script:ScopeForgeContext.Layout.MainLog -Value $entry -Encoding utf8
+            } catch {
+            }
         }
     }
 
-    if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Quiet -and ($Level -notin @('WARN', 'ERROR'))) {
-        return
-    }
+    if ($NoConsole) { return }
+    if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Quiet -and ($Level -notin @('WARN', 'ERROR'))) { return }
 
     switch ($Level) {
         'INFO' { Write-Host $Message -ForegroundColor Cyan }
         'WARN' { Write-Host $Message -ForegroundColor Yellow }
         'ERROR' { Write-Host $Message -ForegroundColor Red }
+        'TOOL' { Write-Host $Message -ForegroundColor DarkGray }
         'EXCLUDED' { Write-Host $Message -ForegroundColor DarkYellow }
-        default { Write-Verbose $Message }
+        'VERBOSE' { Write-Host $Message -ForegroundColor DarkGray }
+    }
+
+    if ($Level -in @('INFO', 'WARN', 'ERROR', 'TOOL')) {
+        Set-ScopeForgeProgressMessage -Message $Message
     }
 }
 
@@ -262,6 +541,7 @@ function Write-StageBanner {
     [CmdletBinding()]
     param([Parameter(Mandatory)][int]$Step, [Parameter(Mandatory)][string]$Title)
 
+    Update-ScopeForgeProgressDisplay -Step $Step -Title $Title -StagePercent 0 -Status 'Initialisation de l etape' -CurrentMessage $Title
     Write-ReconLog -Level INFO -Message ('[{0}/6] {1}' -f $Step, $Title)
 }
 
@@ -274,9 +554,7 @@ function Write-StageProgress {
         [string]$Status = ''
     )
 
-    if ($script:ScopeForgeContext -and -not $script:ScopeForgeContext.Quiet) {
-        Write-Progress -Id 1 -Activity ('[{0}/6] {1}' -f $Step, $Title) -PercentComplete $Percent -Status $Status
-    }
+    Update-ScopeForgeProgressDisplay -Step $Step -Title $Title -StagePercent $Percent -Status $Status -CurrentMessage $Status
 }
 
 function Resolve-ToolPath {
@@ -702,16 +980,32 @@ function Test-ExclusionMatch {
     [CmdletBinding()]
     param([Parameter(Mandatory)][pscustomobject]$ScopeItem, [string]$TargetHost, [string]$Url, [string]$Path)
 
-    $result = [pscustomobject]@{ IsExcluded = $false; Token = $null; MatchedOn = $null; MatchedText = $null }
+    $result = [pscustomobject]@{
+        IsExcluded = $false
+        Token      = $null
+        MatchedOn  = $null
+        MatchedText = $null
+    }
+
     foreach ($token in $ScopeItem.Exclusions) {
-        foreach ($entry in @(@{ Name = 'host'; Value = $TargetHost }, @{ Name = 'url'; Value = $Url }, @{ Name = 'path'; Value = $Path })) {
+        foreach ($entry in @(
+                @{ Name = 'host'; Value = $TargetHost },
+                @{ Name = 'url'; Value = $Url },
+                @{ Name = 'path'; Value = $Path }
+            )) {
+
             if ([string]::IsNullOrWhiteSpace([string]$entry.Value)) { continue }
-            if ([string]$entry.Value.ToLowerInvariant() -like "*$token*") {
-                $result.IsExcluded = $true; $result.Token = $token; $result.MatchedOn = $entry.Name; $result.MatchedText = [string]$entry.Value
+
+            if (Test-ExclusionTokenInText -Text ([string]$entry.Value) -Token $token) {
+                $result.IsExcluded = $true
+                $result.Token = $token
+                $result.MatchedOn = $entry.Name
+                $result.MatchedText = [string]$entry.Value
                 return $result
             }
         }
     }
+
     return $result
 }
 
@@ -905,8 +1199,12 @@ function Add-ExclusionRecord {
         MatchedOn   = $ExclusionResult.MatchedOn
         MatchedText = $ExclusionResult.MatchedText
     }
+
     if ($script:ScopeForgeContext) { $script:ScopeForgeContext.Exclusions.Add($record) }
-    Write-ReconLog -Level EXCLUDED -Message ("[{0}] Excluded by token '{1}' on {2}: {3}" -f $Phase, $ExclusionResult.Token, $ExclusionResult.MatchedOn, $Target)
+
+    $message = ("[{0}] Excluded by token '{1}' on {2}: {3}" -f $Phase, $ExclusionResult.Token, $ExclusionResult.MatchedOn, $Target)
+    Write-ReconLog -Level EXCLUDED -Message $message -NoConsole
+    Write-CompactedExclusionConsoleMessage -Record $record
 }
 
 function New-HostInventoryRecord {
@@ -946,27 +1244,49 @@ function Get-PassiveSubdomains {
     $stderrFile = Join-Path ([System.IO.Path]::GetTempPath()) ("scopeforge-subfinder-{0}.err" -f ([Guid]::NewGuid().ToString('N')))
 
     try {
-        try {
-            $result = Invoke-ExternalCommand -FilePath $SubfinderPath -Arguments @('-silent', '-d', $RootDomain) -TimeoutSeconds $TimeoutSeconds -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
-        } catch {
-            $details = $_.Exception.Message
-            if (Test-Path -LiteralPath $stderrFile) {
-                try {
-                    $stderrContent = Get-Content -LiteralPath $stderrFile -Raw -Encoding utf8
-                    if (-not [string]::IsNullOrWhiteSpace($stderrContent)) {
-                        $details = "{0}`n{1}" -f $details, $stderrContent.Trim()
-                    }
-                } catch {
-                }
-            }
+        $attemptTimeouts = @(
+            [Math]::Max($TimeoutSeconds * 3, 120),
+            [Math]::Max($TimeoutSeconds * 6, 240)
+        )
 
-            Add-ErrorRecord -Phase 'PassiveDiscovery' -Target $RootDomain -Message 'subfinder execution failed or timed out.' -Details $details -Tool 'subfinder' -ErrorCode 'ToolTimeout'
-            Write-ReconLog -Level WARN -Message ("subfinder timed out or failed for {0}. Passive discovery will continue without it." -f $RootDomain)
-            if (-not (Test-Path -LiteralPath $RawOutputPath)) {
-                Set-Content -LiteralPath $RawOutputPath -Value '' -Encoding utf8
+        $result = $null
+        $completed = $false
+
+        for ($attempt = 0; $attempt -lt $attemptTimeouts.Count; $attempt++) {
+            $currentTimeout = [int]$attemptTimeouts[$attempt]
+            try {
+                $result = Invoke-ExternalCommand -FilePath $SubfinderPath -Arguments @('-silent', '-d', $RootDomain) -TimeoutSeconds $currentTimeout -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
+                $completed = $true
+                break
+            } catch {
+                if ($attempt -lt ($attemptTimeouts.Count - 1)) {
+                    Write-ReconLog -Level WARN -Message ("subfinder a depasse le delai pour {0}. Nouvelle tentative avec timeout={1}s." -f $RootDomain, $attemptTimeouts[$attempt + 1])
+                    continue
+                }
+
+                $details = $_.Exception.Message
+                if (Test-Path -LiteralPath $stderrFile) {
+                    try {
+                        $stderrContent = Get-Content -LiteralPath $stderrFile -Raw -Encoding utf8
+                        if (-not [string]::IsNullOrWhiteSpace($stderrContent)) {
+                            $details = "{0}`n{1}" -f $details, $stderrContent.Trim()
+                        }
+                    } catch {
+                    }
+                }
+
+                Add-ErrorRecord -Phase 'PassiveDiscovery' -Target $RootDomain -Message 'subfinder execution failed or timed out.' -Details $details -Tool 'subfinder' -ErrorCode 'ToolTimeout'
+                Write-ReconLog -Level WARN -Message ("subfinder timed out or failed for {0}. Passive discovery will continue without it." -f $RootDomain)
+
+                if (-not (Test-Path -LiteralPath $RawOutputPath)) {
+                    Set-Content -LiteralPath $RawOutputPath -Value '' -Encoding utf8
+                }
+
+                return @()
             }
-            return @()
         }
+
+        if (-not $completed) { return @() }
 
         $rawLines = @(
             if (Test-Path -LiteralPath $stdoutFile) {
@@ -1089,13 +1409,33 @@ function Get-WaybackUrls {
     $stderrFile = Join-Path ([System.IO.Path]::GetTempPath()) ("scopeforge-wayback-{0}.err" -f ([Guid]::NewGuid().ToString('N')))
 
     try {
-        try {
-            $result = Invoke-ExternalCommand -FilePath $WaybackUrlsPath -Arguments @($Target) -TimeoutSeconds ([Math]::Max($TimeoutSeconds * 2, 60)) -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
-        } catch {
-            Add-ErrorRecord -Phase 'HistoricalDiscovery' -Target $Target -Message $_.Exception.Message -Tool 'waybackurls' -ErrorCode $(if ($_.Exception.Message -like 'Command timed out*') { 'ToolTimeout' } else { 'RuntimeError' })
-            Write-ReconLog -Level WARN -Message "waybackurls a echoue pour $Target, poursuite sans URLs historiques wayback."
-            return @()
+        $attemptTimeouts = @(
+            [Math]::Max($TimeoutSeconds * 4, 180),
+            [Math]::Max($TimeoutSeconds * 8, 300)
+        )
+
+        $result = $null
+        $completed = $false
+
+        for ($attempt = 0; $attempt -lt $attemptTimeouts.Count; $attempt++) {
+            $currentTimeout = [int]$attemptTimeouts[$attempt]
+            try {
+                $result = Invoke-ExternalCommand -FilePath $WaybackUrlsPath -Arguments @($Target) -TimeoutSeconds $currentTimeout -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
+                $completed = $true
+                break
+            } catch {
+                if ($attempt -lt ($attemptTimeouts.Count - 1)) {
+                    Write-ReconLog -Level WARN -Message ("waybackurls a depasse le delai pour {0}. Nouvelle tentative avec timeout={1}s." -f $Target, $attemptTimeouts[$attempt + 1])
+                    continue
+                }
+
+                Add-ErrorRecord -Phase 'HistoricalDiscovery' -Target $Target -Message $_.Exception.Message -Tool 'waybackurls' -ErrorCode $(if ($_.Exception.Message -like 'Command timed out*') { 'ToolTimeout' } else { 'RuntimeError' })
+                Write-ReconLog -Level WARN -Message ("waybackurls a echoue pour {0}, poursuite sans URLs historiques wayback." -f $Target)
+                return @()
+            }
         }
+
+        if (-not $completed) { return @() }
 
         $rawLines = @(
             if (Test-Path -LiteralPath $stdoutFile) {
@@ -1281,81 +1621,193 @@ function Invoke-HttpProbe {
     if (-not $InputUrls -or $InputUrls.Count -eq 0) { return @() }
 
     $helpText = Get-ToolHelpText -ToolPath $HttpxPath
-    $inputFile = Join-Path ([System.IO.Path]::GetTempPath()) ("scopeforge-httpx-input-{0}.txt" -f ([Guid]::NewGuid().ToString('N')))
-    $stdoutFile = Join-Path ([System.IO.Path]::GetTempPath()) ("scopeforge-httpx-{0}.jsonl" -f ([Guid]::NewGuid().ToString('N')))
-    $stderrFile = Join-Path ([System.IO.Path]::GetTempPath()) ("scopeforge-httpx-{0}.err" -f ([Guid]::NewGuid().ToString('N')))
+    $normalizedInputUrls = @(
+        $InputUrls |
+        Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+        Sort-Object -Unique
+    )
 
-    try {
-        Set-Content -LiteralPath $inputFile -Value ($InputUrls | Sort-Object -Unique) -Encoding utf8
-        $arguments = @('-silent', '-json', '-l', $inputFile, '-threads', [string]$Threads, '-timeout', [string]$TimeoutSeconds, '-title', '-status-code', '-content-length')
-        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-tech-detect') { $arguments += '-tech-detect' }
-        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-follow-redirects') { $arguments += '-follow-redirects' }
-        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-location') { $arguments += '-location' }
-        if ($UniqueUserAgent) {
-            if (Test-ToolFlagSupport -HelpText $helpText -Flag '-H') { $arguments += @('-H', "User-Agent: $UniqueUserAgent") }
-            elseif (Test-ToolFlagSupport -HelpText $helpText -Flag '-header') { $arguments += @('-header', "User-Agent: $UniqueUserAgent") }
-        }
-
-        $result = Invoke-ExternalCommand -FilePath $HttpxPath -Arguments $arguments -TimeoutSeconds ([Math]::Max($TimeoutSeconds * 4, 60)) -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
-        if (Test-Path -LiteralPath $stdoutFile) { Copy-Item -LiteralPath $stdoutFile -Destination $RawOutputPath -Force } else { Set-Content -LiteralPath $RawOutputPath -Value '' -Encoding utf8 }
-        if ($result.ExitCode -ne 0) { Add-ErrorRecord -Phase 'HttpProbe' -Message 'httpx returned a non-zero exit code.' -Details $result.StdErr -Tool 'httpx' -ExitCode $result.ExitCode -ErrorCode 'ToolExitCode' }
-
-        $liveTargets = [System.Collections.Generic.List[object]]::new()
-        $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-        $lines = @(
-            if (Test-Path -LiteralPath $stdoutFile) {
-                Get-Content -LiteralPath $stdoutFile -Encoding utf8
-            }
-        )
-
-        foreach ($line in $lines) {
-            if ([string]::IsNullOrWhiteSpace($line)) { continue }
-            try { $raw = $line | ConvertFrom-Json -Depth 100 } catch { Add-ErrorRecord -Phase 'HttpProbe' -Message 'Failed to parse httpx JSON line.' -Details $line -Tool 'httpx' -ErrorCode 'ParseError'; continue }
-
-            $finalUrl = [string](Get-ObjectValue -InputObject $raw -Names @('url'))
-            $inputValue = [string](Get-ObjectValue -InputObject $raw -Names @('input'))
-            if ([string]::IsNullOrWhiteSpace($finalUrl)) { continue }
-
-            $uri = $null
-            if (-not [Uri]::TryCreate($finalUrl, [UriKind]::Absolute, [ref]$uri)) { continue }
-            $resolvedHost = $uri.DnsSafeHost.ToLowerInvariant()
-            $path = if ($uri.AbsolutePath) { $uri.AbsolutePath } else { '/' }
-            $matchedScopeIds = [System.Collections.Generic.List[string]]::new()
-            $matchedScopeTypes = [System.Collections.Generic.List[string]]::new()
-
-            foreach ($scopeItem in $ScopeItems) {
-                if (-not (Test-ScopeMatch -ScopeItem $scopeItem -Url $finalUrl -RespectSchemeOnly:$RespectSchemeOnly)) { continue }
-                $exclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $resolvedHost -Url $finalUrl -Path $path
-                if ($exclusion.IsExcluded) { Add-ExclusionRecord -Phase 'HttpProbe' -ScopeItem $scopeItem -Target $finalUrl -ExclusionResult $exclusion; continue }
-                $matchedScopeIds.Add($scopeItem.Id); $matchedScopeTypes.Add($scopeItem.Type)
-            }
-
-            if ($matchedScopeIds.Count -eq 0) { Write-ReconLog -Level WARN -Message "Discarding out-of-scope live target after httpx: $finalUrl"; continue }
-            $canonicalKey = Get-CanonicalUrlKey -Url $finalUrl
-            if ($seen.Contains($canonicalKey)) { continue }
-            $null = $seen.Add($canonicalKey)
-
-            $technologiesRaw = Get-ObjectValue -InputObject $raw -Names @('tech', 'technologies') -Default @()
-            $technologies = if ($technologiesRaw -is [System.Collections.IEnumerable] -and $technologiesRaw -isnot [string]) { @($technologiesRaw | ForEach-Object { [string]$_ } | Where-Object { $_ }) } elseif ($technologiesRaw) { @([string]$technologiesRaw) } else { @() }
-
-            $liveTargets.Add([pscustomobject]@{
-                    Input = $inputValue; Url = $finalUrl; Host = $resolvedHost; Scheme = $uri.Scheme.ToLowerInvariant(); Port = if ($uri.IsDefaultPort) { $null } else { $uri.Port }; Path = $path
-                    StatusCode = [int](Get-ObjectValue -InputObject $raw -Names @('status-code', 'status_code') -Default 0)
-                    Title = [string](Get-ObjectValue -InputObject $raw -Names @('title') -Default '')
-                    ContentLength = [int64](Get-ObjectValue -InputObject $raw -Names @('content-length', 'content_length') -Default 0)
-                    Technologies = $technologies
-                    RedirectLocation = [string](Get-ObjectValue -InputObject $raw -Names @('location') -Default '')
-                    WebServer = [string](Get-ObjectValue -InputObject $raw -Names @('webserver', 'web_server') -Default '')
-                    MatchedScopeIds = @($matchedScopeIds)
-                    MatchedTypes = @($matchedScopeTypes | Select-Object -Unique)
-                    Source = 'httpx'
-                })
-        }
-
-        return @($liveTargets)
-    } finally {
-        Remove-Item -LiteralPath $inputFile, $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
+    if (-not $normalizedInputUrls -or $normalizedInputUrls.Count -eq 0) {
+        Set-Content -LiteralPath $RawOutputPath -Value '' -Encoding utf8
+        return @()
     }
+
+    $batchSize = [Math]::Min([Math]::Max(($Threads * 15), 75), 150)
+    if ($normalizedInputUrls.Count -lt $batchSize) { $batchSize = $normalizedInputUrls.Count }
+    if ($batchSize -lt 1) { $batchSize = 1 }
+
+    $baseArguments = @(
+        '-silent',
+        '-json',
+        '-threads', [string]$Threads,
+        '-timeout', [string]$TimeoutSeconds,
+        '-title',
+        '-status-code',
+        '-content-length'
+    )
+
+    if (Test-ToolFlagSupport -HelpText $helpText -Flag '-tech-detect') { $baseArguments += '-tech-detect' }
+    if (Test-ToolFlagSupport -HelpText $helpText -Flag '-follow-redirects') { $baseArguments += '-follow-redirects' }
+    if (Test-ToolFlagSupport -HelpText $helpText -Flag '-location') { $baseArguments += '-location' }
+
+    if ($UniqueUserAgent) {
+        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-H') {
+            $baseArguments += @('-H', "User-Agent: $UniqueUserAgent")
+        } elseif (Test-ToolFlagSupport -HelpText $helpText -Flag '-header') {
+            $baseArguments += @('-header', "User-Agent: $UniqueUserAgent")
+        }
+    }
+
+    Set-Content -LiteralPath $RawOutputPath -Value '' -Encoding utf8
+
+    $liveTargets = [System.Collections.Generic.List[object]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $batchCount = [int][Math]::Ceiling($normalizedInputUrls.Count / [double]$batchSize)
+
+    for ($offset = 0; $offset -lt $normalizedInputUrls.Count; $offset += $batchSize) {
+        $batchIndex = [int][Math]::Floor($offset / $batchSize) + 1
+        $endIndex = [Math]::Min(($offset + $batchSize - 1), ($normalizedInputUrls.Count - 1))
+        $currentBatch = @($normalizedInputUrls[$offset..$endIndex])
+
+        Write-StageProgress -Step 4 -Title 'Validation HTTP' -Percent ([Math]::Floor(($batchIndex / $batchCount) * 100)) -Status ("Batch {0}/{1} - {2} URL(s)" -f $batchIndex, $batchCount, $currentBatch.Count)
+
+        $inputFile = Join-Path ([System.IO.Path]::GetTempPath()) ("scopeforge-httpx-input-{0}.txt" -f ([Guid]::NewGuid().ToString('N')))
+        $stdoutFile = Join-Path ([System.IO.Path]::GetTempPath()) ("scopeforge-httpx-{0}.jsonl" -f ([Guid]::NewGuid().ToString('N')))
+        $stderrFile = Join-Path ([System.IO.Path]::GetTempPath()) ("scopeforge-httpx-{0}.err" -f ([Guid]::NewGuid().ToString('N')))
+
+        try {
+            Set-Content -LiteralPath $inputFile -Value $currentBatch -Encoding utf8
+
+            $arguments = @($baseArguments + @('-l', $inputFile))
+            $batchTimeoutSeconds = [Math]::Max(($TimeoutSeconds * 6), 180)
+
+            Write-ReconLog -Level INFO -Message ("httpx batch {0}/{1}: probing {2} URL(s)." -f $batchIndex, $batchCount, $currentBatch.Count)
+
+            $result = $null
+            try {
+                $result = Invoke-ExternalCommand -FilePath $HttpxPath -Arguments $arguments -TimeoutSeconds $batchTimeoutSeconds -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
+            } catch {
+                $message = $_.Exception.Message
+                if ($message -like 'Command timed out*') {
+                    Add-ErrorRecord -Phase 'HttpProbe' -Message $message -Details ("batch {0}/{1}, size={2}, mode=full" -f $batchIndex, $batchCount, $currentBatch.Count) -Tool 'httpx' -ErrorCode 'ToolTimeout'
+                    Write-ReconLog -Level WARN -Message ("httpx timed out on batch {0}/{1}. Retrying without redirect and tech detection." -f $batchIndex, $batchCount)
+
+                    $fallbackArguments = @(
+                        $arguments |
+                        Where-Object { $_ -notin @('-tech-detect', '-follow-redirects', '-location') }
+                    )
+
+                    try {
+                        $result = Invoke-ExternalCommand -FilePath $HttpxPath -Arguments $fallbackArguments -TimeoutSeconds ([Math]::Max(($TimeoutSeconds * 8), 240)) -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
+                    } catch {
+                        Add-ErrorRecord -Phase 'HttpProbe' -Message $_.Exception.Message -Details ("batch {0}/{1}, size={2}, mode=fallback" -f $batchIndex, $batchCount, $currentBatch.Count) -Tool 'httpx' -ErrorCode $(if ($_.Exception.Message -like 'Command timed out*') { 'ToolTimeout' } else { 'RuntimeError' })
+                        Write-ReconLog -Level WARN -Message ("Skipping httpx batch {0}/{1} after repeated failure." -f $batchIndex, $batchCount)
+                        continue
+                    }
+                } else {
+                    Add-ErrorRecord -Phase 'HttpProbe' -Message $message -Details ("batch {0}/{1}, size={2}" -f $batchIndex, $batchCount, $currentBatch.Count) -Tool 'httpx' -ErrorCode 'RuntimeError'
+                    Write-ReconLog -Level WARN -Message ("Skipping httpx batch {0}/{1} after runtime failure." -f $batchIndex, $batchCount)
+                    continue
+                }
+            }
+
+            if (Test-Path -LiteralPath $stdoutFile) {
+                $stdoutRaw = Get-Content -LiteralPath $stdoutFile -Raw -Encoding utf8
+                if (-not [string]::IsNullOrWhiteSpace($stdoutRaw)) {
+                    Add-Content -LiteralPath $RawOutputPath -Value $stdoutRaw -Encoding utf8
+                    if (-not $stdoutRaw.EndsWith([Environment]::NewLine)) {
+                        Add-Content -LiteralPath $RawOutputPath -Value [Environment]::NewLine -Encoding utf8
+                    }
+                }
+            }
+
+            if ($result.ExitCode -ne 0) {
+                Add-ErrorRecord -Phase 'HttpProbe' -Message 'httpx returned a non-zero exit code.' -Details $result.StdErr -Tool 'httpx' -ExitCode $result.ExitCode -ErrorCode 'ToolExitCode'
+            }
+
+            $lines = @(
+                if (Test-Path -LiteralPath $stdoutFile) {
+                    Get-Content -LiteralPath $stdoutFile -Encoding utf8
+                }
+            )
+
+            foreach ($line in $lines) {
+                if ([string]::IsNullOrWhiteSpace($line)) { continue }
+
+                try {
+                    $raw = $line | ConvertFrom-Json -Depth 100
+                } catch {
+                    Add-ErrorRecord -Phase 'HttpProbe' -Message 'Failed to parse httpx JSON line.' -Details $line -Tool 'httpx' -ErrorCode 'ParseError'
+                    continue
+                }
+
+                $finalUrl = [string](Get-ObjectValue -InputObject $raw -Names @('url'))
+                $inputValue = [string](Get-ObjectValue -InputObject $raw -Names @('input'))
+                if ([string]::IsNullOrWhiteSpace($finalUrl)) { continue }
+
+                $uri = $null
+                if (-not [Uri]::TryCreate($finalUrl, [UriKind]::Absolute, [ref]$uri)) { continue }
+
+                $resolvedHost = $uri.DnsSafeHost.ToLowerInvariant()
+                $path = if ($uri.AbsolutePath) { $uri.AbsolutePath } else { '/' }
+                $matchedScopeIds = [System.Collections.Generic.List[string]]::new()
+                $matchedScopeTypes = [System.Collections.Generic.List[string]]::new()
+
+                foreach ($scopeItem in $ScopeItems) {
+                    if (-not (Test-ScopeMatch -ScopeItem $scopeItem -Url $finalUrl -RespectSchemeOnly:$RespectSchemeOnly)) { continue }
+
+                    $exclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $resolvedHost -Url $finalUrl -Path $path
+                    if ($exclusion.IsExcluded) {
+                        Add-ExclusionRecord -Phase 'HttpProbe' -ScopeItem $scopeItem -Target $finalUrl -ExclusionResult $exclusion
+                        continue
+                    }
+
+                    $matchedScopeIds.Add($scopeItem.Id)
+                    $matchedScopeTypes.Add($scopeItem.Type)
+                }
+
+                if ($matchedScopeIds.Count -eq 0) {
+                    Write-ReconLog -Level WARN -Message ("Discarding out-of-scope live target after httpx: {0}" -f $finalUrl)
+                    continue
+                }
+
+                $canonicalKey = Get-CanonicalUrlKey -Url $finalUrl
+                if ($seen.Contains($canonicalKey)) { continue }
+                $null = $seen.Add($canonicalKey)
+
+                $technologiesRaw = Get-ObjectValue -InputObject $raw -Names @('tech', 'technologies') -Default @()
+                $technologies = if ($technologiesRaw -is [System.Collections.IEnumerable] -and $technologiesRaw -isnot [string]) {
+                    @($technologiesRaw | ForEach-Object { [string]$_ } | Where-Object { $_ })
+                } elseif ($technologiesRaw) {
+                    @([string]$technologiesRaw)
+                } else {
+                    @()
+                }
+
+                $liveTargets.Add([pscustomobject]@{
+                    Input            = $inputValue
+                    Url              = $finalUrl
+                    Host             = $resolvedHost
+                    Scheme           = $uri.Scheme.ToLowerInvariant()
+                    Port             = if ($uri.IsDefaultPort) { $null } else { $uri.Port }
+                    Path             = $path
+                    StatusCode       = [int](Get-ObjectValue -InputObject $raw -Names @('status-code', 'status_code') -Default 0)
+                    Title            = [string](Get-ObjectValue -InputObject $raw -Names @('title') -Default '')
+                    ContentLength    = [int64](Get-ObjectValue -InputObject $raw -Names @('content-length', 'content_length') -Default 0)
+                    Technologies     = $technologies
+                    RedirectLocation = [string](Get-ObjectValue -InputObject $raw -Names @('location') -Default '')
+                    WebServer        = [string](Get-ObjectValue -InputObject $raw -Names @('webserver', 'web_server') -Default '')
+                    MatchedScopeIds  = @($matchedScopeIds)
+                    MatchedTypes     = @($matchedScopeTypes | Select-Object -Unique)
+                    Source           = 'httpx'
+                })
+            }
+        } finally {
+            Remove-Item -LiteralPath $inputFile, $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    return @($liveTargets)
 }
 
 function Get-KatanaScopeDefinition {
@@ -2171,6 +2623,8 @@ function Invoke-BugBountyRecon {
     $layout = Get-OutputLayout -OutputDir $OutputDir
     Initialize-OutputDirectories -Layout $layout
     $script:ScopeForgeContext = New-ScopeForgeContext -Layout $layout -ProgramName $ProgramName -Quiet ([bool]$Quiet) -ExportJsonEnabled:$exportJsonEnabled -ExportCsvEnabled:$exportCsvEnabled -ExportHtmlEnabled:$exportHtmlEnabled
+    Initialize-ScopeForgeProgressState -Layout $layout
+    Write-ScopeForgeConsolePathsHint
 
     if (-not $UniqueUserAgent) {
         $warning = 'No -UniqueUserAgent was provided. Some bug bounty programs require a unique tracking User-Agent.'
@@ -2201,6 +2655,13 @@ function Invoke-BugBountyRecon {
         if ($EnableHakrawler) { $enabledSources += 'hakrawler' }
         Write-StageProgress -Step 2 -Title 'Préparation outils' -Percent 10 -Status ("Checking {0}" -f ($enabledSources -join '/'))
         $tools = Ensure-ReconTools -Layout $layout -NoInstall:$NoInstall -TimeoutSeconds $TimeoutSeconds -EnableGau:$EnableGau -EnableWaybackUrls:$EnableWaybackUrls -EnableHakrawler:$EnableHakrawler
+        Write-ReconLog -Level INFO -Message ("Tool status: subfinder={0}, httpx={1}, katana={2}, gau={3}, waybackurls={4}, hakrawler={5}" -f `
+            $(if ($tools.Subfinder) { 'ok' } else { 'off' }), `
+            $(if ($tools.Httpx) { 'ok' } else { 'off' }), `
+            $(if ($tools.Katana) { 'ok' } else { 'off' }), `
+            $(if ($tools.Gau) { 'ok' } else { 'off' }), `
+            $(if ($tools.WaybackUrls) { 'ok' } else { 'off' }), `
+            $(if ($tools.Hakrawler) { 'ok' } else { 'off' }))
         Write-StageProgress -Step 2 -Title 'Préparation outils' -Percent 100 -Status 'Toolchain ready'
 
         if ($useResume -and (Test-Path -LiteralPath $layout.HostsAllJson)) {
@@ -2448,6 +2909,14 @@ function Invoke-BugBountyRecon {
             Write-Host ('  Interesting URLs : {0}' -f $summary.InterestingUrlCount) -ForegroundColor Gray
             Write-Host ('  Errors           : {0}' -f $summary.ErrorCount) -ForegroundColor Gray
             Write-Host ('  Output           : {0}' -f $layout.Root) -ForegroundColor Gray
+            Write-Host ('  Main log         : {0}' -f $layout.MainLog) -ForegroundColor Gray
+            Write-Host ('  Errors log       : {0}' -f $layout.ErrorsLog) -ForegroundColor Gray
+            Write-Host ('  Exclusions log   : {0}' -f $layout.ExclusionsLog) -ForegroundColor Gray
+            Write-Host ('  Tools log        : {0}' -f $layout.ToolsLog) -ForegroundColor Gray
+            Write-Host ('  Donnees brutes   : {0}' -f $layout.Raw) -ForegroundColor Gray
+            Write-Host ('  Donnees norm.    : {0}' -f $layout.Normalized) -ForegroundColor Gray
+            Write-Host ('  Rapport HTML     : {0}' -f $layout.ReportHtml) -ForegroundColor Gray
+            Write-Host ('  Triage MD        : {0}' -f $layout.TriageMarkdown) -ForegroundColor Gray            
             if ($interestingUrls.Count -gt 0) {
                 Write-Host ''
                 Write-Host 'Top interesting pages' -ForegroundColor Yellow
@@ -2461,7 +2930,7 @@ function Invoke-BugBountyRecon {
         Add-ErrorRecord -Phase 'Runtime' -Message $_.Exception.Message -Details $_.ScriptStackTrace -ErrorCode 'RuntimeError'
         throw
     } finally {
-        if ($script:ScopeForgeContext -and -not $script:ScopeForgeContext.Quiet) { Write-Progress -Id 1 -Activity 'ScopeForge' -Completed }
+        Complete-ScopeForgeProgress 
     }
 }
 
