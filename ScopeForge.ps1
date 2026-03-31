@@ -29,12 +29,12 @@ $script:ScopeForgeConsoleState = [ordered]@{
     LogWriteFailureShown = $false
 }
 $script:ScopeForgeStageWeights = [ordered]@{
-    1 = 10
-    2 = 10
-    3 = 25
-    4 = 25
-    5 = 20
-    6 = 10
+    '1' = 10
+    '2' = 10
+    '3' = 25
+    '4' = 25
+    '5' = 20
+    '6' = 10
 }
 
 function Format-ScopeForgeDuration {
@@ -135,21 +135,29 @@ function Get-ScopeForgeOverallProgress {
     $safeStep = [Math]::Max([Math]::Min($Step, 6), 0)
     $safeStagePercent = [Math]::Max([Math]::Min($StagePercent, 100), 0)
 
+    if (-not $script:ScopeForgeStageWeights) {
+        return $safeStagePercent
+    }
+
     $completedWeight = 0
-    foreach ($key in ($script:ScopeForgeStageWeights.Keys | Sort-Object)) {
-        if ([int]$key -lt $safeStep) {
-            $completedWeight += [int]$script:ScopeForgeStageWeights[$key]
+    $currentWeight = 0
+
+    foreach ($entry in ($script:ScopeForgeStageWeights.GetEnumerator() | Sort-Object { [int]$_.Key })) {
+        $entryStep = [int]$entry.Key
+        $entryWeight = [int]$entry.Value
+
+        if ($entryStep -lt $safeStep) {
+            $completedWeight += $entryWeight
+            continue
+        }
+
+        if ($entryStep -eq $safeStep) {
+            $currentWeight = $entryWeight
         }
     }
 
-    $currentWeight = if ($script:ScopeForgeStageWeights.Contains($safeStep)) {
-        [int]$script:ScopeForgeStageWeights[$safeStep]
-    } else {
-        0
-    }
-
     $overall = $completedWeight + (($currentWeight * $safeStagePercent) / 100.0)
-    return [int][Math]::Round([Math]::Min($overall, 100))
+    return [int][Math]::Round([Math]::Min([Math]::Max($overall, 0), 100))
 }
 
 function Get-ScopeForgeEtaText {
