@@ -1105,6 +1105,23 @@ function Get-ObjectValue {
     return $Default
 }
 
+function ConvertTo-ArrayOrEmpty {
+    [CmdletBinding()]
+    param([AllowNull()][object]$Data)
+
+    if ($null -eq $Data) { return @() }
+
+    if ($Data -is [string]) {
+        return @($Data)
+    }
+
+    if ($Data -is [System.Collections.IEnumerable]) {
+        return @($Data)
+    }
+
+    return @($Data)
+}
+
 function Write-JsonFile {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][object]$Data)
@@ -2858,12 +2875,19 @@ function Invoke-BugBountyRecon {
         } else {
             Write-StageBanner -Step 4 -Title 'Validation HTTP'
             Write-StageProgress -Step 4 -Title 'Validation HTTP' -Percent 10 -Status "$($probeInputs.Count) probe candidates"
-            $liveTargets = Invoke-HttpProbe -InputUrls $probeInputs -ScopeItems $scopeItems -HttpxPath $tools.Httpx.Path -RawOutputPath $layout.HttpxRaw -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -RespectSchemeOnly:$RespectSchemeOnly
+            $liveTargets = ConvertTo-ArrayOrEmpty -Data (
+                Invoke-HttpProbe -InputUrls $probeInputs -ScopeItems $scopeItems -HttpxPath $tools.Httpx.Path -RawOutputPath $layout.HttpxRaw -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -RespectSchemeOnly:$RespectSchemeOnly
+            )
+
+            if ($liveTargets.Count -eq 0) {
+                Write-ReconLog -Level WARN -Message 'Validation HTTP returned no retained live targets. Empty result set will be written and the run will continue.'
+            }
+
             Write-JsonFile -Path $layout.LiveTargetsJson -Data $liveTargets
         }
         if ($exportCsvEnabled) { Export-FlatCsv -Path $layout.LiveTargetsCsv -Rows $liveTargets }
 
-        $hostsLive = @(
+        $hostsLive = ConvertTo-ArrayOrEmpty -Data @(
             $liveTargets | Group-Object -Property Host | Sort-Object Name | ForEach-Object {
                 [pscustomobject]@{
                     Host         = $_.Name
@@ -2874,6 +2898,7 @@ function Invoke-BugBountyRecon {
                 }
             }
         )
+
         Write-JsonFile -Path $layout.HostsLiveJson -Data $hostsLive
 
         if ($useResume -and (Test-Path -LiteralPath $layout.UrlsDiscoveredJson)) {
@@ -2890,13 +2915,20 @@ function Invoke-BugBountyRecon {
             } else {
                 $discoveredUrls = Merge-DiscoveredUrlResults -Inputs $discoveredUrls
             }
+            $discoveredUrls = ConvertTo-ArrayOrEmpty -Data $discoveredUrls
             Write-JsonFile -Path $layout.UrlsDiscoveredJson -Data $discoveredUrls
         }
-        Set-Content -LiteralPath $layout.EndpointsUniqueTxt -Value ($discoveredUrls | Select-Object -ExpandProperty Url -Unique) -Encoding utf8
+        $endpointLines = @($discoveredUrls | Select-Object -ExpandProperty Url -Unique)
+        if ($endpointLines.Count -eq 0) {
+            $endpointLines = @('')
+        }
+        Set-Content -LiteralPath $layout.EndpointsUniqueTxt -Value $endpointLines -Encoding utf8
         if ($exportCsvEnabled) { Export-FlatCsv -Path $layout.UrlsDiscoveredCsv -Rows $discoveredUrls }
 
         Write-StageBanner -Step 6 -Title 'Génération des rapports'
-        $interestingUrls = Get-InterestingReconFindings -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls
+        $interestingUrls = ConvertTo-ArrayOrEmpty -Data (
+            Get-InterestingReconFindings -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls
+        )
         $summary = Merge-ReconResults -ScopeItems $scopeItems -HostsAll $hostsAll -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls $interestingUrls -Exclusions @($script:ScopeForgeContext.Exclusions) -Errors @($script:ScopeForgeContext.Errors) -ProgramName $ProgramName -UniqueUserAgent $UniqueUserAgent
         Export-ReconReport -Summary $summary -ScopeItems $scopeItems -HostsAll $hostsAll -HostsLive $hostsLive -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls $interestingUrls -Exclusions @($script:ScopeForgeContext.Exclusions) -Errors @($script:ScopeForgeContext.Errors) -Layout $layout -ExportJson:$exportJsonEnabled -ExportCsv:$exportCsvEnabled -ExportHtml:$exportHtmlEnabled
         Write-StageProgress -Step 6 -Title 'Génération des rapports' -Percent 100 -Status 'Reports completed'
