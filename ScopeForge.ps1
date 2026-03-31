@@ -1279,21 +1279,29 @@ function Get-ObjectValue {
     return $Default
 }
 
-function ConvertTo-ArrayOrEmpty {
+function Get-ScopeForgeItemCount {
     [CmdletBinding()]
     param([AllowNull()][object]$Data)
 
-    $items = if ($null -eq $Data) {
-        @()
-    } elseif ($Data -is [string]) {
-        @($Data)
-    } elseif ($Data -is [System.Collections.IEnumerable] -and $Data -isnot [string]) {
-        @($Data)
-    } else {
-        @($Data)
+    if ($null -eq $Data) { return 0 }
+
+    if ($Data -is [string]) {
+        return $(if ([string]::IsNullOrWhiteSpace($Data)) { 0 } else { 1 })
     }
 
-    Write-Output -NoEnumerate ([object[]]$items)
+    if ($Data -is [System.Collections.ICollection]) {
+        return [int]$Data.Count
+    }
+
+    if ($Data -is [System.Collections.IEnumerable]) {
+        $count = 0
+        foreach ($item in $Data) {
+            $count++
+        }
+        return $count
+    }
+
+    return 1
 }
 
 function Write-JsonFile {
@@ -3053,8 +3061,8 @@ function Invoke-BugBountyRecon {
                 Invoke-HttpProbe -InputUrls $probeInputs -ScopeItems $scopeItems -HttpxPath $tools.Httpx.Path -RawOutputPath $layout.HttpxRaw -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -RespectSchemeOnly:$RespectSchemeOnly
             )
 
-            if (@($liveTargets).Count -eq 0) {
-                Write-ReconLog -Level WARN -Message 'Validation HTTP returned no retained live targets. Empty result set will be written and the run will continue.'
+            if ((Get-ScopeForgeItemCount -Data $liveTargets) -eq 0) {
+            Write-ReconLog -Level WARN -Message 'Validation HTTP returned no retained live targets. Empty result set will be written and the run will continue.'
             }
 
             Write-JsonFile -Path $layout.LiveTargetsJson -Data $liveTargets
@@ -3103,6 +3111,10 @@ function Invoke-BugBountyRecon {
         $interestingUrls = ConvertTo-ArrayOrEmpty -Data (
             Get-InterestingReconFindings -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls
         )
+        $liveTargets = ConvertTo-ArrayOrEmpty -Data $liveTargets
+        $hostsLive = ConvertTo-ArrayOrEmpty -Data $hostsLive
+        $discoveredUrls = ConvertTo-ArrayOrEmpty -Data $discoveredUrls
+        $interestingUrls = ConvertTo-ArrayOrEmpty -Data $interestingUrls
         $summary = Merge-ReconResults -ScopeItems $scopeItems -HostsAll $hostsAll -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls $interestingUrls -Exclusions @($script:ScopeForgeContext.Exclusions) -Errors @($script:ScopeForgeContext.Errors) -ProgramName $ProgramName -UniqueUserAgent $UniqueUserAgent
         Export-ReconReport -Summary $summary -ScopeItems $scopeItems -HostsAll $hostsAll -HostsLive $hostsLive -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls $interestingUrls -Exclusions @($script:ScopeForgeContext.Exclusions) -Errors @($script:ScopeForgeContext.Errors) -Layout $layout -ExportJson:$exportJsonEnabled -ExportCsv:$exportCsvEnabled -ExportHtml:$exportHtmlEnabled
         Write-StageProgress -Step 6 -Title 'Génération des rapports' -Percent 100 -Status 'Reports completed'
@@ -3128,7 +3140,7 @@ function Invoke-BugBountyRecon {
             Write-Host ('  Donnees norm.    : {0}' -f $layout.Normalized) -ForegroundColor Gray
             Write-Host ('  Rapport HTML     : {0}' -f $layout.ReportHtml) -ForegroundColor Gray
             Write-Host ('  Triage MD        : {0}' -f $layout.TriageMarkdown) -ForegroundColor Gray            
-            if ($interestingUrls.Count -gt 0) {
+            if ((Get-ScopeForgeItemCount -Data $interestingUrls) -gt 0) {
                 Write-Host ''
                 Write-Host 'Top interesting pages' -ForegroundColor Yellow
                 foreach ($item in ($interestingUrls | Select-Object -First 10)) {
