@@ -1279,6 +1279,32 @@ function Get-ObjectValue {
     return $Default
 }
 
+function ConvertTo-ArrayOrEmpty {
+    [CmdletBinding()]
+    param([AllowNull()][object]$Data)
+
+    $items = [System.Collections.Generic.List[object]]::new()
+
+    if ($null -eq $Data) {
+        return ,([object[]]$items.ToArray())
+    }
+
+    if ($Data -is [string]) {
+        $items.Add([string]$Data) | Out-Null
+        return ,([object[]]$items.ToArray())
+    }
+
+    if ($Data -is [System.Collections.IEnumerable] -and $Data -isnot [string]) {
+        foreach ($item in $Data) {
+            $items.Add($item) | Out-Null
+        }
+        return ,([object[]]$items.ToArray())
+    }
+
+    $items.Add($Data) | Out-Null
+    return ,([object[]]$items.ToArray())
+}
+
 function Get-ScopeForgeItemCount {
     [CmdletBinding()]
     param([AllowNull()][object]$Data)
