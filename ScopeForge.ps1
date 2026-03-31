@@ -2534,24 +2534,52 @@ function Get-UnifiedFindings {
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$PassiveLeads
     )
 
-    $confirmed = @(
-        $InterestingUrls | ForEach-Object {
-            [pscustomobject]@{
-                Severity          = $_.Priority
-                Confidence        = 'Observed'
-                Priority          = $_.Priority
-                Category          = if ($_.Categories -and $_.Categories.Count -gt 0) { ($_.Categories -join ', ') } else { 'General' }
-                Family            = $_.PrimaryFamily
-                Host              = $_.Host
-                Url               = $_.Url
-                Evidence          = ($_.Reasons -join ', ')
-                RecommendedChecks = 'Review manually and validate exploitability.'
-                Source            = $_.Source
-            }
-        }
-    )
+    $confirmed = [System.Collections.Generic.List[object]]::new()
 
-    return @($confirmed + $PassiveLeads)
+    foreach ($item in (ConvertTo-ArrayOrEmpty -Data $InterestingUrls)) {
+        if ($null -eq $item) { continue }
+
+        $priority = [string](Get-ObjectValue -InputObject $item -Names @('Priority') -Default 'Info')
+        if ([string]::IsNullOrWhiteSpace($priority)) { $priority = 'Info' }
+
+        $categoriesRaw = Get-ObjectValue -InputObject $item -Names @('Categories') -Default @()
+        $categories = @()
+        if ($categoriesRaw -is [System.Collections.IEnumerable] -and $categoriesRaw -isnot [string]) {
+            $categories = @($categoriesRaw | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        } elseif (-not [string]::IsNullOrWhiteSpace([string]$categoriesRaw)) {
+            $categories = @([string]$categoriesRaw)
+        }
+
+        $reasonsRaw = Get-ObjectValue -InputObject $item -Names @('Reasons') -Default @()
+        $reasons = @()
+        if ($reasonsRaw -is [System.Collections.IEnumerable] -and $reasonsRaw -isnot [string]) {
+            $reasons = @($reasonsRaw | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        } elseif (-not [string]::IsNullOrWhiteSpace([string]$reasonsRaw)) {
+            $reasons = @([string]$reasonsRaw)
+        }
+
+        $family = [string](Get-ObjectValue -InputObject $item -Names @('PrimaryFamily') -Default 'General')
+        if ([string]::IsNullOrWhiteSpace($family)) { $family = 'General' }
+
+        $hostValue = [string](Get-ObjectValue -InputObject $item -Names @('Host') -Default '')
+        $urlValue = [string](Get-ObjectValue -InputObject $item -Names @('Url') -Default '')
+        $sourceValue = [string](Get-ObjectValue -InputObject $item -Names @('Source') -Default 'interesting-url')
+
+        $confirmed.Add([pscustomobject]@{
+            Severity          = $priority
+            Confidence        = 'Observed'
+            Priority          = $priority
+            Category          = if ($categories.Count -gt 0) { ($categories -join ', ') } else { 'General' }
+            Family            = $family
+            Host              = $hostValue
+            Url               = $urlValue
+            Evidence          = if ($reasons.Count -gt 0) { ($reasons -join ', ') } else { 'Heuristic interesting finding.' }
+            RecommendedChecks = 'Review manually and validate exploitability.'
+            Source            = $sourceValue
+        }) | Out-Null
+    }
+
+    return @($confirmed + (ConvertTo-ArrayOrEmpty -Data $PassiveLeads))
 }
 
 function Get-InterestingFamilySummary {
