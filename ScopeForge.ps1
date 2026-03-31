@@ -3013,36 +3013,6 @@ function Export-ReconReport {
     Set-Content -LiteralPath $Layout.ReportHtml -Value $html -Encoding utf8
 }
 
-function New-ScopeForgeRunOutputDir {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$BaseOutputDir,
-        [string]$ProgramName = 'run'
-    )
-
-    $resolvedBase = Resolve-AbsolutePath -Path $BaseOutputDir
-
-    if (-not (Test-Path -LiteralPath $resolvedBase)) {
-        $null = New-Item -ItemType Directory -Path $resolvedBase -Force
-    }
-
-    $safeProgramName = [regex]::Replace($ProgramName, '[^a-zA-Z0-9._-]+', '-').Trim('-')
-    if ([string]::IsNullOrWhiteSpace($safeProgramName)) {
-        $safeProgramName = 'run'
-    }
-
-    $stamp = [DateTime]::Now.ToString('yyyyMMdd-HHmmss')
-    $candidate = Join-Path $resolvedBase ("{0}-{1}" -f $safeProgramName, $stamp)
-    $counter = 1
-
-    while (Test-Path -LiteralPath $candidate) {
-        $candidate = Join-Path $resolvedBase ("{0}-{1}-{2}" -f $safeProgramName, $stamp, $counter)
-        $counter++
-    }
-
-    return $candidate
-}
-
 function Invoke-BugBountyRecon {
     [CmdletBinding()]
     param(
@@ -3070,12 +3040,6 @@ function Invoke-BugBountyRecon {
     $exportHtmlEnabled = if ($exportFlagsSpecified) { [bool]$ExportHtml } else { $true }
     $exportCsvEnabled = if ($exportFlagsSpecified) { [bool]$ExportCsv } else { $true }
     $exportJsonEnabled = if ($exportFlagsSpecified) { [bool]$ExportJson } else { $true }
-    $effectiveOutputDir = if ($Resume) {
-        $OutputDir
-    } else {
-        New-ScopeForgeRunOutputDir -BaseOutputDir $OutputDir -ProgramName $ProgramName
-    }
-
     $effectiveOutputDir = if ($Resume) {
         $OutputDir
     } else {
@@ -3381,13 +3345,41 @@ function Invoke-BugBountyRecon {
         $hostsLive = ConvertTo-ArrayOrEmpty -Data $hostsLive
         $discoveredUrls = ConvertTo-ArrayOrEmpty -Data $discoveredUrls
         $interestingUrls = ConvertTo-ArrayOrEmpty -Data $interestingUrls
+
         $passiveLeads = ConvertTo-ArrayOrEmpty -Data (
-        Get-PassiveLeadFindings -HostsAll $hostsAll
+            Get-PassiveLeadFindings -HostsAll $hostsAll
         )
 
         $allFindings = ConvertTo-ArrayOrEmpty -Data (
             Get-UnifiedFindings -InterestingUrls $interestingUrls -PassiveLeads $passiveLeads
         )
+
+        $analysisResult = $null
+        if (Get-Command -Name 'Invoke-ScopeForgeAnalysis' -CommandType Function -ErrorAction SilentlyContinue) {
+            $analysisResult = Invoke-ScopeForgeAnalysis -Layout $layout -ScopeItems $scopeItems -HostsAll $hostsAll -LiveTargets $liveTargets -HttpxPath $tools.Httpx.Path -KatanaPath $tools.Katana.Path -UniqueUserAgent $UniqueUserAgent -TargetProfile 'balanced' -Threads $Threads -TimeoutSeconds $TimeoutSeconds -Depth $Depth -RespectSchemeOnly:$RespectSchemeOnly
+
+            $analysisLiveTargets = ConvertTo-ArrayOrEmpty -Data $analysisResult.LiveTargets
+            $analysisDiscoveredUrls = ConvertTo-ArrayOrEmpty -Data $analysisResult.DiscoveredUrls
+            $analysisFindings = ConvertTo-ArrayOrEmpty -Data $analysisResult.Findings
+
+            $liveTargets = Merge-ScopeForgeLiveTargets -Items @($liveTargets + $analysisLiveTargets)
+            $hostsLive = ConvertTo-ArrayOrEmpty -Data @(
+                $liveTargets | Group-Object -Property Host | Sort-Object Name | ForEach-Object {
+                    [pscustomobject]@{
+                        Host         = $_.Name
+                        Urls         = @($_.Group | Select-Object -ExpandProperty Url -Unique)
+                        StatusCodes  = @($_.Group | Select-Object -ExpandProperty StatusCode -Unique)
+                        Technologies = @($_.Group | ForEach-Object { $_.Technologies } | Where-Object { $_ } | Select-Object -Unique)
+                        ScopeIds     = @($_.Group | ForEach-Object { $_.MatchedScopeIds } | Select-Object -Unique)
+                    }
+                }
+            )
+            $discoveredUrls = Merge-DiscoveredUrlResults -Inputs @($discoveredUrls + $analysisDiscoveredUrls)
+            $interestingUrls = ConvertTo-ArrayOrEmpty -Data (
+                Get-InterestingReconFindings -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls
+            )
+            $allFindings = Merge-ScopeForgeFindings -Items @($allFindings + $analysisFindings)
+        }
 
         Write-JsonFile -Path (Join-Path $layout.Normalized 'findings.json') -Data $allFindings
         if ($exportCsvEnabled) {
@@ -3453,6 +3445,11 @@ function Invoke-BugBountyRecon {
     } finally {
         Complete-ScopeForgeProgress 
     }
+}
+
+$analysisModulePath = Join-Path $PSScriptRoot 'ScopeForge_Analyse.ps1'
+if (Test-Path -LiteralPath $analysisModulePath) {
+    . $analysisModulePath
 }
 
 if ($MyInvocation.InvocationName -ne '.' -and $PSBoundParameters.ContainsKey('ScopeFile')) {
