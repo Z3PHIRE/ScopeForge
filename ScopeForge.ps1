@@ -1109,17 +1109,17 @@ function ConvertTo-ArrayOrEmpty {
     [CmdletBinding()]
     param([AllowNull()][object]$Data)
 
-    if ($null -eq $Data) { return @() }
-
-    if ($Data -is [string]) {
-        return @($Data)
+    $items = if ($null -eq $Data) {
+        @()
+    } elseif ($Data -is [string]) {
+        @($Data)
+    } elseif ($Data -is [System.Collections.IEnumerable] -and $Data -isnot [string]) {
+        @($Data)
+    } else {
+        @($Data)
     }
 
-    if ($Data -is [System.Collections.IEnumerable]) {
-        return @($Data)
-    }
-
-    return @($Data)
+    Write-Output -NoEnumerate ([object[]]$items)
 }
 
 function Write-JsonFile {
@@ -2879,7 +2879,7 @@ function Invoke-BugBountyRecon {
                 Invoke-HttpProbe -InputUrls $probeInputs -ScopeItems $scopeItems -HttpxPath $tools.Httpx.Path -RawOutputPath $layout.HttpxRaw -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -RespectSchemeOnly:$RespectSchemeOnly
             )
 
-            if ($liveTargets.Count -eq 0) {
+            if (@($liveTargets).Count -eq 0) {
                 Write-ReconLog -Level WARN -Message 'Validation HTTP returned no retained live targets. Empty result set will be written and the run will continue.'
             }
 
