@@ -1420,98 +1420,114 @@ function Get-ScopeForgeTriageState {
 function Save-ScopeForgeTriageState {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][pscustomobject]$State,
+        [AllowNull()][pscustomobject]$State,
         [AllowEmptyCollection()][string[]]$SeenReviewKeys = @()
     )
 
-    $normalizedState = $State
-
-    if ($null -eq $normalizedState) {
-        $normalizedState = [pscustomobject]@{}
-    }
-
+    $normalizedState = $null
     try {
-        $normalizedState = ConvertTo-ScopeForgeTriageState -State $normalizedState
+        if ($null -ne $State) {
+            $normalizedState = ConvertTo-ScopeForgeTriageState -State $State
+        }
     } catch {
-        $normalizedState = [pscustomobject]@{}
+        $normalizedState = $null
     }
 
-    $programName = if (
-        $normalizedState.PSObject.Properties['ProgramName'] -and
+    $programName = 'default-program'
+    if (
+        $null -ne $normalizedState -and
+        $null -ne $normalizedState.PSObject.Properties['ProgramName'] -and
         -not [string]::IsNullOrWhiteSpace([string]$normalizedState.ProgramName)
     ) {
-        [string]$normalizedState.ProgramName
-    } else {
-        'default-program'
+        $programName = [string]$normalizedState.ProgramName
+    }
+    elseif (
+        $null -ne $State -and
+        $null -ne $State.PSObject.Properties['ProgramName'] -and
+        -not [string]::IsNullOrWhiteSpace([string]$State.ProgramName)
+    ) {
+        $programName = [string]$State.ProgramName
     }
 
-    $path = if (
-        $normalizedState.PSObject.Properties['Path'] -and
+    $path = $null
+    if (
+        $null -ne $normalizedState -and
+        $null -ne $normalizedState.PSObject.Properties['Path'] -and
         -not [string]::IsNullOrWhiteSpace([string]$normalizedState.Path)
     ) {
-        [string]$normalizedState.Path
-    } else {
-        Join-Path (Get-ScopeForgeStateRoot -ProgramName $programName) 'triage-state.json'
+        $path = [string]$normalizedState.Path
+    }
+    elseif (
+        $null -ne $State -and
+        $null -ne $State.PSObject.Properties['Path'] -and
+        -not [string]::IsNullOrWhiteSpace([string]$State.Path)
+    ) {
+        $path = [string]$State.Path
+    }
+    else {
+        $path = Join-Path (Get-ScopeForgeStateRoot -ProgramName $programName) 'triage-state.json'
     }
 
-    $ignoreKeys = New-ScopeForgeStringSet -Values @(
-        (ConvertTo-ArrayOrEmpty -Data $(if (
-            $normalizedState.PSObject.Properties['IgnoreKeys'] -and
-            $null -ne $normalizedState.IgnoreKeys
-        ) {
-            $normalizedState.IgnoreKeys
-        } else {
-            @()
-        })) | ForEach-Object { [string]$_ }
-    )
+    $ignoreValues = @()
+    if (
+        $null -ne $normalizedState -and
+        $null -ne $normalizedState.PSObject.Properties['IgnoreKeys'] -and
+        $null -ne $normalizedState.IgnoreKeys
+    ) {
+        $ignoreValues = @(ConvertTo-ArrayOrEmpty -Data $normalizedState.IgnoreKeys | ForEach-Object { [string]$_ })
+    }
 
-    $falsePositiveKeys = New-ScopeForgeStringSet -Values @(
-        (ConvertTo-ArrayOrEmpty -Data $(if (
-            $normalizedState.PSObject.Properties['FalsePositiveKeys'] -and
-            $null -ne $normalizedState.FalsePositiveKeys
-        ) {
-            $normalizedState.FalsePositiveKeys
-        } else {
-            @()
-        })) | ForEach-Object { [string]$_ }
-    )
+    $falsePositiveValues = @()
+    if (
+        $null -ne $normalizedState -and
+        $null -ne $normalizedState.PSObject.Properties['FalsePositiveKeys'] -and
+        $null -ne $normalizedState.FalsePositiveKeys
+    ) {
+        $falsePositiveValues = @(ConvertTo-ArrayOrEmpty -Data $normalizedState.FalsePositiveKeys | ForEach-Object { [string]$_ })
+    }
 
-    $validatedKeys = New-ScopeForgeStringSet -Values @(
-        (ConvertTo-ArrayOrEmpty -Data $(if (
-            $normalizedState.PSObject.Properties['ValidatedKeys'] -and
-            $null -ne $normalizedState.ValidatedKeys
-        ) {
-            $normalizedState.ValidatedKeys
-        } else {
-            @()
-        })) | ForEach-Object { [string]$_ }
-    )
+    $validatedValues = @()
+    if (
+        $null -ne $normalizedState -and
+        $null -ne $normalizedState.PSObject.Properties['ValidatedKeys'] -and
+        $null -ne $normalizedState.ValidatedKeys
+    ) {
+        $validatedValues = @(ConvertTo-ArrayOrEmpty -Data $normalizedState.ValidatedKeys | ForEach-Object { [string]$_ })
+    }
 
-    $seenKeys = New-ScopeForgeStringSet -Values @(
-        (ConvertTo-ArrayOrEmpty -Data $(if (
-            $normalizedState.PSObject.Properties['SeenKeys'] -and
-            $null -ne $normalizedState.SeenKeys
-        ) {
-            $normalizedState.SeenKeys
-        } else {
-            @()
-        })) | ForEach-Object { [string]$_ }
-    )
+    $seenValues = @()
+    if (
+        $null -ne $normalizedState -and
+        $null -ne $normalizedState.PSObject.Properties['SeenKeys'] -and
+        $null -ne $normalizedState.SeenKeys
+    ) {
+        $seenValues = @(ConvertTo-ArrayOrEmpty -Data $normalizedState.SeenKeys | ForEach-Object { [string]$_ })
+    }
 
-    foreach ($key in (ConvertTo-ArrayOrEmpty -Data $SeenReviewKeys)) {
+    $ignoreKeys = New-ScopeForgeStringSet -Values $ignoreValues
+    $falsePositiveKeys = New-ScopeForgeStringSet -Values $falsePositiveValues
+    $validatedKeys = New-ScopeForgeStringSet -Values $validatedValues
+    $seenKeys = New-ScopeForgeStringSet -Values $seenValues
+
+    if ($null -eq $ignoreKeys) { $ignoreKeys = New-ScopeForgeStringSet }
+    if ($null -eq $falsePositiveKeys) { $falsePositiveKeys = New-ScopeForgeStringSet }
+    if ($null -eq $validatedKeys) { $validatedKeys = New-ScopeForgeStringSet }
+    if ($null -eq $seenKeys) { $seenKeys = New-ScopeForgeStringSet }
+
+    foreach ($key in @(ConvertTo-ArrayOrEmpty -Data $SeenReviewKeys)) {
         $reviewKey = [string]$key
         if (-not [string]::IsNullOrWhiteSpace($reviewKey)) {
-            $null = $seenKeys.Add($reviewKey)
+            [void]$seenKeys.Add($reviewKey)
         }
     }
 
-    $reviewNotes = if (
-        $normalizedState.PSObject.Properties['ReviewNotes'] -and
+    $reviewNotes = @{}
+    if (
+        $null -ne $normalizedState -and
+        $null -ne $normalizedState.PSObject.Properties['ReviewNotes'] -and
         $null -ne $normalizedState.ReviewNotes
     ) {
-        $normalizedState.ReviewNotes
-    } else {
-        @{}
+        $reviewNotes = $normalizedState.ReviewNotes
     }
 
     $parentDir = Split-Path -Parent $path
