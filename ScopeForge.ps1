@@ -1406,7 +1406,7 @@ function Get-ScopeForgeTriageState {
     $validatedKeys = New-ScopeForgeStringSet -Values @((ConvertTo-ArrayOrEmpty -Data $parsed.validatedKeys) | ForEach-Object { [string]$_ })
     $seenKeys = New-ScopeForgeStringSet -Values @((ConvertTo-ArrayOrEmpty -Data $parsed.seenKeys) | ForEach-Object { [string]$_ })
 
-        return ConvertTo-ScopeForgeTriageState -State ([pscustomobject]@{
+    return ConvertTo-ScopeForgeTriageState -State ([pscustomobject]@{
         Path              = $path
         ProgramName       = $ProgramName
         IgnoreKeys        = $ignoreKeys
@@ -1424,7 +1424,7 @@ function Save-ScopeForgeTriageState {
         [AllowEmptyCollection()][string[]]$SeenReviewKeys = @()
     )
 
-    $State = Normalize-ScopeForgeTriageState -State $State
+    $State = ConvertTo-ScopeForgeTriageState -State $State
 
     foreach ($key in $SeenReviewKeys) {
         if (-not [string]::IsNullOrWhiteSpace([string]$key)) {
@@ -1577,7 +1577,7 @@ function Get-TriageReconData {
         [Parameter(Mandatory)][pscustomobject]$TriageState
     )
 
-    $TriageState = Normalize-ScopeForgeTriageState -State $TriageState
+    $TriageState = ConvertTo-ScopeForgeTriageState -State $TriageState
 
     $ignoreKeys = if ($TriageState -and $null -ne $TriageState.IgnoreKeys) {
         $TriageState.IgnoreKeys
