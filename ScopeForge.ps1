@@ -409,6 +409,14 @@ function Write-CompactedExclusionConsoleMessage {
 
     if (-not $script:ScopeForgeContext) { return }
 
+    if (-not $script:ScopeForgeContext.PSObject.Properties['ExclusionConsoleTracker']) {
+        Add-Member -InputObject $script:ScopeForgeContext -MemberType NoteProperty -Name ExclusionConsoleTracker -Value @{} -Force
+    }
+
+    if (-not $script:ScopeForgeContext.PSObject.Properties['ExclusionConsoleSampleLimit']) {
+        Add-Member -InputObject $script:ScopeForgeContext -MemberType NoteProperty -Name ExclusionConsoleSampleLimit -Value 3 -Force
+    }
+
     $token = if ($Record.Token) { [string]$Record.Token } else { '<empty>' }
     $trackerKey = '{0}|{1}|{2}' -f $Record.Phase, $Record.ScopeId, $token
 
@@ -630,17 +638,20 @@ function New-ScopeForgeContext {
     )
 
     [pscustomobject]@{
-        Layout                   = $Layout
-        ProgramName              = $ProgramName
-        Quiet                    = $Quiet
-        ExportJsonEnabled        = $ExportJsonEnabled
-        ExportCsvEnabled         = $ExportCsvEnabled
-        ExportHtmlEnabled        = $ExportHtmlEnabled
-        Exclusions               = [System.Collections.Generic.List[object]]::new()
-        Errors                   = [System.Collections.Generic.List[object]]::new()
-        Warnings                 = [System.Collections.Generic.List[string]]::new()
-        Triage                   = $null
-        TriageState              = $null
+        Layout                      = $Layout
+        ProgramName                 = $ProgramName
+        Quiet                       = $Quiet
+        ExportJsonEnabled           = $ExportJsonEnabled
+        ExportCsvEnabled            = $ExportCsvEnabled
+        ExportHtmlEnabled           = $ExportHtmlEnabled
+        Exclusions                  = [System.Collections.Generic.List[object]]::new()
+        Errors                      = [System.Collections.Generic.List[object]]::new()
+        Warnings                    = [System.Collections.Generic.List[string]]::new()
+        Triage                      = $null
+        TriageState                 = $null
+        ExclusionConsoleTracker     = @{}
+        ExclusionConsoleSampleLimit = 3
+        ConsolePathsHintShown       = $false
     }
 }
 
