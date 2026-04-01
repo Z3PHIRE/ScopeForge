@@ -1560,11 +1560,15 @@ function Get-TriageReconData {
 
     foreach ($entry in $DiscoveredUrls) {
         if (-not $entry -or [string]::IsNullOrWhiteSpace([string]$entry.Url)) { continue }
-        $analysis = Get-ReviewUrlAnalysis -Url ([string]$entry.Url) -ContentType ([string]$entry.ContentType) -StatusCode ([int]$entry.StatusCode)
+
+        $contentType = Get-ObjectValue -InputObject $entry -Names @('ContentType') -Default ''
+        $statusCodeValue = Get-ObjectValue -InputObject $entry -Names @('StatusCode') -Default 0
+
+        $analysis = Get-ReviewUrlAnalysis -Url ([string]$entry.Url) -ContentType ([string]$contentType) -StatusCode ([int]$statusCodeValue)
         if ($seenReviewKeys.Contains($analysis.ReviewKey)) { continue }
         $null = $seenReviewKeys.Add($analysis.ReviewKey)
 
-        $statusCode = [int]$entry.StatusCode
+        $statusCode = [int]$statusCodeValue        
         $pathQuery = [string]$analysis.PathAndQuery
         $score = 0
         $reasons = [System.Collections.Generic.List[string]]::new()
