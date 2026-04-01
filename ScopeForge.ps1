@@ -1433,21 +1433,27 @@ function Save-ScopeForgeTriageState {
     if (-not $State.PSObject.Properties['IgnoreKeys'] -or $null -eq $State.IgnoreKeys) {
         $State | Add-Member -NotePropertyName IgnoreKeys -NotePropertyValue (New-ScopeForgeStringSet) -Force
     }
+
     if (-not $State.PSObject.Properties['FalsePositiveKeys'] -or $null -eq $State.FalsePositiveKeys) {
         $State | Add-Member -NotePropertyName FalsePositiveKeys -NotePropertyValue (New-ScopeForgeStringSet) -Force
     }
+
     if (-not $State.PSObject.Properties['ValidatedKeys'] -or $null -eq $State.ValidatedKeys) {
         $State | Add-Member -NotePropertyName ValidatedKeys -NotePropertyValue (New-ScopeForgeStringSet) -Force
     }
+
     if (-not $State.PSObject.Properties['SeenKeys'] -or $null -eq $State.SeenKeys) {
         $State | Add-Member -NotePropertyName SeenKeys -NotePropertyValue (New-ScopeForgeStringSet) -Force
     }
+
     if (-not $State.PSObject.Properties['ReviewNotes'] -or $null -eq $State.ReviewNotes) {
         $State | Add-Member -NotePropertyName ReviewNotes -NotePropertyValue @{} -Force
     }
+
     if (-not $State.PSObject.Properties['ProgramName'] -or [string]::IsNullOrWhiteSpace([string]$State.ProgramName)) {
         $State | Add-Member -NotePropertyName ProgramName -NotePropertyValue 'default-program' -Force
     }
+
     if (-not $State.PSObject.Properties['Path'] -or [string]::IsNullOrWhiteSpace([string]$State.Path)) {
         $State | Add-Member -NotePropertyName Path -NotePropertyValue (Join-Path (Get-ScopeForgeStateRoot -ProgramName $State.ProgramName) 'triage-state.json') -Force
     }
