@@ -369,6 +369,11 @@ function Write-ScopeForgeConsolePathsHint {
     param()
 
     if (-not $script:ScopeForgeContext) { return }
+
+    if (-not $script:ScopeForgeContext.PSObject.Properties['ConsolePathsHintShown']) {
+        Add-Member -InputObject $script:ScopeForgeContext -MemberType NoteProperty -Name ConsolePathsHintShown -Value $false -Force
+    }
+
     if ($script:ScopeForgeContext.ConsolePathsHintShown) { return }
 
     $layout = $script:ScopeForgeContext.Layout
