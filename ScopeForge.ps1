@@ -2967,7 +2967,7 @@ function Export-ReconReport {
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$LiveTargets,
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$DiscoveredUrls,
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$InterestingUrls,
-        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$AllFindings,
+        [Parameter()][AllowEmptyCollection()][pscustomobject[]]$AllFindings = @(),
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$Exclusions,
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$Errors,
         [Parameter(Mandatory)][pscustomobject]$Layout,
@@ -2975,6 +2975,13 @@ function Export-ReconReport {
         [switch]$ExportCsv,
         [switch]$ExportHtml
     )
+
+    $AllFindings = ConvertTo-ArrayOrEmpty -Data $AllFindings
+    if (@($AllFindings).Count -eq 0) {
+        $AllFindings = ConvertTo-ArrayOrEmpty -Data (
+            Get-UnifiedFindings -InterestingUrls $InterestingUrls -PassiveLeads @()
+        )
+    }
 
     if ($ExportJson) {
         Write-JsonFile -Path $Layout.SummaryJson -Data $Summary
@@ -3007,11 +3014,10 @@ function Export-ReconReport {
 
     Write-JsonFile -Path $Layout.InterestingUrlsJson -Data $InterestingUrls
     Write-JsonFile -Path $Layout.InterestingFamiliesJson -Data $interestingFamilies
-
     Export-TriageMarkdownReport -Summary $Summary -InterestingUrls $InterestingUrls -InterestingFamilies $interestingFamilies -LiveTargets $LiveTargets -Exclusions $Exclusions -Errors $Errors -Layout $Layout
 
     if (-not $ExportHtml) { return }
-    
+       
     function Get-HtmlTableBodyOrEmpty {
         param(
             [string]$Rows,
