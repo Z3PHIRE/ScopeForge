@@ -2219,7 +2219,11 @@ function Invoke-KatanaCrawl {
     if (-not $LiveTargets -or $LiveTargets.Count -eq 0) { return @() }
 
     $helpText = Get-ToolHelpText -ToolPath $KatanaPath
-    $scopeIndex = @{}; foreach ($scopeItem in $ScopeItems) { $scopeIndex[$scopeItem.Id] = $scopeItem }
+    $scopeIndex = @{}
+    foreach ($scopeItem in $ScopeItems) {
+        $scopeIndex[$scopeItem.Id] = $scopeItem
+    }
+
     $jobs = [System.Collections.Generic.List[object]]::new()
     $jobKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
@@ -2228,53 +2232,95 @@ function Invoke-KatanaCrawl {
             $scopeItem = $scopeIndex[$scopeId]
             $seedUrl = if ($scopeItem.Type -eq 'URL') { $scopeItem.StartUrl } else { $liveTarget.Url }
             $jobKey = '{0}|{1}' -f $scopeItem.Id, (Get-CanonicalUrlKey -Url $seedUrl)
+
             if ($jobKeys.Contains($jobKey)) { continue }
-            $jobKeys.Add($jobKey) | Out-Null
-            $jobs.Add([pscustomobject]@{ ScopeItem = $scopeItem; Definition = Get-KatanaScopeDefinition -ScopeItem $scopeItem -SeedUrl $seedUrl -RespectSchemeOnly:$RespectSchemeOnly })
+
+            $null = $jobKeys.Add($jobKey)
+            $jobs.Add([pscustomobject]@{
+                ScopeItem  = $scopeItem
+                Definition = Get-KatanaScopeDefinition -ScopeItem $scopeItem -SeedUrl $seedUrl -RespectSchemeOnly:$RespectSchemeOnly
+            }) | Out-Null
         }
     }
 
     Set-Content -LiteralPath $RawOutputPath -Value '' -Encoding utf8
+
     $results = [System.Collections.Generic.List[object]]::new()
     $seenUrls = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $jobNumber = 0
 
     foreach ($job in $jobs) {
         $jobNumber++
+
         Write-StageProgress -Step 5 -Title 'Crawl' -Percent ([Math]::Floor(($jobNumber / $jobs.Count) * 100)) -Status ("{0}/{1} {2}" -f $jobNumber, $jobs.Count, $job.Definition.SeedUrl)
+
         $scopeItem = $job.ScopeItem
         $definition = $job.Definition
+
         $inscopeFile = Join-Path $TempDirectory ("katana-inscope-{0}.regex" -f $scopeItem.Id)
         $outscopeFile = Join-Path $TempDirectory ("katana-outscope-{0}.regex" -f $scopeItem.Id)
         $stdoutFile = Join-Path $TempDirectory ("katana-{0}-{1}.jsonl" -f $scopeItem.Id, [Guid]::NewGuid().ToString('N'))
         $stderrFile = Join-Path $TempDirectory ("katana-{0}-{1}.err" -f $scopeItem.Id, [Guid]::NewGuid().ToString('N'))
 
         $outscopeRegexes = [System.Collections.Generic.List[string]]::new()
-        foreach ($token in $scopeItem.Exclusions) { $outscopeRegexes.Add([regex]::Escape($token)) }
+        foreach ($token in $scopeItem.Exclusions) {
+            $outscopeRegexes.Add([regex]::Escape($token)) | Out-Null
+        }
+
         Set-Content -LiteralPath $inscopeFile -Value ($definition.InScopeRegexes -join [Environment]::NewLine) -Encoding utf8
         Set-Content -LiteralPath $outscopeFile -Value ($outscopeRegexes -join [Environment]::NewLine) -Encoding utf8
 
         $arguments = @('-u', $definition.SeedUrl, '-silent', '-j', '-d', [string]$Depth)
-        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-cs') { $arguments += @('-cs', ($definition.InScopeRegexes -join '|')) }
-        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-cos' -and $outscopeRegexes.Count -gt 0) { $arguments += @('-cos', '(?i)(' + (($scopeItem.Exclusions | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')') }
-        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-fs') { $arguments += @('-fs', $definition.FieldScope) }
-        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-jc') { $arguments += '-jc' }
-        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-kf') { $arguments += @('-kf', 'all') }
-        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-iqp') { $arguments += '-iqp' }
-        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-c') { $arguments += @('-c', [string]$Threads) }
+
+        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-cs') {
+            $arguments += @('-cs', ($definition.InScopeRegexes -join '|'))
+        }
+
+        if ((Test-ToolFlagSupport -HelpText $helpText -Flag '-cos') -and $outscopeRegexes.Count -gt 0) {
+            $arguments += @('-cos', '(?i)(' + (($scopeItem.Exclusions | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')')
+        }
+
+        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-fs') {
+            $arguments += @('-fs', $definition.FieldScope)
+        }
+
+        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-jc') {
+            $arguments += '-jc'
+        }
+
+        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-kf') {
+            $arguments += @('-kf', 'all')
+        }
+
+        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-iqp') {
+            $arguments += '-iqp'
+        }
+
+        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-c') {
+            $arguments += @('-c', [string]$Threads)
+        }
+
         if ($UniqueUserAgent) {
-            if (Test-ToolFlagSupport -HelpText $helpText -Flag '-H') { $arguments += @('-H', "User-Agent: $UniqueUserAgent") }
-            elseif (Test-ToolFlagSupport -HelpText $helpText -Flag '-header') { $arguments += @('-header', "User-Agent: $UniqueUserAgent") }
+            if (Test-ToolFlagSupport -HelpText $helpText -Flag '-H') {
+                $arguments += @('-H', "User-Agent: $UniqueUserAgent")
+            }
+            elseif (Test-ToolFlagSupport -HelpText $helpText -Flag '-header') {
+                $arguments += @('-header', "User-Agent: $UniqueUserAgent")
+            }
         }
 
         try {
             $result = Invoke-ExternalCommand -FilePath $KatanaPath -Arguments $arguments -TimeoutSeconds ([Math]::Max($TimeoutSeconds * 10, 90)) -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
-            if ($result.ExitCode -ne 0) { Add-ErrorRecord -Phase 'Crawl' -Target $definition.SeedUrl -Message 'katana returned a non-zero exit code.' -Details $result.StdErr -Tool 'katana' -ExitCode $result.ExitCode -ErrorCode 'ToolExitCode' }
-            $rawLines = @(
-                if (Test-Path -LiteralPath $stdoutFile) {
-                    Get-Content -LiteralPath $stdoutFile -Encoding utf8
-                }
-            )
+
+            if ($result.ExitCode -ne 0) {
+                Add-ErrorRecord -Phase 'Crawl' -Target $definition.SeedUrl -Message 'katana returned a non-zero exit code.' -Details $result.StdErr -Tool 'katana' -ExitCode $result.ExitCode -ErrorCode 'ToolExitCode'
+            }
+
+            $rawLines = @()
+            if (Test-Path -LiteralPath $stdoutFile) {
+                $rawLines = @(Get-Content -LiteralPath $stdoutFile -Encoding utf8)
+            }
+
             if ($rawLines.Count -gt 0) {
                 Add-Content -LiteralPath $RawOutputPath -Value ($rawLines -join [Environment]::NewLine) -Encoding utf8
                 Add-Content -LiteralPath $RawOutputPath -Value [Environment]::NewLine -Encoding utf8
@@ -2282,24 +2328,57 @@ function Invoke-KatanaCrawl {
 
             foreach ($line in $rawLines) {
                 if ([string]::IsNullOrWhiteSpace($line)) { continue }
-                try { $raw = $line | ConvertFrom-Json -Depth 100 } catch { Add-ErrorRecord -Phase 'Crawl' -Target $definition.SeedUrl -Message 'Failed to parse katana JSON line.' -Details $line -Tool 'katana' -ErrorCode 'ParseError'; continue }
+
+                try {
+                    $raw = $line | ConvertFrom-Json -Depth 100
+                }
+                catch {
+                    Add-ErrorRecord -Phase 'Crawl' -Target $definition.SeedUrl -Message 'Failed to parse katana JSON line.' -Details $line -Tool 'katana' -ErrorCode 'ParseError'
+                    continue
+                }
+
                 $url = [string](Get-ObjectValue -InputObject $raw -Names @('url', 'endpoint', 'request.endpoint'))
                 if ([string]::IsNullOrWhiteSpace($url)) { continue }
+
                 $uri = $null
                 if (-not [Uri]::TryCreate($url, [UriKind]::Absolute, [ref]$uri)) { continue }
+
                 $resolvedHost = $uri.DnsSafeHost.ToLowerInvariant()
                 $path = if ($uri.AbsolutePath) { $uri.AbsolutePath } else { '/' }
+
                 if (-not (Test-ScopeMatch -ScopeItem $scopeItem -Url $url -RespectSchemeOnly:$RespectSchemeOnly)) { continue }
+
                 $exclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $resolvedHost -Url $url -Path $path
-                if ($exclusion.IsExcluded) { Add-ExclusionRecord -Phase 'Crawl' -ScopeItem $scopeItem -Target $url -ExclusionResult $exclusion; continue }
+                if ($exclusion.IsExcluded) {
+                    Add-ExclusionRecord -Phase 'Crawl' -ScopeItem $scopeItem -Target $url -ExclusionResult $exclusion
+                    continue
+                }
+
                 $key = Get-CanonicalUrlKey -Url $url
                 if ($seenUrls.Contains($key)) { continue }
+
                 $null = $seenUrls.Add($key)
-                $results.Add([pscustomobject]@{ Url = $url; Host = $resolvedHost; Scheme = $uri.Scheme.ToLowerInvariant(); Path = $path; Query = $uri.Query; ScopeId = $scopeItem.Id; ScopeType = $scopeItem.Type; ScopeValue = $scopeItem.NormalizedValue; SeedUrl = $definition.SeedUrl; Source = 'katana'; StatusCode = [int](Get-ObjectValue -InputObject $raw -Names @('status_code', 'status-code', 'response.status_code') -Default 0); ContentType = [string](Get-ObjectValue -InputObject $raw -Names @('content_type', 'content-type', 'response.headers.content-type') -Default '') })
+
+                $results.Add([pscustomobject]@{
+                    Url         = $url
+                    Host        = $resolvedHost
+                    Scheme      = $uri.Scheme.ToLowerInvariant()
+                    Path        = $path
+                    Query       = $uri.Query
+                    ScopeId     = $scopeItem.Id
+                    ScopeType   = $scopeItem.Type
+                    ScopeValue  = $scopeItem.NormalizedValue
+                    SeedUrl     = $definition.SeedUrl
+                    Source      = 'katana'
+                    StatusCode  = [int](Get-ObjectValue -InputObject $raw -Names @('status_code', 'status-code', 'response.status_code') -Default 0)
+                    ContentType = [string](Get-ObjectValue -InputObject $raw -Names @('content_type', 'content-type', 'response.headers.content-type') -Default '')
+                }) | Out-Null
             }
-        } catch {
+        }
+        catch {
             Add-ErrorRecord -Phase 'Crawl' -Target $definition.SeedUrl -Message $_.Exception.Message -Tool 'katana' -ErrorCode $(if ($_.Exception.Message -like 'Command timed out*') { 'ToolTimeout' } else { 'RuntimeError' })
-        } finally {
+        }
+        finally {
             Remove-Item -LiteralPath $stdoutFile, $stderrFile, $inscopeFile, $outscopeFile -Force -ErrorAction SilentlyContinue
         }
     }
@@ -2307,13 +2386,27 @@ function Invoke-KatanaCrawl {
     foreach ($liveTarget in $LiveTargets) {
         $key = Get-CanonicalUrlKey -Url $liveTarget.Url
         if ($seenUrls.Contains($key)) { continue }
+
         $null = $seenUrls.Add($key)
-        $results.Add([pscustomobject]@{ Url = $liveTarget.Url; Host = $liveTarget.Host; Scheme = $liveTarget.Scheme; Path = $liveTarget.Path; Query = ''; ScopeId = ($liveTarget.MatchedScopeIds -join ';'); ScopeType = ($liveTarget.MatchedTypes -join ';'); ScopeValue = 'live-target'; SeedUrl = $liveTarget.Url; Source = 'seed'; StatusCode = $liveTarget.StatusCode; ContentType = '' })
+
+        $results.Add([pscustomobject]@{
+            Url        = $liveTarget.Url
+            Host       = $liveTarget.Host
+            Scheme     = $liveTarget.Scheme
+            Path       = $liveTarget.Path
+            Query      = ''
+            ScopeId    = ($liveTarget.MatchedScopeIds -join ';')
+            ScopeType  = ($liveTarget.MatchedTypes -join ';')
+            ScopeValue = 'live-target'
+            SeedUrl    = $liveTarget.Url
+            Source     = 'seed'
+            StatusCode = $liveTarget.StatusCode
+            ContentType = ''
+        }) | Out-Null
     }
 
     return @($results)
 }
-
 function Merge-ReconResults {
     [CmdletBinding()]
     param(
@@ -3122,11 +3215,50 @@ function Export-ReconReport {
     Set-Content -LiteralPath $Layout.ReportHtml -Value $html -Encoding utf8
 }
 
+function Get-ScopeForgeCompanyName {
+    [CmdletBinding()]
+    param(
+        [string]$ScopeFile,
+        [string]$ProgramName = 'run'
+    )
+
+    $candidate = ''
+
+    if (-not [string]::IsNullOrWhiteSpace($ScopeFile)) {
+        try {
+            $resolvedScope = Resolve-AbsolutePath -Path $ScopeFile
+            $baseName = [System.IO.Path]::GetFileNameWithoutExtension($resolvedScope).ToLowerInvariant()
+
+            if ($baseName -match '^scope-(?:minimal|standard|advanced)-([a-z0-9._-]+)-\d{8}-\d{6}$') {
+                $candidate = $matches[1]
+            }
+            elseif ($baseName -match '^scope-([a-z0-9._-]+)') {
+                $candidate = $matches[1]
+            }
+        }
+        catch {
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        $candidate = $ProgramName
+    }
+
+    $candidate = [regex]::Replace($candidate, '[^a-zA-Z0-9._-]+', '-').Trim('-').ToLowerInvariant()
+
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        $candidate = 'unknown-scope'
+    }
+
+    return $candidate
+}
+
 function New-ScopeForgeRunOutputDir {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$BaseOutputDir,
-        [string]$ProgramName = 'run'
+        [string]$ProgramName = 'run',
+        [string]$ScopeFile
     )
 
     $resolvedBase = Resolve-AbsolutePath -Path $BaseOutputDir
@@ -3135,22 +3267,35 @@ function New-ScopeForgeRunOutputDir {
         $null = New-Item -ItemType Directory -Path $resolvedBase -Force
     }
 
-    $safeProgramName = [regex]::Replace($ProgramName, '[^a-zA-Z0-9._-]+', '-').Trim('-')
-    if ([string]::IsNullOrWhiteSpace($safeProgramName)) {
-        $safeProgramName = 'run'
+    $launcherRoot = $resolvedBase
+    $leafName = [System.IO.Path]::GetFileName($resolvedBase)
+    $parentDir = Split-Path -Path $resolvedBase -Parent
+    $parentLeaf = if ($parentDir) { [System.IO.Path]::GetFileName($parentDir) } else { '' }
+
+    if ($leafName -ieq 'output' -and $parentLeaf -match '^session-\d{8}-\d{6}$') {
+        $launcherRoot = Split-Path -Path $parentDir -Parent
+    }
+
+    $companyName = Get-ScopeForgeCompanyName -ScopeFile $ScopeFile -ProgramName $ProgramName
+    $companyRoot = Join-Path $launcherRoot $companyName
+
+    if (-not (Test-Path -LiteralPath $companyRoot)) {
+        $null = New-Item -ItemType Directory -Path $companyRoot -Force
     }
 
     $stamp = [DateTime]::Now.ToString('yyyyMMdd-HHmmss')
-    $candidate = Join-Path $resolvedBase ("{0}-{1}" -f $safeProgramName, $stamp)
+    $candidate = Join-Path $companyRoot ("session-{0}" -f $stamp)
     $counter = 1
 
     while (Test-Path -LiteralPath $candidate) {
-        $candidate = Join-Path $resolvedBase ("{0}-{1}-{2}" -f $safeProgramName, $stamp, $counter)
+        $candidate = Join-Path $companyRoot ("session-{0}-{1}" -f $stamp, $counter)
         $counter++
     }
-
+    
     return $candidate
 }
+
+
 
 function Invoke-BugBountyRecon {
     [CmdletBinding()]
@@ -3182,7 +3327,7 @@ function Invoke-BugBountyRecon {
     $effectiveOutputDir = if ($Resume) {
         $OutputDir
     } else {
-        New-ScopeForgeRunOutputDir -BaseOutputDir $OutputDir -ProgramName $ProgramName
+        New-ScopeForgeRunOutputDir -BaseOutputDir $OutputDir -ProgramName $ProgramName -ScopeFile $ScopeFile
     }
 
     $layout = Get-OutputLayout -OutputDir $effectiveOutputDir
