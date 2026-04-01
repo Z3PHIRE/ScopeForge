@@ -1426,10 +1426,42 @@ function Save-ScopeForgeTriageState {
 
     $State = ConvertTo-ScopeForgeTriageState -State $State
 
-    foreach ($key in $SeenReviewKeys) {
-        if (-not [string]::IsNullOrWhiteSpace([string]$key)) {
-            $null = $State.SeenKeys.Add([string]$key)
+    if ($null -eq $State) {
+        throw 'Save-ScopeForgeTriageState: triage state is null after conversion.'
+    }
+
+    if (-not $State.PSObject.Properties['IgnoreKeys'] -or $null -eq $State.IgnoreKeys) {
+        $State | Add-Member -NotePropertyName IgnoreKeys -NotePropertyValue (New-ScopeForgeStringSet) -Force
+    }
+    if (-not $State.PSObject.Properties['FalsePositiveKeys'] -or $null -eq $State.FalsePositiveKeys) {
+        $State | Add-Member -NotePropertyName FalsePositiveKeys -NotePropertyValue (New-ScopeForgeStringSet) -Force
+    }
+    if (-not $State.PSObject.Properties['ValidatedKeys'] -or $null -eq $State.ValidatedKeys) {
+        $State | Add-Member -NotePropertyName ValidatedKeys -NotePropertyValue (New-ScopeForgeStringSet) -Force
+    }
+    if (-not $State.PSObject.Properties['SeenKeys'] -or $null -eq $State.SeenKeys) {
+        $State | Add-Member -NotePropertyName SeenKeys -NotePropertyValue (New-ScopeForgeStringSet) -Force
+    }
+    if (-not $State.PSObject.Properties['ReviewNotes'] -or $null -eq $State.ReviewNotes) {
+        $State | Add-Member -NotePropertyName ReviewNotes -NotePropertyValue @{} -Force
+    }
+    if (-not $State.PSObject.Properties['ProgramName'] -or [string]::IsNullOrWhiteSpace([string]$State.ProgramName)) {
+        $State | Add-Member -NotePropertyName ProgramName -NotePropertyValue 'default-program' -Force
+    }
+    if (-not $State.PSObject.Properties['Path'] -or [string]::IsNullOrWhiteSpace([string]$State.Path)) {
+        $State | Add-Member -NotePropertyName Path -NotePropertyValue (Join-Path (Get-ScopeForgeStateRoot -ProgramName $State.ProgramName) 'triage-state.json') -Force
+    }
+
+    foreach ($key in (ConvertTo-ArrayOrEmpty -Data $SeenReviewKeys)) {
+        $reviewKey = [string]$key
+        if (-not [string]::IsNullOrWhiteSpace($reviewKey)) {
+            $null = $State.SeenKeys.Add($reviewKey)
         }
+    }
+
+    $parentDir = Split-Path -Parent $State.Path
+    if (-not [string]::IsNullOrWhiteSpace($parentDir) -and -not (Test-Path -LiteralPath $parentDir)) {
+        $null = New-Item -ItemType Directory -Path $parentDir -Force
     }
 
     $document = [ordered]@{
