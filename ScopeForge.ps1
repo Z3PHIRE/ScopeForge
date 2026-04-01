@@ -2928,6 +2928,7 @@ function Export-ReconReport {
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$LiveTargets,
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$DiscoveredUrls,
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$InterestingUrls,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$AllFindings,
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$Exclusions,
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$Errors,
         [Parameter(Mandatory)][pscustomobject]$Layout,
