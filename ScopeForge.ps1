@@ -22,6 +22,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:ScopeForgeScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } elseif ($PSCommandPath) { Split-Path -Parent $PSCommandPath } else { (Get-Location).Path }
 $script:ScopeForgeContext = $null
 $script:ScopeForgeToolHelpCache = @{}
 $script:ScopeForgeProgressState = $null
@@ -546,42 +547,52 @@ function Get-OutputLayout {
 
     $root = Resolve-AbsolutePath -Path $OutputDir
     [pscustomobject]@{
-        Root               = $root
-        Logs               = Join-Path $root 'logs'
-        Raw                = Join-Path $root 'raw'
-        Normalized         = Join-Path $root 'normalized'
-        Reports            = Join-Path $root 'reports'
-        Temp               = Join-Path $root 'temp'
-        ToolsRoot          = Join-Path $root 'tools'
-        ToolsBin           = Join-Path (Join-Path $root 'tools') 'bin'
-        ToolsDownloads     = Join-Path (Join-Path $root 'tools') 'downloads'
-        ToolsExtracted     = Join-Path (Join-Path $root 'tools') 'extracted'
-        MainLog            = Join-Path (Join-Path $root 'logs') 'main.log'
-        ErrorsLog          = Join-Path (Join-Path $root 'logs') 'errors.log'
-        ExclusionsLog      = Join-Path (Join-Path $root 'logs') 'exclusions.log'
-        ToolsLog           = Join-Path (Join-Path $root 'logs') 'tools.log'
-        SubfinderRaw       = Join-Path (Join-Path $root 'raw') 'subfinder_raw.txt'
-        GauRaw             = Join-Path (Join-Path $root 'raw') 'gau_raw.txt'
-        WaybackRaw         = Join-Path (Join-Path $root 'raw') 'waybackurls_raw.txt'
-        HttpxRaw           = Join-Path (Join-Path $root 'raw') 'httpx_raw.jsonl'
-        KatanaRaw          = Join-Path (Join-Path $root 'raw') 'katana_raw.jsonl'
-        HakrawlerRaw       = Join-Path (Join-Path $root 'raw') 'hakrawler_raw.txt'
-        ScopeNormalized    = Join-Path (Join-Path $root 'normalized') 'scope_normalized.json'
-        HostsAllJson       = Join-Path (Join-Path $root 'normalized') 'hosts_all.json'
-        HostsAllCsv        = Join-Path (Join-Path $root 'normalized') 'hosts_all.csv'
-        HostsLiveJson      = Join-Path (Join-Path $root 'normalized') 'hosts_live.json'
-        LiveTargetsJson    = Join-Path (Join-Path $root 'normalized') 'live_targets.json'
-        LiveTargetsCsv     = Join-Path (Join-Path $root 'normalized') 'live_targets.csv'
-        UrlsDiscoveredJson = Join-Path (Join-Path $root 'normalized') 'urls_discovered.json'
-        UrlsDiscoveredCsv  = Join-Path (Join-Path $root 'normalized') 'urls_discovered.csv'
-        InterestingUrlsJson = Join-Path (Join-Path $root 'normalized') 'interesting_urls.json'
-        InterestingUrlsCsv  = Join-Path (Join-Path $root 'normalized') 'interesting_urls.csv'
+        Root                 = $root
+        Logs                 = Join-Path $root 'logs'
+        Raw                  = Join-Path $root 'raw'
+        Normalized           = Join-Path $root 'normalized'
+        Reports              = Join-Path $root 'reports'
+        Temp                 = Join-Path $root 'temp'
+        ToolsRoot            = Join-Path $root 'tools'
+        ToolsBin             = Join-Path (Join-Path $root 'tools') 'bin'
+        ToolsDownloads       = Join-Path (Join-Path $root 'tools') 'downloads'
+        ToolsExtracted       = Join-Path (Join-Path $root 'tools') 'extracted'
+        MainLog              = Join-Path (Join-Path $root 'logs') 'main.log'
+        ErrorsLog            = Join-Path (Join-Path $root 'logs') 'errors.log'
+        ExclusionsLog        = Join-Path (Join-Path $root 'logs') 'exclusions.log'
+        ToolsLog             = Join-Path (Join-Path $root 'logs') 'tools.log'
+        HttpxBatchLog        = Join-Path (Join-Path $root 'logs') 'httpx-batches.log'
+        KatanaSeedStatsLog   = Join-Path (Join-Path $root 'logs') 'katana-seeds.log'
+        SubfinderRaw         = Join-Path (Join-Path $root 'raw') 'subfinder_raw.txt'
+        GauRaw               = Join-Path (Join-Path $root 'raw') 'gau_raw.txt'
+        WaybackRaw           = Join-Path (Join-Path $root 'raw') 'waybackurls_raw.txt'
+        HttpxRaw             = Join-Path (Join-Path $root 'raw') 'httpx_raw.jsonl'
+        KatanaRaw            = Join-Path (Join-Path $root 'raw') 'katana_raw.jsonl'
+        HakrawlerRaw         = Join-Path (Join-Path $root 'raw') 'hakrawler_raw.txt'
+        ScopeNormalized      = Join-Path (Join-Path $root 'normalized') 'scope_normalized.json'
+        HostsAllJson         = Join-Path (Join-Path $root 'normalized') 'hosts_all.json'
+        HostsAllCsv          = Join-Path (Join-Path $root 'normalized') 'hosts_all.csv'
+        HostsLiveJson        = Join-Path (Join-Path $root 'normalized') 'hosts_live.json'
+        LiveTargetsJson      = Join-Path (Join-Path $root 'normalized') 'live_targets.json'
+        LiveTargetsCsv       = Join-Path (Join-Path $root 'normalized') 'live_targets.csv'
+        UrlsDiscoveredJson   = Join-Path (Join-Path $root 'normalized') 'urls_discovered.json'
+        UrlsDiscoveredCsv    = Join-Path (Join-Path $root 'normalized') 'urls_discovered.csv'
+        FilteredUrlsJson     = Join-Path (Join-Path $root 'normalized') 'urls_filtered.json'
+        FilteredUrlsCsv      = Join-Path (Join-Path $root 'normalized') 'urls_filtered.csv'
+        NoiseUrlsJson        = Join-Path (Join-Path $root 'normalized') 'urls_noise_removed.json'
+        NoiseUrlsCsv         = Join-Path (Join-Path $root 'normalized') 'urls_noise_removed.csv'
+        InterestingUrlsJson  = Join-Path (Join-Path $root 'normalized') 'interesting_urls.json'
+        InterestingUrlsCsv   = Join-Path (Join-Path $root 'normalized') 'interesting_urls.csv'
+        ReviewableUrlsJson   = Join-Path (Join-Path $root 'normalized') 'reviewable_urls.json'
+        ReviewableUrlsCsv    = Join-Path (Join-Path $root 'normalized') 'reviewable_urls.csv'
+        ShortlistJson        = Join-Path (Join-Path $root 'normalized') 'shortlist.json'
         InterestingFamiliesJson = Join-Path (Join-Path $root 'normalized') 'interesting_families.json'
-        EndpointsUniqueTxt = Join-Path (Join-Path $root 'normalized') 'endpoints_unique.txt'
-        SummaryJson        = Join-Path (Join-Path $root 'reports') 'summary.json'
-        SummaryCsv         = Join-Path (Join-Path $root 'reports') 'summary.csv'
-        ReportHtml         = Join-Path (Join-Path $root 'reports') 'report.html'
-        TriageMarkdown     = Join-Path (Join-Path $root 'reports') 'triage.md'
+        EndpointsUniqueTxt   = Join-Path (Join-Path $root 'normalized') 'endpoints_unique.txt'
+        SummaryJson          = Join-Path (Join-Path $root 'reports') 'summary.json'
+        SummaryCsv           = Join-Path (Join-Path $root 'reports') 'summary.csv'
+        ReportHtml           = Join-Path (Join-Path $root 'reports') 'report.html'
+        TriageMarkdown       = Join-Path (Join-Path $root 'reports') 'triage.md'
+        ShortlistMarkdown    = Join-Path (Join-Path $root 'reports') 'shortlist.md'
     }
 }
 
@@ -595,7 +606,7 @@ function Initialize-OutputDirectories {
         }
     }
 
-    foreach ($file in @($Layout.MainLog, $Layout.ErrorsLog, $Layout.ExclusionsLog, $Layout.ToolsLog)) {
+    foreach ($file in @($Layout.MainLog, $Layout.ErrorsLog, $Layout.ExclusionsLog, $Layout.ToolsLog, $Layout.HttpxBatchLog, $Layout.KatanaSeedStatsLog)) {
         if (-not (Test-Path -LiteralPath $file)) {
             $null = New-Item -ItemType File -Path $file -Force
         }
@@ -620,13 +631,11 @@ function New-ScopeForgeContext {
         ExportJsonEnabled        = $ExportJsonEnabled
         ExportCsvEnabled         = $ExportCsvEnabled
         ExportHtmlEnabled        = $ExportHtmlEnabled
-        Errors                   = [System.Collections.Generic.List[object]]::new()
         Exclusions               = [System.Collections.Generic.List[object]]::new()
+        Errors                   = [System.Collections.Generic.List[object]]::new()
         Warnings                 = [System.Collections.Generic.List[string]]::new()
-        StartedAtUtc             = [DateTime]::UtcNow
-        ExclusionConsoleTracker  = @{}
-        ExclusionConsoleSampleLimit = 3
-        ConsolePathsHintShown    = $false
+        Triage                   = $null
+        TriageState              = $null
     }
 }
 
@@ -1267,6 +1276,411 @@ function Get-CanonicalUrlKey {
     return $builder.Uri.AbsoluteUri.TrimEnd('/')
 }
 
+
+function ConvertTo-ScopeForgeSafeSegment {
+    [CmdletBinding()]
+    param([AllowNull()][string]$Value)
+
+    $safe = if ([string]::IsNullOrWhiteSpace($Value)) { 'default-program' } else { $Value }
+    $safe = ($safe -replace '[^a-zA-Z0-9._-]+', '-').Trim('-')
+    if ([string]::IsNullOrWhiteSpace($safe)) { return 'default-program' }
+    return $safe
+}
+
+function New-ScopeForgeStringSet {
+    [CmdletBinding()]
+    param([AllowEmptyCollection()][string[]]$Values = @())
+
+    $set = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($value in $Values) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$value)) {
+            $null = $set.Add([string]$value)
+        }
+    }
+    return $set
+}
+
+function Get-ScopeForgeStateRoot {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ProgramName)
+
+    $programSegment = ConvertTo-ScopeForgeSafeSegment -Value $ProgramName
+    $baseRoot = if ($IsWindows -and $env:LOCALAPPDATA) {
+        Join-Path $env:LOCALAPPDATA 'ScopeForge'
+    } elseif ($HOME) {
+        Join-Path $HOME '.scopeforge'
+    } else {
+        Join-Path $script:ScopeForgeScriptRoot '.scopeforge'
+    }
+
+    $stateRoot = Join-Path (Join-Path $baseRoot 'state') $programSegment
+    if (-not (Test-Path -LiteralPath $stateRoot)) {
+        $null = New-Item -ItemType Directory -Path $stateRoot -Force
+    }
+    return $stateRoot
+}
+
+function Get-DefaultTriageStateDocument {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ProgramName)
+
+    [ordered]@{
+        version            = 1
+        programName        = $ProgramName
+        updatedUtc         = [DateTime]::UtcNow.ToString('o')
+        ignoreKeys         = @()
+        falsePositiveKeys  = @()
+        validatedKeys      = @()
+        seenKeys           = @()
+        reviewNotes        = @{}
+    }
+}
+
+function Get-ScopeForgeTriageState {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ProgramName)
+
+    $root = Get-ScopeForgeStateRoot -ProgramName $ProgramName
+    $path = Join-Path $root 'triage-state.json'
+    if (-not (Test-Path -LiteralPath $path)) {
+        $defaultDoc = Get-DefaultTriageStateDocument -ProgramName $ProgramName
+        $defaultDoc | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $path -Encoding utf8
+    }
+
+    $parsed = $null
+    try {
+        $parsed = Get-Content -LiteralPath $path -Raw -Encoding utf8 | ConvertFrom-Json -Depth 50
+    } catch {
+        $parsed = [pscustomobject](Get-DefaultTriageStateDocument -ProgramName $ProgramName)
+    }
+
+    $ignoreKeys = New-ScopeForgeStringSet -Values @((ConvertTo-ArrayOrEmpty -Data $parsed.ignoreKeys) | ForEach-Object { [string]$_ })
+    $falsePositiveKeys = New-ScopeForgeStringSet -Values @((ConvertTo-ArrayOrEmpty -Data $parsed.falsePositiveKeys) | ForEach-Object { [string]$_ })
+    $validatedKeys = New-ScopeForgeStringSet -Values @((ConvertTo-ArrayOrEmpty -Data $parsed.validatedKeys) | ForEach-Object { [string]$_ })
+    $seenKeys = New-ScopeForgeStringSet -Values @((ConvertTo-ArrayOrEmpty -Data $parsed.seenKeys) | ForEach-Object { [string]$_ })
+
+    return [pscustomobject]@{
+        Path              = $path
+        ProgramName       = $ProgramName
+        IgnoreKeys        = $ignoreKeys
+        FalsePositiveKeys = $falsePositiveKeys
+        ValidatedKeys     = $validatedKeys
+        SeenKeys          = $seenKeys
+        ReviewNotes       = $(if ($parsed.reviewNotes) { $parsed.reviewNotes } else { @{} })
+    }
+}
+
+function Save-ScopeForgeTriageState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$State,
+        [AllowEmptyCollection()][string[]]$SeenReviewKeys = @()
+    )
+
+    foreach ($key in $SeenReviewKeys) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$key)) {
+            $null = $State.SeenKeys.Add([string]$key)
+        }
+    }
+
+    $document = [ordered]@{
+        version           = 1
+        programName       = $State.ProgramName
+        updatedUtc        = [DateTime]::UtcNow.ToString('o')
+        ignoreKeys        = @($State.IgnoreKeys | Sort-Object)
+        falsePositiveKeys = @($State.FalsePositiveKeys | Sort-Object)
+        validatedKeys     = @($State.ValidatedKeys | Sort-Object)
+        seenKeys          = @($State.SeenKeys | Sort-Object)
+        reviewNotes       = $State.ReviewNotes
+    }
+
+    $document | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $State.Path -Encoding utf8
+}
+
+function Write-ScopeForgeDiagnosticLine {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Line
+    )
+
+    try {
+        Add-Content -LiteralPath $Path -Value $Line -Encoding utf8
+    } catch {
+    }
+}
+
+function Get-ReviewUrlAnalysis {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Url,
+        [string]$ContentType = '',
+        [int]$StatusCode = 0
+    )
+
+    $uri = $null
+    if (-not [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$uri)) {
+        return [pscustomobject]@{
+            Url                = $Url
+            ReviewKey          = $Url.Trim()
+            ReviewUrl          = $Url.Trim()
+            Host               = ''
+            Path               = '/'
+            Query              = ''
+            PathAndQuery       = '/'
+            Extension          = ''
+            IsNoise            = $false
+            NoiseTags          = @()
+            HasVolatileParams  = $false
+        }
+    }
+
+    $builder = [UriBuilder]::new($uri)
+    $builder.Scheme = $builder.Scheme.ToLowerInvariant()
+    $builder.Host = $builder.Host.ToLowerInvariant()
+    if (($builder.Scheme -eq 'http' -and $builder.Port -eq 80) -or ($builder.Scheme -eq 'https' -and $builder.Port -eq 443)) {
+        $builder.Port = -1
+    }
+
+    $path = if ($uri.AbsolutePath) { $uri.AbsolutePath } else { '/' }
+    $extension = [System.IO.Path]::GetExtension($path).ToLowerInvariant()
+    $pathLower = $path.ToLowerInvariant()
+    $volatileNames = New-ScopeForgeStringSet -Values @('__cf_chl_f_tk','__cf_chl_rt_tk','__cf_chl_tk','__cf_chl_captcha_tk__','cf_chl_2','cf_chl_prog','cf_clearance','fbclid','gclid','mc_cid','mc_eid','token','access_token','id_token','session_state','nonce','timestamp','ts','sig','signature','expires','exp')
+    $keptPairs = [System.Collections.Generic.List[object]]::new()
+    $hasVolatileParams = $false
+    if ($uri.Query) {
+        foreach ($pair in ($uri.Query.TrimStart('?') -split '&')) {
+            if ([string]::IsNullOrWhiteSpace($pair)) { continue }
+            $split = $pair -split '=', 2
+            $name = [Uri]::UnescapeDataString($split[0])
+            $value = if ($split.Count -gt 1) { [Uri]::UnescapeDataString($split[1]) } else { '' }
+            if ($name -match '^(?i)(__cf_|cf_|utm_|x-amz-)') {
+                $hasVolatileParams = $true
+                continue
+            }
+            if ($volatileNames.Contains($name)) {
+                $hasVolatileParams = $true
+                continue
+            }
+            $keptPairs.Add([pscustomobject]@{ Name = $name; Value = $value }) | Out-Null
+        }
+    }
+
+    $normalizedQuery = ''
+    if ($keptPairs.Count -gt 0) {
+        $normalizedQuery = '?' + (($keptPairs | Sort-Object Name, Value | ForEach-Object { '{0}={1}' -f [Uri]::EscapeDataString($_.Name), [Uri]::EscapeDataString($_.Value) }) -join '&')
+    }
+
+    $builder.Query = $normalizedQuery.TrimStart('?')
+    $reviewUrl = $builder.Uri.AbsoluteUri
+    if ($reviewUrl.EndsWith('/') -and $path -ne '/') {
+        $reviewUrl = $reviewUrl.TrimEnd('/')
+    }
+
+    $noiseTags = [System.Collections.Generic.List[string]]::new()
+    $staticExtensions = @('.js','.css','.map','.woff','.woff2','.ttf','.eot','.ico','.png','.jpg','.jpeg','.gif','.svg','.webp','.bmp','.mp3','.wav','.mp4','.avi','.mov')
+    $documentExtensions = @('.pdf','.doc','.docx','.ppt','.pptx','.xls','.xlsx')
+    if ($pathLower -like '*/cdn-cgi/*') { $noiseTags.Add('cloudflare') | Out-Null }
+    if ($pathLower -like '*/_next/static/*' -or $pathLower -like '*/static/*' -or $pathLower -like '*/assets/*' -or $pathLower -like '*/fonts/*') { $noiseTags.Add('static-path') | Out-Null }
+    if ($staticExtensions -contains $extension) { $noiseTags.Add('static-extension') | Out-Null }
+    if ($documentExtensions -contains $extension) { $noiseTags.Add('document-extension') | Out-Null }
+    if ($ContentType -match '(?i)(font/|image/|audio/|video/)') { $noiseTags.Add('content-type-asset') | Out-Null }
+    if ($StatusCode -in 404, 410 -and $noiseTags.Count -eq 0 -and $pathLower -match '^/(?:_next|cdn-cgi|favicon\.ico|manifest\.json)') { $noiseTags.Add('404-static') | Out-Null }
+
+    $pathAndQuery = $path
+    if ($normalizedQuery) { $pathAndQuery += $normalizedQuery }
+
+    return [pscustomobject]@{
+        Url               = $Url
+        ReviewKey         = $reviewUrl
+        ReviewUrl         = $reviewUrl
+        Host              = $builder.Host
+        Path              = $path
+        Query             = $normalizedQuery
+        PathAndQuery      = $pathAndQuery
+        Extension         = $extension
+        IsNoise           = ($noiseTags.Count -gt 0)
+        NoiseTags         = @($noiseTags | Select-Object -Unique)
+        HasVolatileParams = $hasVolatileParams
+    }
+}
+
+function Test-KatanaSeedEligibility {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][pscustomobject]$LiveTarget)
+
+    $analysis = Get-ReviewUrlAnalysis -Url $LiveTarget.Url -StatusCode ([int]$LiveTarget.StatusCode)
+    $allowedStatuses = @(200,201,202,204,301,302,303,307,308,401,403,405)
+    if ($analysis.IsNoise) {
+        return [pscustomobject]@{ Eligible = $false; Reason = ($analysis.NoiseTags -join ', ') }
+    }
+    if ($LiveTarget.StatusCode -notin $allowedStatuses) {
+        return [pscustomobject]@{ Eligible = $false; Reason = ('status-{0}' -f $LiveTarget.StatusCode) }
+    }
+    return [pscustomobject]@{ Eligible = $true; Reason = 'ok' }
+}
+
+function Get-TriageReconData {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$LiveTargets,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$DiscoveredUrls,
+        [Parameter(Mandatory)][pscustomobject]$TriageState
+    )
+
+    $liveIndex = @{}
+    foreach ($liveTarget in $LiveTargets) {
+        $analysis = Get-ReviewUrlAnalysis -Url $liveTarget.Url -StatusCode ([int]$liveTarget.StatusCode)
+        if (-not $liveIndex.ContainsKey($analysis.ReviewKey)) {
+            $liveIndex[$analysis.ReviewKey] = $liveTarget
+        }
+    }
+
+    $patterns = @(
+        @{ Category = 'Auth'; Family = 'Auth'; Score = 4; Reason = 'Authentication surface'; Pattern = '(?i)(^|[/._?&=-])(login|signin|sign-in|logout|register|signup|auth|oauth|sso|session|token|refresh|mfa|verify|password|forgot-password)([/._?&=-]|$)' },
+        @{ Category = 'Admin'; Family = 'Administrative'; Score = 4; Reason = 'Administrative surface'; Pattern = '(?i)(^|[/._?&=-])(admin|dashboard|manage|console|panel|backoffice|staff|portal)([/._?&=-]|$)' },
+        @{ Category = 'API'; Family = 'API'; Score = 4; Reason = 'API or schema surface'; Pattern = '(?i)(/api(?:/|$)|/graphql(?:/|$)|swagger|openapi|graphiql|api-docs|/v[0-9]+(?:/|$))' },
+        @{ Category = 'Redirect'; Family = 'Redirect'; Score = 3; Reason = 'Redirect or callback workflow'; Pattern = '(?i)(callback|redirect(?:_uri)?|return(?:url)?|continue|next=|url=|oidc_)' },
+        @{ Category = 'Files'; Family = 'Files'; Score = 3; Reason = 'File handling workflow'; Pattern = '(?i)(upload|download|export|import|attachment|avatar|file|document)' },
+        @{ Category = 'Debug'; Family = 'Operations'; Score = 3; Reason = 'Debug or verbose endpoint'; Pattern = '(?i)(debug|trace|stack|exception|error|dump|logs?)' },
+        @{ Category = 'Config'; Family = 'Operations'; Score = 4; Reason = 'Configuration or backup artifact'; Pattern = '(?i)(config|env|backup|bak|old|zip|tar|yaml|yml)' },
+        @{ Category = 'Operations'; Family = 'Operations'; Score = 3; Reason = 'Operational endpoint'; Pattern = '(?i)(status|health|metrics|actuator|prometheus|ready|live|monitoring)' },
+        @{ Category = 'Discovery'; Family = 'Discovery'; Score = 2; Reason = 'Discovery helper'; Pattern = '(?i)(robots\.txt|sitemap\.xml|security\.txt|humans\.txt)' }
+    )
+
+    $filtered = [System.Collections.Generic.List[object]]::new()
+    $reviewable = [System.Collections.Generic.List[object]]::new()
+    $noise = [System.Collections.Generic.List[object]]::new()
+    $seenReviewKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($entry in $DiscoveredUrls) {
+        if (-not $entry -or [string]::IsNullOrWhiteSpace([string]$entry.Url)) { continue }
+        $analysis = Get-ReviewUrlAnalysis -Url ([string]$entry.Url) -ContentType ([string]$entry.ContentType) -StatusCode ([int]$entry.StatusCode)
+        if ($seenReviewKeys.Contains($analysis.ReviewKey)) { continue }
+        $null = $seenReviewKeys.Add($analysis.ReviewKey)
+
+        $statusCode = [int]$entry.StatusCode
+        $pathQuery = [string]$analysis.PathAndQuery
+        $score = 0
+        $reasons = [System.Collections.Generic.List[string]]::new()
+        $categories = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        $familyScores = @{}
+
+        foreach ($pattern in $patterns) {
+            if ($pathQuery -match $pattern.Pattern) {
+                $score += [int]$pattern.Score
+                $reasons.Add($pattern.Reason) | Out-Null
+                $categories.Add($pattern.Category) | Out-Null
+                if (-not $familyScores.ContainsKey($pattern.Family)) { $familyScores[$pattern.Family] = 0 }
+                $familyScores[$pattern.Family] += [int]$pattern.Score
+            }
+        }
+
+        if ($statusCode -in 401, 403) {
+            $score += 3
+            $reasons.Add('Access-controlled endpoint') | Out-Null
+            $categories.Add('Protected') | Out-Null
+            if (-not $familyScores.ContainsKey('Protected')) { $familyScores['Protected'] = 0 }
+            $familyScores['Protected'] += 3
+        } elseif ($statusCode -eq 405) {
+            $score += 1
+            $reasons.Add('Method-aware endpoint') | Out-Null
+        }
+
+        $liveMatch = $liveIndex[$analysis.ReviewKey]
+        if ($liveMatch -and $liveMatch.Title) {
+            if ($liveMatch.Title -match '(?i)(login|sign in|dashboard|portal|swagger|graphql|api)') {
+                $score += 2
+                $reasons.Add('Interesting page title') | Out-Null
+            }
+        }
+
+        $priority = switch ($score) {
+            { $_ -ge 9 } { 'Critical'; break }
+            { $_ -ge 6 } { 'High'; break }
+            { $_ -ge 3 } { 'Medium'; break }
+            default { 'Low' }
+        }
+
+        $primaryFamily = if ($familyScores.Count -gt 0) {
+            ($familyScores.GetEnumerator() | Sort-Object -Property @{ Expression = 'Value'; Descending = $true }, @{ Expression = 'Key'; Descending = $false } | Select-Object -First 1 -ExpandProperty Key)
+        } else {
+            'General'
+        }
+
+        $stateStatus = 'new'
+        if ($TriageState.IgnoreKeys.Contains($analysis.ReviewKey)) {
+            $stateStatus = 'ignored'
+        } elseif ($TriageState.FalsePositiveKeys.Contains($analysis.ReviewKey)) {
+            $stateStatus = 'false-positive'
+        } elseif ($TriageState.ValidatedKeys.Contains($analysis.ReviewKey)) {
+            $stateStatus = 'validated'
+        } elseif ($TriageState.SeenKeys.Contains($analysis.ReviewKey)) {
+            $stateStatus = 'seen-before'
+        }
+
+        $record = [pscustomobject]@{
+            Url           = $analysis.ReviewUrl
+            OriginalUrl   = [string]$entry.Url
+            ReviewKey     = $analysis.ReviewKey
+            Host          = $analysis.Host
+            StatusCode    = $statusCode
+            Score         = $score
+            Priority      = $priority
+            PriorityRank  = switch ($priority) { 'Critical' { 0 } 'High' { 1 } 'Medium' { 2 } default { 3 } }
+            PrimaryFamily = $primaryFamily
+            Categories    = @($categories | Sort-Object)
+            Reasons       = @($reasons | Select-Object -Unique)
+            ScopeId       = $entry.ScopeId
+            Source        = $entry.Source
+            Title         = if ($liveMatch) { $liveMatch.Title } else { '' }
+            Technologies  = if ($liveMatch) { $liveMatch.Technologies } else { @() }
+            PathAndQuery  = $analysis.PathAndQuery
+            NoiseTags     = @($analysis.NoiseTags)
+            StateStatus   = $stateStatus
+            SeenBefore    = [bool]($stateStatus -eq 'seen-before')
+            HasVolatileParams = [bool]$analysis.HasVolatileParams
+        }
+
+        if ($analysis.IsNoise) {
+            $noise.Add($record) | Out-Null
+            continue
+        }
+
+        $filtered.Add($record) | Out-Null
+
+        $suppressedByState = $stateStatus -in @('ignored', 'false-positive')
+        $reviewableSignal = ($score -gt 0) -or ($statusCode -in 401,403,405)
+        if (-not $suppressedByState -and $reviewableSignal) {
+            $reviewable.Add($record) | Out-Null
+        }
+    }
+
+    $orderedReviewable = @($reviewable | Sort-Object -Property StateStatus, PriorityRank, @{ Expression = 'Score'; Descending = $true }, Url)
+    $preferredShortlist = @($orderedReviewable | Where-Object { $_.StateStatus -eq 'new' })
+    $shortlist = @($preferredShortlist | Select-Object -First 15)
+    if ($shortlist.Count -lt 15) {
+        $needed = 15 - $shortlist.Count
+        $fill = @($orderedReviewable | Where-Object { $shortlist.ReviewKey -notcontains $_.ReviewKey } | Select-Object -First $needed)
+        $shortlist += $fill
+    }
+
+    return [pscustomobject]@{
+        FilteredFindings = @($filtered | Sort-Object -Property StateStatus, Host, Url)
+        ReviewableFindings = $orderedReviewable
+        NoiseFindings = @($noise | Sort-Object -Property Host, Url)
+        Shortlist = @($shortlist | Sort-Object -Property PriorityRank, @{ Expression = 'Score'; Descending = $true }, Url)
+        SeenReviewKeys = @($seenReviewKeys)
+        StateSummary = [pscustomobject]@{
+            IgnoredCount = @($filtered | Where-Object { $_.StateStatus -eq 'ignored' }).Count
+            FalsePositiveCount = @($filtered | Where-Object { $_.StateStatus -eq 'false-positive' }).Count
+            ValidatedCount = @($filtered | Where-Object { $_.StateStatus -eq 'validated' }).Count
+            SeenBeforeCount = @($filtered | Where-Object { $_.StateStatus -eq 'seen-before' }).Count
+        }
+    }
+}
+
+
 function Get-ObjectValue {
     [CmdletBinding()]
     param([Parameter(Mandatory)][object]$InputObject, [Parameter(Mandatory)][string[]]$Names, [object]$Default = $null)
@@ -1843,145 +2257,6 @@ function Merge-DiscoveredUrlResults {
     return @($merged | Sort-Object -Property Host, Url)
 }
 
-function ConvertTo-LiveTargetFromProbe {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$FinalUrl,
-        [AllowNull()][string]$InputValue = '',
-        [Parameter(Mandatory)][pscustomobject[]]$ScopeItems,
-        [int]$StatusCode = 0,
-        [AllowNull()][string]$Title = '',
-        [AllowNull()][string[]]$Technologies = @(),
-        [AllowNull()][string]$RedirectLocation = '',
-        [AllowNull()][string]$WebServer = '',
-        [int64]$ContentLength = 0,
-        [AllowNull()][string]$Source = 'probe',
-        [switch]$RespectSchemeOnly
-    )
-
-    $uri = $null
-    if (-not [Uri]::TryCreate($FinalUrl, [UriKind]::Absolute, [ref]$uri)) { return $null }
-
-    $resolvedHost = $uri.DnsSafeHost.ToLowerInvariant()
-    $path = if ([string]::IsNullOrWhiteSpace($uri.AbsolutePath)) { '/' } else { $uri.AbsolutePath }
-
-    $matchedScopeIds = [System.Collections.Generic.List[string]]::new()
-    $matchedScopeTypes = [System.Collections.Generic.List[string]]::new()
-
-    foreach ($scopeItem in $ScopeItems) {
-        if (-not (Test-ScopeMatch -ScopeItem $scopeItem -Url $FinalUrl -RespectSchemeOnly:$RespectSchemeOnly)) { continue }
-
-        $exclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $resolvedHost -Url $FinalUrl -Path $path
-        if ($exclusion.IsExcluded) {
-            Add-ExclusionRecord -Phase 'HttpProbe' -ScopeItem $scopeItem -Target $FinalUrl -ExclusionResult $exclusion
-            continue
-        }
-
-        $matchedScopeIds.Add($scopeItem.Id)
-        $matchedScopeTypes.Add($scopeItem.Type)
-    }
-
-    if ($matchedScopeIds.Count -eq 0) {
-        return $null
-    }
-
-    return [pscustomobject]@{
-        Input            = $InputValue
-        Url              = $FinalUrl
-        Host             = $resolvedHost
-        Scheme           = $uri.Scheme.ToLowerInvariant()
-        Port             = if ($uri.IsDefaultPort) { $null } else { $uri.Port }
-        Path             = $path
-        StatusCode       = [int]$StatusCode
-        Title            = [string]$Title
-        ContentLength    = [int64]$ContentLength
-        Technologies     = @($Technologies | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique)
-        RedirectLocation = [string]$RedirectLocation
-        WebServer        = [string]$WebServer
-        MatchedScopeIds  = @($matchedScopeIds)
-        MatchedTypes     = @($matchedScopeTypes | Select-Object -Unique)
-        Source           = $(if ([string]::IsNullOrWhiteSpace([string]$Source)) { 'probe' } else { [string]$Source })
-    }
-}
-
-function Invoke-NativeHttpFallbackProbe {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string[]]$InputUrls,
-        [Parameter(Mandatory)][pscustomobject[]]$ScopeItems,
-        [string]$UniqueUserAgent,
-        [int]$TimeoutSeconds = 30,
-        [switch]$RespectSchemeOnly
-    )
-
-    $candidates = [System.Collections.Generic.List[string]]::new()
-    $seenCandidates = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-
-    foreach ($url in @($InputUrls | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })) {
-        $uri = $null
-        if (-not [Uri]::TryCreate([string]$url, [UriKind]::Absolute, [ref]$uri)) { continue }
-
-        $normalizedUrl = $uri.GetLeftPart([System.UriPartial]::Path)
-        if ($seenCandidates.Add($normalizedUrl)) {
-            $candidates.Add($normalizedUrl) | Out-Null
-        }
-    }
-
-    $orderedCandidates = @(
-        $candidates |
-        Sort-Object {
-            $candidateUri = $null
-            if ([Uri]::TryCreate([string]$_, [UriKind]::Absolute, [ref]$candidateUri)) {
-                if ($candidateUri.AbsolutePath -eq '/' -or [string]::IsNullOrWhiteSpace($candidateUri.AbsolutePath)) { 0 } else { 1 }
-            } else {
-                2
-            }
-        }, { $_ } |
-        Select-Object -First 40
-    )
-
-    if (-not $orderedCandidates -or $orderedCandidates.Count -eq 0) { return @() }
-
-    $headers = @{}
-    if (-not [string]::IsNullOrWhiteSpace($UniqueUserAgent)) {
-        $headers['User-Agent'] = $UniqueUserAgent
-    }
-
-    $results = [System.Collections.Generic.List[object]]::new()
-
-    foreach ($candidateUrl in $orderedCandidates) {
-        try {
-            $response = Invoke-WebRequest -Uri $candidateUrl -Method GET -Headers $headers -MaximumRedirection 5 -TimeoutSec ([Math]::Max($TimeoutSeconds, 10)) -SkipCertificateCheck -SkipHttpErrorCheck -ErrorAction Stop
-
-            $finalUrl = $candidateUrl
-            if ($response.BaseResponse -and $response.BaseResponse.RequestMessage -and $response.BaseResponse.RequestMessage.RequestUri) {
-                $finalUrl = $response.BaseResponse.RequestMessage.RequestUri.AbsoluteUri
-            } elseif ($response.BaseResponse -and $response.BaseResponse.ResponseUri) {
-                $finalUrl = $response.BaseResponse.ResponseUri.AbsoluteUri
-            }
-
-            $title = ''
-            if ($response.Content -and $response.Content -match '<title[^>]*>(?<title>.*?)</title>') {
-                $title = [System.Text.RegularExpressions.Regex]::Unescape($matches['title']).Trim()
-            }
-
-            $serverHeader = ''
-            if ($response.Headers -and $response.Headers['Server']) {
-                $serverHeader = [string]$response.Headers['Server']
-            }
-
-            $record = ConvertTo-LiveTargetFromProbe -FinalUrl $finalUrl -InputValue $candidateUrl -ScopeItems $ScopeItems -StatusCode ([int]$response.StatusCode) -Title $title -RedirectLocation '' -WebServer $serverHeader -ContentLength ([int64]($(if ($response.RawContentLength) { $response.RawContentLength } else { 0 }))) -Source 'native-fallback' -RespectSchemeOnly:$RespectSchemeOnly
-            if ($record) {
-                $results.Add($record) | Out-Null
-            }
-        } catch {
-            Write-ReconLog -Level WARN -Message ("Native HTTP fallback failed for {0}: {1}" -f $candidateUrl, $_.Exception.Message)
-        }
-    }
-
-    return @($results)
-}
-
 function Invoke-HttpProbe {
     [CmdletBinding()]
     param(
@@ -2036,6 +2311,7 @@ function Invoke-HttpProbe {
     }
 
     Set-Content -LiteralPath $RawOutputPath -Value '' -Encoding utf8
+    Set-Content -LiteralPath $script:ScopeForgeContext.Layout.HttpxBatchLog -Value '' -Encoding utf8
 
     $liveTargets = [System.Collections.Generic.List[object]]::new()
     $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -2079,10 +2355,12 @@ function Invoke-HttpProbe {
                     } catch {
                         Add-ErrorRecord -Phase 'HttpProbe' -Message $_.Exception.Message -Details ("batch {0}/{1}, size={2}, mode=fallback" -f $batchIndex, $batchCount, $currentBatch.Count) -Tool 'httpx' -ErrorCode $(if ($_.Exception.Message -like 'Command timed out*') { 'ToolTimeout' } else { 'RuntimeError' })
                         Write-ReconLog -Level WARN -Message ("Skipping httpx batch {0}/{1} after repeated failure." -f $batchIndex, $batchCount)
+                        continue
                     }
                 } else {
                     Add-ErrorRecord -Phase 'HttpProbe' -Message $message -Details ("batch {0}/{1}, size={2}" -f $batchIndex, $batchCount, $currentBatch.Count) -Tool 'httpx' -ErrorCode 'RuntimeError'
                     Write-ReconLog -Level WARN -Message ("Skipping httpx batch {0}/{1} after runtime failure." -f $batchIndex, $batchCount)
+                    continue
                 }
             }
 
@@ -2096,15 +2374,18 @@ function Invoke-HttpProbe {
                 }
             }
 
-            if ($result -and $result.ExitCode -ne 0) {
+            if ($result.ExitCode -ne 0) {
                 Add-ErrorRecord -Phase 'HttpProbe' -Message 'httpx returned a non-zero exit code.' -Details $result.StdErr -Tool 'httpx' -ExitCode $result.ExitCode -ErrorCode 'ToolExitCode'
             }
 
-            $beforeBatchCount = $liveTargets.Count
-            $lines = @()
-            if (Test-Path -LiteralPath $stdoutFile) {
-                $lines = @(Get-Content -LiteralPath $stdoutFile -Encoding utf8)
-            }
+            $lines = @(
+                if (Test-Path -LiteralPath $stdoutFile) {
+                    Get-Content -LiteralPath $stdoutFile -Encoding utf8
+                }
+            )
+            $parsedCount = 0
+            $retainedBeforeBatch = $liveTargets.Count
+            Write-ScopeForgeDiagnosticLine -Path $script:ScopeForgeContext.Layout.HttpxBatchLog -Line ("BATCH|index={0}/{1}|input={2}|stdout_lines={3}|exit={4}" -f $batchIndex, $batchCount, $currentBatch.Count, $lines.Count, $result.ExitCode)
 
             foreach ($line in $lines) {
                 if ([string]::IsNullOrWhiteSpace($line)) { continue }
@@ -2120,6 +2401,40 @@ function Invoke-HttpProbe {
                 $inputValue = [string](Get-ObjectValue -InputObject $raw -Names @('input'))
                 if ([string]::IsNullOrWhiteSpace($finalUrl)) { continue }
 
+                $uri = $null
+                if (-not [Uri]::TryCreate($finalUrl, [UriKind]::Absolute, [ref]$uri)) { continue }
+
+                $resolvedHost = $uri.DnsSafeHost.ToLowerInvariant()
+                $path = if ($uri.AbsolutePath) { $uri.AbsolutePath } else { '/' }
+                $matchedScopeIds = [System.Collections.Generic.List[string]]::new()
+                $matchedScopeTypes = [System.Collections.Generic.List[string]]::new()
+
+                foreach ($scopeItem in $ScopeItems) {
+                    if (-not (Test-ScopeMatch -ScopeItem $scopeItem -Url $finalUrl -RespectSchemeOnly:$RespectSchemeOnly)) { continue }
+
+                    $exclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $resolvedHost -Url $finalUrl -Path $path
+                    if ($exclusion.IsExcluded) {
+                        Add-ExclusionRecord -Phase 'HttpProbe' -ScopeItem $scopeItem -Target $finalUrl -ExclusionResult $exclusion
+                        continue
+                    }
+
+                    $matchedScopeIds.Add($scopeItem.Id)
+                    $matchedScopeTypes.Add($scopeItem.Type)
+                }
+
+                if ($matchedScopeIds.Count -eq 0) {
+                    Write-ReconLog -Level WARN -Message ("Discarding out-of-scope live target after httpx: {0}" -f $finalUrl)
+                    continue
+                }
+
+                $parsedCount++
+                $reviewAnalysis = Get-ReviewUrlAnalysis -Url $finalUrl -StatusCode ([int](Get-ObjectValue -InputObject $raw -Names @('status-code', 'status_code') -Default 0))
+                if ($reviewAnalysis.IsNoise) { continue }
+                $canonicalKey = $reviewAnalysis.ReviewKey
+                if ($seen.Contains($canonicalKey)) { continue }
+                $null = $seen.Add($canonicalKey)
+                $finalUrl = $reviewAnalysis.ReviewUrl
+
                 $technologiesRaw = Get-ObjectValue -InputObject $raw -Names @('tech', 'technologies') -Default @()
                 $technologies = if ($technologiesRaw -is [System.Collections.IEnumerable] -and $technologiesRaw -isnot [string]) {
                     @($technologiesRaw | ForEach-Object { [string]$_ } | Where-Object { $_ })
@@ -2129,36 +2444,26 @@ function Invoke-HttpProbe {
                     @()
                 }
 
-                $record = ConvertTo-LiveTargetFromProbe -FinalUrl $finalUrl -InputValue $inputValue -ScopeItems $ScopeItems -StatusCode ([int](Get-ObjectValue -InputObject $raw -Names @('status-code', 'status_code') -Default 0)) -Title ([string](Get-ObjectValue -InputObject $raw -Names @('title') -Default '')) -Technologies $technologies -RedirectLocation ([string](Get-ObjectValue -InputObject $raw -Names @('location') -Default '')) -WebServer ([string](Get-ObjectValue -InputObject $raw -Names @('webserver', 'web_server') -Default '')) -ContentLength ([int64](Get-ObjectValue -InputObject $raw -Names @('content-length', 'content_length') -Default 0)) -Source 'httpx' -RespectSchemeOnly:$RespectSchemeOnly
-
-                if (-not $record) {
-                    Write-ReconLog -Level WARN -Message ("Discarding out-of-scope live target after httpx: {0}" -f $finalUrl)
-                    continue
-                }
-
-                $canonicalKey = Get-CanonicalUrlKey -Url $record.Url
-                if ($seen.Contains($canonicalKey)) { continue }
-                $null = $seen.Add($canonicalKey)
-                $liveTargets.Add($record) | Out-Null
+                $liveTargets.Add([pscustomobject]@{
+                    Input            = $inputValue
+                    Url              = $finalUrl
+                    Host             = $resolvedHost
+                    Scheme           = $uri.Scheme.ToLowerInvariant()
+                    Port             = if ($uri.IsDefaultPort) { $null } else { $uri.Port }
+                    Path             = $path
+                    StatusCode       = [int](Get-ObjectValue -InputObject $raw -Names @('status-code', 'status_code') -Default 0)
+                    Title            = [string](Get-ObjectValue -InputObject $raw -Names @('title') -Default '')
+                    ContentLength    = [int64](Get-ObjectValue -InputObject $raw -Names @('content-length', 'content_length') -Default 0)
+                    Technologies     = $technologies
+                    RedirectLocation = [string](Get-ObjectValue -InputObject $raw -Names @('location') -Default '')
+                    WebServer        = [string](Get-ObjectValue -InputObject $raw -Names @('webserver', 'web_server') -Default '')
+                    MatchedScopeIds  = @($matchedScopeIds)
+                    MatchedTypes     = @($matchedScopeTypes | Select-Object -Unique)
+                    Source           = 'httpx'
+                })
             }
-
-            if ($liveTargets.Count -eq $beforeBatchCount) {
-                Write-ReconLog -Level WARN -Message ("httpx batch {0}/{1} produced no retained live targets. Native fallback probing will run on a reduced set." -f $batchIndex, $batchCount)
-
-                $fallbackTargets = @(Invoke-NativeHttpFallbackProbe -InputUrls $currentBatch -ScopeItems $ScopeItems -UniqueUserAgent $UniqueUserAgent -TimeoutSeconds ([Math]::Max($TimeoutSeconds, 15)) -RespectSchemeOnly:$RespectSchemeOnly)
-                foreach ($fallbackRecord in $fallbackTargets) {
-                    $canonicalKey = Get-CanonicalUrlKey -Url $fallbackRecord.Url
-                    if ($seen.Contains($canonicalKey)) { continue }
-                    $null = $seen.Add($canonicalKey)
-                    $liveTargets.Add($fallbackRecord) | Out-Null
-                }
-
-                if ($fallbackTargets.Count -gt 0) {
-                    Write-ReconLog -Level INFO -Message ("Native HTTP fallback recovered {0} live target(s) on batch {1}/{2}." -f $fallbackTargets.Count, $batchIndex, $batchCount)
-                } else {
-                    Write-ReconLog -Level WARN -Message ("Native HTTP fallback also found no live targets on batch {0}/{1}." -f $batchIndex, $batchCount)
-                }
-            }
+            $retainedAfterHttpx = $liveTargets.Count - $retainedBeforeBatch
+            Write-ScopeForgeDiagnosticLine -Path $script:ScopeForgeContext.Layout.HttpxBatchLog -Line ("BATCH_SUMMARY|index={0}/{1}|input={2}|json_parsed={3}|retained={4}" -f $batchIndex, $batchCount, $currentBatch.Count, $parsedCount, $retainedAfterHttpx)
         } finally {
             Remove-Item -LiteralPath $inputFile, $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
         }
@@ -2166,8 +2471,6 @@ function Invoke-HttpProbe {
 
     return @($liveTargets)
 }
-
-
 
 function Get-KatanaScopeDefinition {
     [CmdletBinding()]
@@ -2220,106 +2523,92 @@ function Invoke-KatanaCrawl {
 
     $helpText = Get-ToolHelpText -ToolPath $KatanaPath
     $scopeIndex = @{}
-    foreach ($scopeItem in $ScopeItems) {
-        $scopeIndex[$scopeItem.Id] = $scopeItem
-    }
+    foreach ($scopeItem in $ScopeItems) { $scopeIndex[$scopeItem.Id] = $scopeItem }
 
     $jobs = [System.Collections.Generic.List[object]]::new()
     $jobKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $skippedSeeds = 0
 
     foreach ($liveTarget in $LiveTargets) {
+        $eligibility = Test-KatanaSeedEligibility -LiveTarget $liveTarget
+        if (-not $eligibility.Eligible) {
+            $skippedSeeds++
+            Write-ScopeForgeDiagnosticLine -Path $script:ScopeForgeContext.Layout.KatanaSeedStatsLog -Line ("SKIP|seed={0}|status={1}|reason={2}" -f $liveTarget.Url, $liveTarget.StatusCode, $eligibility.Reason)
+            continue
+        }
+
         foreach ($scopeId in $liveTarget.MatchedScopeIds) {
             $scopeItem = $scopeIndex[$scopeId]
             $seedUrl = if ($scopeItem.Type -eq 'URL') { $scopeItem.StartUrl } else { $liveTarget.Url }
-            $jobKey = '{0}|{1}' -f $scopeItem.Id, (Get-CanonicalUrlKey -Url $seedUrl)
-
+            $jobKey = '{0}|{1}' -f $scopeItem.Id, (Get-ReviewUrlAnalysis -Url $seedUrl).ReviewKey
             if ($jobKeys.Contains($jobKey)) { continue }
-
             $null = $jobKeys.Add($jobKey)
             $jobs.Add([pscustomobject]@{
-                ScopeItem  = $scopeItem
-                Definition = Get-KatanaScopeDefinition -ScopeItem $scopeItem -SeedUrl $seedUrl -RespectSchemeOnly:$RespectSchemeOnly
+                ScopeItem   = $scopeItem
+                Definition  = Get-KatanaScopeDefinition -ScopeItem $scopeItem -SeedUrl $seedUrl -RespectSchemeOnly:$RespectSchemeOnly
+                SeedStatus  = [int]$liveTarget.StatusCode
             }) | Out-Null
         }
     }
 
     Set-Content -LiteralPath $RawOutputPath -Value '' -Encoding utf8
-
     $results = [System.Collections.Generic.List[object]]::new()
     $seenUrls = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $jobNumber = 0
 
+    if ($jobs.Count -eq 0) {
+        Write-ReconLog -Level WARN -Message ('Katana skipped all seeds after usefulness filtering. skipped={0}' -f $skippedSeeds)
+    }
+
     foreach ($job in $jobs) {
         $jobNumber++
-
         Write-StageProgress -Step 5 -Title 'Crawl' -Percent ([Math]::Floor(($jobNumber / $jobs.Count) * 100)) -Status ("{0}/{1} {2}" -f $jobNumber, $jobs.Count, $job.Definition.SeedUrl)
-
         $scopeItem = $job.ScopeItem
         $definition = $job.Definition
-
         $inscopeFile = Join-Path $TempDirectory ("katana-inscope-{0}.regex" -f $scopeItem.Id)
         $outscopeFile = Join-Path $TempDirectory ("katana-outscope-{0}.regex" -f $scopeItem.Id)
         $stdoutFile = Join-Path $TempDirectory ("katana-{0}-{1}.jsonl" -f $scopeItem.Id, [Guid]::NewGuid().ToString('N'))
         $stderrFile = Join-Path $TempDirectory ("katana-{0}-{1}.err" -f $scopeItem.Id, [Guid]::NewGuid().ToString('N'))
 
         $outscopeRegexes = [System.Collections.Generic.List[string]]::new()
-        foreach ($token in $scopeItem.Exclusions) {
-            $outscopeRegexes.Add([regex]::Escape($token)) | Out-Null
-        }
-
+        foreach ($token in $scopeItem.Exclusions) { $outscopeRegexes.Add([regex]::Escape($token)) }
         Set-Content -LiteralPath $inscopeFile -Value ($definition.InScopeRegexes -join [Environment]::NewLine) -Encoding utf8
         Set-Content -LiteralPath $outscopeFile -Value ($outscopeRegexes -join [Environment]::NewLine) -Encoding utf8
 
         $arguments = @('-u', $definition.SeedUrl, '-silent', '-j', '-d', [string]$Depth)
-
-        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-cs') {
-            $arguments += @('-cs', ($definition.InScopeRegexes -join '|'))
-        }
-
-        if ((Test-ToolFlagSupport -HelpText $helpText -Flag '-cos') -and $outscopeRegexes.Count -gt 0) {
-            $arguments += @('-cos', '(?i)(' + (($scopeItem.Exclusions | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')')
-        }
-
-        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-fs') {
-            $arguments += @('-fs', $definition.FieldScope)
-        }
-
-        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-jc') {
-            $arguments += '-jc'
-        }
-
-        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-kf') {
-            $arguments += @('-kf', 'all')
-        }
-
-        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-iqp') {
-            $arguments += '-iqp'
-        }
-
-        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-c') {
-            $arguments += @('-c', [string]$Threads)
-        }
-
+        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-cs') { $arguments += @('-cs', ($definition.InScopeRegexes -join '|')) }
+        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-cos' -and $outscopeRegexes.Count -gt 0) { $arguments += @('-cos', '(?i)(' + (($scopeItem.Exclusions | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')') }
+        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-fs') { $arguments += @('-fs', $definition.FieldScope) }
+        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-jc') { $arguments += '-jc' }
+        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-kf') { $arguments += @('-kf', 'all') }
+        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-iqp') { $arguments += '-iqp' }
+        if (Test-ToolFlagSupport -HelpText $helpText -Flag '-c') { $arguments += @('-c', [string]$Threads) }
         if ($UniqueUserAgent) {
-            if (Test-ToolFlagSupport -HelpText $helpText -Flag '-H') {
-                $arguments += @('-H', "User-Agent: $UniqueUserAgent")
-            }
-            elseif (Test-ToolFlagSupport -HelpText $helpText -Flag '-header') {
-                $arguments += @('-header', "User-Agent: $UniqueUserAgent")
-            }
+            if (Test-ToolFlagSupport -HelpText $helpText -Flag '-H') { $arguments += @('-H', "User-Agent: $UniqueUserAgent") }
+            elseif (Test-ToolFlagSupport -HelpText $helpText -Flag '-header') { $arguments += @('-header', "User-Agent: $UniqueUserAgent") }
         }
+
+        $rawCount = 0
+        $keptCount = 0
+        $duplicateCount = 0
+        $excludedCount = 0
+        $outOfScopeCount = 0
+        $noiseCount = 0
+        $parseErrors = 0
+        $started = [DateTimeOffset]::UtcNow
 
         try {
             $result = Invoke-ExternalCommand -FilePath $KatanaPath -Arguments $arguments -TimeoutSeconds ([Math]::Max($TimeoutSeconds * 10, 90)) -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
-
             if ($result.ExitCode -ne 0) {
                 Add-ErrorRecord -Phase 'Crawl' -Target $definition.SeedUrl -Message 'katana returned a non-zero exit code.' -Details $result.StdErr -Tool 'katana' -ExitCode $result.ExitCode -ErrorCode 'ToolExitCode'
             }
 
-            $rawLines = @()
-            if (Test-Path -LiteralPath $stdoutFile) {
-                $rawLines = @(Get-Content -LiteralPath $stdoutFile -Encoding utf8)
-            }
+            $rawLines = @(
+                if (Test-Path -LiteralPath $stdoutFile) {
+                    Get-Content -LiteralPath $stdoutFile -Encoding utf8
+                }
+            )
+            $rawCount = $rawLines.Count
 
             if ($rawLines.Count -gt 0) {
                 Add-Content -LiteralPath $RawOutputPath -Value ($rawLines -join [Environment]::NewLine) -Encoding utf8
@@ -2328,85 +2617,53 @@ function Invoke-KatanaCrawl {
 
             foreach ($line in $rawLines) {
                 if ([string]::IsNullOrWhiteSpace($line)) { continue }
-
                 try {
                     $raw = $line | ConvertFrom-Json -Depth 100
-                }
-                catch {
+                } catch {
+                    $parseErrors++
                     Add-ErrorRecord -Phase 'Crawl' -Target $definition.SeedUrl -Message 'Failed to parse katana JSON line.' -Details $line -Tool 'katana' -ErrorCode 'ParseError'
                     continue
                 }
 
                 $url = [string](Get-ObjectValue -InputObject $raw -Names @('url', 'endpoint', 'request.endpoint'))
                 if ([string]::IsNullOrWhiteSpace($url)) { continue }
+                $analysis = Get-ReviewUrlAnalysis -Url $url -ContentType ([string](Get-ObjectValue -InputObject $raw -Names @('content_type', 'content-type', 'response.headers.content-type') -Default '')) -StatusCode ([int](Get-ObjectValue -InputObject $raw -Names @('status_code', 'status-code', 'response.status_code') -Default 0))
+                if ($analysis.IsNoise) { $noiseCount++; continue }
 
                 $uri = $null
-                if (-not [Uri]::TryCreate($url, [UriKind]::Absolute, [ref]$uri)) { continue }
-
+                if (-not [Uri]::TryCreate($analysis.ReviewUrl, [UriKind]::Absolute, [ref]$uri)) { continue }
                 $resolvedHost = $uri.DnsSafeHost.ToLowerInvariant()
                 $path = if ($uri.AbsolutePath) { $uri.AbsolutePath } else { '/' }
-
-                if (-not (Test-ScopeMatch -ScopeItem $scopeItem -Url $url -RespectSchemeOnly:$RespectSchemeOnly)) { continue }
-
-                $exclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $resolvedHost -Url $url -Path $path
-                if ($exclusion.IsExcluded) {
-                    Add-ExclusionRecord -Phase 'Crawl' -ScopeItem $scopeItem -Target $url -ExclusionResult $exclusion
-                    continue
-                }
-
-                $key = Get-CanonicalUrlKey -Url $url
-                if ($seenUrls.Contains($key)) { continue }
-
+                if (-not (Test-ScopeMatch -ScopeItem $scopeItem -Url $analysis.ReviewUrl -RespectSchemeOnly:$RespectSchemeOnly)) { $outOfScopeCount++; continue }
+                $exclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $resolvedHost -Url $analysis.ReviewUrl -Path $path
+                if ($exclusion.IsExcluded) { $excludedCount++; Add-ExclusionRecord -Phase 'Crawl' -ScopeItem $scopeItem -Target $analysis.ReviewUrl -ExclusionResult $exclusion; continue }
+                $key = $analysis.ReviewKey
+                if ($seenUrls.Contains($key)) { $duplicateCount++; continue }
                 $null = $seenUrls.Add($key)
-
-                $results.Add([pscustomobject]@{
-                    Url         = $url
-                    Host        = $resolvedHost
-                    Scheme      = $uri.Scheme.ToLowerInvariant()
-                    Path        = $path
-                    Query       = $uri.Query
-                    ScopeId     = $scopeItem.Id
-                    ScopeType   = $scopeItem.Type
-                    ScopeValue  = $scopeItem.NormalizedValue
-                    SeedUrl     = $definition.SeedUrl
-                    Source      = 'katana'
-                    StatusCode  = [int](Get-ObjectValue -InputObject $raw -Names @('status_code', 'status-code', 'response.status_code') -Default 0)
-                    ContentType = [string](Get-ObjectValue -InputObject $raw -Names @('content_type', 'content-type', 'response.headers.content-type') -Default '')
-                }) | Out-Null
+                $keptCount++
+                $results.Add([pscustomobject]@{ Url = $analysis.ReviewUrl; Host = $resolvedHost; Scheme = $uri.Scheme.ToLowerInvariant(); Path = $path; Query = $uri.Query; ScopeId = $scopeItem.Id; ScopeType = $scopeItem.Type; ScopeValue = $scopeItem.NormalizedValue; SeedUrl = $definition.SeedUrl; Source = 'katana'; StatusCode = [int](Get-ObjectValue -InputObject $raw -Names @('status_code', 'status-code', 'response.status_code') -Default 0); ContentType = [string](Get-ObjectValue -InputObject $raw -Names @('content_type', 'content-type', 'response.headers.content-type') -Default '') }) | Out-Null
             }
-        }
-        catch {
+        } catch {
             Add-ErrorRecord -Phase 'Crawl' -Target $definition.SeedUrl -Message $_.Exception.Message -Tool 'katana' -ErrorCode $(if ($_.Exception.Message -like 'Command timed out*') { 'ToolTimeout' } else { 'RuntimeError' })
-        }
-        finally {
+        } finally {
+            $duration = [Math]::Round(([DateTimeOffset]::UtcNow - $started).TotalSeconds, 1)
+            Write-ScopeForgeDiagnosticLine -Path $script:ScopeForgeContext.Layout.KatanaSeedStatsLog -Line ("SEED|seed={0}|status={1}|raw={2}|kept={3}|noise={4}|dupes={5}|excluded={6}|out_of_scope={7}|parse_errors={8}|seconds={9}" -f $definition.SeedUrl, $job.SeedStatus, $rawCount, $keptCount, $noiseCount, $duplicateCount, $excludedCount, $outOfScopeCount, $parseErrors, $duration)
             Remove-Item -LiteralPath $stdoutFile, $stderrFile, $inscopeFile, $outscopeFile -Force -ErrorAction SilentlyContinue
         }
     }
 
     foreach ($liveTarget in $LiveTargets) {
-        $key = Get-CanonicalUrlKey -Url $liveTarget.Url
+        $analysis = Get-ReviewUrlAnalysis -Url $liveTarget.Url -StatusCode ([int]$liveTarget.StatusCode)
+        if ($analysis.IsNoise) { continue }
+        $key = $analysis.ReviewKey
         if ($seenUrls.Contains($key)) { continue }
-
         $null = $seenUrls.Add($key)
-
-        $results.Add([pscustomobject]@{
-            Url        = $liveTarget.Url
-            Host       = $liveTarget.Host
-            Scheme     = $liveTarget.Scheme
-            Path       = $liveTarget.Path
-            Query      = ''
-            ScopeId    = ($liveTarget.MatchedScopeIds -join ';')
-            ScopeType  = ($liveTarget.MatchedTypes -join ';')
-            ScopeValue = 'live-target'
-            SeedUrl    = $liveTarget.Url
-            Source     = 'seed'
-            StatusCode = $liveTarget.StatusCode
-            ContentType = ''
-        }) | Out-Null
+        $results.Add([pscustomobject]@{ Url = $analysis.ReviewUrl; Host = $liveTarget.Host; Scheme = $liveTarget.Scheme; Path = $liveTarget.Path; Query = ''; ScopeId = ($liveTarget.MatchedScopeIds -join ';'); ScopeType = ($liveTarget.MatchedTypes -join ';'); ScopeValue = 'live-target'; SeedUrl = $analysis.ReviewUrl; Source = 'seed'; StatusCode = $liveTarget.StatusCode; ContentType = '' }) | Out-Null
     }
 
     return @($results)
 }
+
 function Merge-ReconResults {
     [CmdletBinding()]
     param(
@@ -2553,6 +2810,18 @@ function Merge-ReconResults {
         InterestingPriorityDistribution = $interestingPriorityCounts
         ErrorPhaseDistribution          = $errorPhaseCounts
         ErrorToolDistribution           = $errorToolCounts
+        FilteredUrlCount                = $(if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Triage) { @($script:ScopeForgeContext.Triage.FilteredFindings).Count } else { $DiscoveredUrls.Count })
+        ReviewableUrlCount              = $(if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Triage) { @($script:ScopeForgeContext.Triage.ReviewableFindings).Count } else { $InterestingUrls.Count })
+        NoiseRemovedCount               = $(if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Triage) { @($script:ScopeForgeContext.Triage.NoiseFindings).Count } else { 0 })
+        ShortlistCount                  = $(if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Triage) { @($script:ScopeForgeContext.Triage.Shortlist).Count } else { 0 })
+        StateIgnoredCount               = $(if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Triage) { [int]$script:ScopeForgeContext.Triage.StateSummary.IgnoredCount } else { 0 })
+        StateFalsePositiveCount         = $(if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Triage) { [int]$script:ScopeForgeContext.Triage.StateSummary.FalsePositiveCount } else { 0 })
+        StateValidatedCount             = $(if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Triage) { [int]$script:ScopeForgeContext.Triage.StateSummary.ValidatedCount } else { 0 })
+        SeenBeforeCount                 = $(if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Triage) { [int]$script:ScopeForgeContext.Triage.StateSummary.SeenBeforeCount } else { 0 })
+        TriageStatePath                 = $(if ($script:ScopeForgeContext -and $script:ScopeForgeContext.TriageState) { $script:ScopeForgeContext.TriageState.Path } else { '' })
+        TopAuthReviewable               = $(if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Triage) { @($script:ScopeForgeContext.Triage.ReviewableFindings | Where-Object { $_.Categories -contains 'Auth' } | Select-Object -First 5 -ExpandProperty Url) } else { @() })
+        TopApiReviewable                = $(if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Triage) { @($script:ScopeForgeContext.Triage.ReviewableFindings | Where-Object { $_.Categories -contains 'API' } | Select-Object -First 5 -ExpandProperty Url) } else { @() })
+        TopProtectedReviewable          = @($InterestingUrls | Where-Object { $_.Categories -contains 'Protected' } | Select-Object -First 5 -ExpandProperty Url)
     }
 }
 
@@ -2572,111 +2841,12 @@ function Get-InterestingReconFindings {
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$DiscoveredUrls
     )
 
-    $liveIndex = @{}
-    foreach ($liveTarget in $LiveTargets) { $liveIndex[(Get-CanonicalUrlKey -Url $liveTarget.Url)] = $liveTarget }
-
-    $patterns = @(
-        @{ Category = 'Auth'; Family = 'Access'; Score = 3; Reason = 'Authentication surface'; Pattern = '(?i)(^|[/?#._-])(login|signin|sign-in|auth|oauth|sso|register|signup|session|mfa)([/?#._-]|$)' },
-        @{ Category = 'Admin'; Family = 'Administrative'; Score = 4; Reason = 'Administrative surface'; Pattern = '(?i)(^|[/?#._-])(admin|dashboard|manage|console|panel|backoffice|staff|portal)([/?#._-]|$)' },
-        @{ Category = 'API'; Family = 'API'; Score = 4; Reason = 'API or schema surface'; Pattern = '(?i)(swagger|openapi|redoc|graphql|graphiql|api-docs|/api/|/v[0-9]+/)' },
-        @{ Category = 'Files'; Family = 'Files'; Score = 3; Reason = 'File handling surface'; Pattern = '(?i)(upload|import|export|download|attachment|avatar|media|document|file)' },
-        @{ Category = 'Infra'; Family = 'Operations'; Score = 3; Reason = 'Operational surface'; Pattern = '(?i)(status|health|metrics|actuator|prometheus|ready|live|heartbeat)' },
-        @{ Category = 'Debug'; Family = 'Operations'; Score = 4; Reason = 'Debug or verbose endpoint'; Pattern = '(?i)(debug|trace|stack|exception|error|dump|logs?)' },
-        @{ Category = 'Config'; Family = 'Operations'; Score = 4; Reason = 'Configuration or backup artifact'; Pattern = '(?i)(config|env|backup|bak|old|zip|tar|yaml|yml|json|xml)' },
-        @{ Category = 'Discovery'; Family = 'Discovery'; Score = 2; Reason = 'Discovery helper'; Pattern = '(?i)(robots\.txt|sitemap\.xml|security\.txt|humans\.txt)' },
-        @{ Category = 'Redirect'; Family = 'Access'; Score = 2; Reason = 'Callback or redirect workflow'; Pattern = '(?i)(callback|redirect|return|continue|next=|url=)' }
-    )
-
-    $results = [System.Collections.Generic.List[object]]::new()
-    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-
-    foreach ($entry in $DiscoveredUrls) {
-        $url = [string]$entry.Url
-        if ([string]::IsNullOrWhiteSpace($url)) { continue }
-        $key = Get-CanonicalUrlKey -Url $url
-        if ($seen.Contains($key)) { continue }
-        $null = $seen.Add($key)
-
-        $score = 0
-        $reasons = [System.Collections.Generic.List[string]]::new()
-        $categories = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-        $familyScores = @{}
-        foreach ($pattern in $patterns) {
-            if ($url -match $pattern.Pattern) {
-                $score += [int]$pattern.Score
-                $reasons.Add($pattern.Reason) | Out-Null
-                $categories.Add($pattern.Category) | Out-Null
-                if (-not $familyScores.ContainsKey($pattern.Family)) { $familyScores[$pattern.Family] = 0 }
-                $familyScores[$pattern.Family] += [int]$pattern.Score
-            }
-        }
-
-        $statusCode = [int]$entry.StatusCode
-        if ($statusCode -in 401, 403) {
-            $score += 2
-            $reasons.Add('Access-controlled endpoint') | Out-Null
-            $categories.Add('Protected') | Out-Null
-            if (-not $familyScores.ContainsKey('Access')) { $familyScores['Access'] = 0 }
-            $familyScores['Access'] += 2
-        }
-
-        $liveMatch = $liveIndex[$key]
-        if ($liveMatch) {
-            if ($liveMatch.Technologies -and $liveMatch.Technologies.Count -gt 0) {
-                $score += 1
-                $categories.Add('Live') | Out-Null
-            }
-            if ($liveMatch.Title -and $liveMatch.Title -match '(?i)(admin|login|dashboard|swagger|graphql|portal)') {
-                $score += 2
-                $reasons.Add('Interesting page title') | Out-Null
-                if ($liveMatch.Title -match '(?i)(admin|dashboard|portal)') {
-                    if (-not $familyScores.ContainsKey('Administrative')) { $familyScores['Administrative'] = 0 }
-                    $familyScores['Administrative'] += 2
-                } elseif ($liveMatch.Title -match '(?i)(login|auth)') {
-                    if (-not $familyScores.ContainsKey('Access')) { $familyScores['Access'] = 0 }
-                    $familyScores['Access'] += 2
-                } elseif ($liveMatch.Title -match '(?i)(swagger|graphql|api)') {
-                    if (-not $familyScores.ContainsKey('API')) { $familyScores['API'] = 0 }
-                    $familyScores['API'] += 2
-                }
-            }
-        }
-
-        if ($score -le 0) { continue }
-
-        $primaryFamily = if ($familyScores.Count -gt 0) {
-            ($familyScores.GetEnumerator() | Sort-Object -Property @{ Expression = 'Value'; Descending = $true }, @{ Expression = 'Key'; Descending = $false } | Select-Object -First 1 -ExpandProperty Key)
-        } elseif ($categories.Count -gt 0) {
-            @($categories | Sort-Object)[0]
-        } else {
-            'General'
-        }
-
-        $priority = switch ($score) {
-            { $_ -ge 10 } { 'Critical'; break }
-            { $_ -ge 7 } { 'High'; break }
-            { $_ -ge 4 } { 'Medium'; break }
-            default { 'Low' }
-        }
-
-        $results.Add([pscustomobject]@{
-                Url          = $url
-                Host         = $entry.Host
-                StatusCode   = $statusCode
-                Score        = $score
-                Priority     = $priority
-                PriorityRank = switch ($priority) { 'Critical' { 0 } 'High' { 1 } 'Medium' { 2 } default { 3 } }
-                PrimaryFamily = $primaryFamily
-                Categories   = @($categories | Sort-Object)
-                Reasons      = @($reasons | Select-Object -Unique)
-                ScopeId      = $entry.ScopeId
-                Source       = $entry.Source
-                Title        = if ($liveMatch) { $liveMatch.Title } else { '' }
-                Technologies = if ($liveMatch) { $liveMatch.Technologies } else { @() }
-            })
+    $triageState = if ($script:ScopeForgeContext -and $script:ScopeForgeContext.TriageState) { $script:ScopeForgeContext.TriageState } else { Get-ScopeForgeTriageState -ProgramName 'default-program' }
+    $triageData = Get-TriageReconData -LiveTargets $LiveTargets -DiscoveredUrls $DiscoveredUrls -TriageState $triageState
+    if ($script:ScopeForgeContext) {
+        $script:ScopeForgeContext.Triage = $triageData
     }
-
-    return @($results | Sort-Object -Property PriorityRank, @{ Expression = 'Score'; Descending = $true }, Url)
+    return @($triageData.ReviewableFindings)
 }
 
 function Get-PassiveLeadFindings {
@@ -2744,95 +2914,28 @@ function Get-PassiveLeadFindings {
 function Get-UnifiedFindings {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$InterestingUrls,
-        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$PassiveLeads
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$InterestingUrls,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$PassiveLeads
     )
 
-    $normalizedInteresting = @(
+    $confirmed = @(
         $InterestingUrls | ForEach-Object {
-            $priority = if ($null -ne $_.PSObject.Properties['Priority'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Priority)) {
-                [string]$_.Priority
-            } else {
-                'Info'
-            }
-
-            $family = if ($null -ne $_.PSObject.Properties['PrimaryFamily'] -and -not [string]::IsNullOrWhiteSpace([string]$_.PrimaryFamily)) {
-                [string]$_.PrimaryFamily
-            } elseif ($null -ne $_.PSObject.Properties['Family'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Family)) {
-                [string]$_.Family
-            } else {
-                'General'
-            }
-
-            $categories = @()
-            if ($null -ne $_.PSObject.Properties['Categories'] -and $null -ne $_.Categories) {
-                $categories = @(
-                    $_.Categories |
-                    Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) } |
-                    ForEach-Object { [string]$_ }
-                )
-            }
-
-            $reasons = @()
-            if ($null -ne $_.PSObject.Properties['Reasons'] -and $null -ne $_.Reasons) {
-                $reasons = @(
-                    $_.Reasons |
-                    Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) } |
-                    ForEach-Object { [string]$_ }
-                )
-            }
-
             [pscustomobject]@{
-                Severity          = $priority
+                Severity          = $_.Priority
                 Confidence        = 'Observed'
-                Priority          = $priority
-                Category          = if ($categories.Count -gt 0) { ($categories -join ', ') } else { 'General' }
-                Family            = $family
-                Host              = if ($null -ne $_.PSObject.Properties['Host']) { [string]$_.Host } else { '' }
-                Url               = if ($null -ne $_.PSObject.Properties['Url']) { [string]$_.Url } else { '' }
-                Evidence          = if ($reasons.Count -gt 0) { ($reasons -join ', ') } else { 'Observed candidate requiring review.' }
+                Priority          = $_.Priority
+                Category          = if ($_.Categories -and $_.Categories.Count -gt 0) { ($_.Categories -join ', ') } else { 'General' }
+                Family            = $_.PrimaryFamily
+                Host              = $_.Host
+                Url               = $_.Url
+                Evidence          = ($_.Reasons -join ', ')
                 RecommendedChecks = 'Review manually and validate exploitability.'
-                Source            = if ($null -ne $_.PSObject.Properties['Source'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Source)) { [string]$_.Source } else { 'observed-url' }
+                Source            = $_.Source
             }
         }
     )
 
-    $normalizedPassive = @(
-        $PassiveLeads | ForEach-Object {
-            $priority = if ($null -ne $_.PSObject.Properties['Priority'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Priority)) {
-                [string]$_.Priority
-            } else {
-                'Info'
-            }
-
-            $family = if ($null -ne $_.PSObject.Properties['Family'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Family)) {
-                [string]$_.Family
-            } else {
-                'General'
-            }
-
-            $category = if ($null -ne $_.PSObject.Properties['Category'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Category)) {
-                [string]$_.Category
-            } else {
-                'General'
-            }
-
-            [pscustomobject]@{
-                Severity          = if ($null -ne $_.PSObject.Properties['Severity'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Severity)) { [string]$_.Severity } else { 'Info' }
-                Confidence        = if ($null -ne $_.PSObject.Properties['Confidence'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Confidence)) { [string]$_.Confidence } else { 'Passive' }
-                Priority          = $priority
-                Category          = $category
-                Family            = $family
-                Host              = if ($null -ne $_.PSObject.Properties['Host']) { [string]$_.Host } else { '' }
-                Url               = if ($null -ne $_.PSObject.Properties['Url']) { [string]$_.Url } else { '' }
-                Evidence          = if ($null -ne $_.PSObject.Properties['Evidence'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Evidence)) { [string]$_.Evidence } else { 'Passive lead requiring review.' }
-                RecommendedChecks = if ($null -ne $_.PSObject.Properties['RecommendedChecks'] -and -not [string]::IsNullOrWhiteSpace([string]$_.RecommendedChecks)) { [string]$_.RecommendedChecks } else { 'Manual review recommended.' }
-                Source            = if ($null -ne $_.PSObject.Properties['Source'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Source)) { [string]$_.Source } else { 'passive-lead' }
-            }
-        }
-    )
-
-    return @($normalizedInteresting + $normalizedPassive)
+    return @($confirmed + $PassiveLeads)
 }
 
 function Get-InterestingFamilySummary {
@@ -3060,7 +3163,6 @@ function Export-ReconReport {
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$LiveTargets,
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$DiscoveredUrls,
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$InterestingUrls,
-        [Parameter()][AllowEmptyCollection()][pscustomobject[]]$AllFindings = @(),
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$Exclusions,
         [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$Errors,
         [Parameter(Mandatory)][pscustomobject]$Layout,
@@ -3069,18 +3171,7 @@ function Export-ReconReport {
         [switch]$ExportHtml
     )
 
-    $AllFindings = ConvertTo-ArrayOrEmpty -Data $AllFindings
-    if (@($AllFindings).Count -eq 0) {
-        $AllFindings = ConvertTo-ArrayOrEmpty -Data (
-            Get-UnifiedFindings -InterestingUrls $InterestingUrls -PassiveLeads @()
-        )
-    }
-
-    if ($ExportJson) {
-        Write-JsonFile -Path $Layout.SummaryJson -Data $Summary
-        Write-JsonFile -Path (Join-Path $Layout.Normalized 'findings.json') -Data $AllFindings
-    }
-
+    if ($ExportJson) { Write-JsonFile -Path $Layout.SummaryJson -Data $Summary }
     if ($ExportCsv) {
         Export-FlatCsv -Path $Layout.SummaryCsv -Rows @(
             [pscustomobject]@{ Metric = 'ProgramName'; Value = $Summary.ProgramName },
@@ -3094,17 +3185,44 @@ function Export-ReconReport {
             [pscustomobject]@{ Metric = 'InterestingUrlCount'; Value = $Summary.InterestingUrlCount },
             [pscustomobject]@{ Metric = 'ErrorCount'; Value = $Summary.ErrorCount }
         )
-
         Export-FlatCsv -Path $Layout.HostsAllCsv -Rows $HostsAll
         Export-FlatCsv -Path $Layout.LiveTargetsCsv -Rows $LiveTargets
         Export-FlatCsv -Path $Layout.UrlsDiscoveredCsv -Rows $DiscoveredUrls
         Export-FlatCsv -Path $Layout.InterestingUrlsCsv -Rows $InterestingUrls
-        Export-FlatCsv -Path (Join-Path $Layout.Normalized 'findings.csv') -Rows $AllFindings
+    }
+
+    $triageData = if ($script:ScopeForgeContext) { $script:ScopeForgeContext.Triage } else { $null }
+    if ($triageData) {
+        Write-JsonFile -Path $Layout.FilteredUrlsJson -Data $triageData.FilteredFindings
+        Write-JsonFile -Path $Layout.NoiseUrlsJson -Data $triageData.NoiseFindings
+        Write-JsonFile -Path $Layout.ReviewableUrlsJson -Data $triageData.ReviewableFindings
+        Write-JsonFile -Path $Layout.ShortlistJson -Data $triageData.Shortlist
+        if ($ExportCsv) {
+            Export-FlatCsv -Path $Layout.FilteredUrlsCsv -Rows $triageData.FilteredFindings
+            Export-FlatCsv -Path $Layout.NoiseUrlsCsv -Rows $triageData.NoiseFindings
+            Export-FlatCsv -Path $Layout.ReviewableUrlsCsv -Rows $triageData.ReviewableFindings
+        }
+
+        $shortlistLines = [System.Collections.Generic.List[string]]::new()
+        $shortlistLines.Add('# Shortlist') | Out-Null
+        $shortlistLines.Add('') | Out-Null
+        $shortlistLines.Add(('- reviewable: {0}' -f @($triageData.ReviewableFindings).Count)) | Out-Null
+        $shortlistLines.Add(('- filtered: {0}' -f @($triageData.FilteredFindings).Count)) | Out-Null
+        $shortlistLines.Add(('- noise removed: {0}' -f @($triageData.NoiseFindings).Count)) | Out-Null
+        $shortlistLines.Add('') | Out-Null
+        foreach ($item in ($triageData.Shortlist | Select-Object -First 20)) {
+            $shortlistLines.Add(('## [{0}/{1}] {2}' -f $item.Priority, $item.Score, $item.Url)) | Out-Null
+            $shortlistLines.Add(('- Family: {0}' -f $item.PrimaryFamily)) | Out-Null
+            $shortlistLines.Add(('- Categories: {0}' -f ($item.Categories -join ', '))) | Out-Null
+            $shortlistLines.Add(('- Reasons: {0}' -f ($item.Reasons -join ', '))) | Out-Null
+            $shortlistLines.Add(('- State: {0}' -f $item.StateStatus)) | Out-Null
+            $shortlistLines.Add('') | Out-Null
+        }
+        Set-Content -LiteralPath $Layout.ShortlistMarkdown -Value $shortlistLines -Encoding utf8
     }
 
     $interestingFamilies = Get-InterestingFamilySummary -InterestingUrls $InterestingUrls
     if ($null -eq $interestingFamilies) { $interestingFamilies = @() }
-
     Write-JsonFile -Path $Layout.InterestingUrlsJson -Data $InterestingUrls
     Write-JsonFile -Path $Layout.InterestingFamiliesJson -Data $interestingFamilies
     Export-TriageMarkdownReport -Summary $Summary -InterestingUrls $InterestingUrls -InterestingFamilies $interestingFamilies -LiveTargets $LiveTargets -Exclusions $Exclusions -Errors $Errors -Layout $Layout
@@ -3215,88 +3333,6 @@ function Export-ReconReport {
     Set-Content -LiteralPath $Layout.ReportHtml -Value $html -Encoding utf8
 }
 
-function Get-ScopeForgeCompanyName {
-    [CmdletBinding()]
-    param(
-        [string]$ScopeFile,
-        [string]$ProgramName = 'run'
-    )
-
-    $candidate = ''
-
-    if (-not [string]::IsNullOrWhiteSpace($ScopeFile)) {
-        try {
-            $resolvedScope = Resolve-AbsolutePath -Path $ScopeFile
-            $baseName = [System.IO.Path]::GetFileNameWithoutExtension($resolvedScope).ToLowerInvariant()
-
-            if ($baseName -match '^scope-(?:minimal|standard|advanced)-([a-z0-9._-]+)-\d{8}-\d{6}$') {
-                $candidate = $matches[1]
-            }
-            elseif ($baseName -match '^scope-([a-z0-9._-]+)') {
-                $candidate = $matches[1]
-            }
-        }
-        catch {
-        }
-    }
-
-    if ([string]::IsNullOrWhiteSpace($candidate)) {
-        $candidate = $ProgramName
-    }
-
-    $candidate = [regex]::Replace($candidate, '[^a-zA-Z0-9._-]+', '-').Trim('-').ToLowerInvariant()
-
-    if ([string]::IsNullOrWhiteSpace($candidate)) {
-        $candidate = 'unknown-scope'
-    }
-
-    return $candidate
-}
-
-function New-ScopeForgeRunOutputDir {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$BaseOutputDir,
-        [string]$ProgramName = 'run',
-        [string]$ScopeFile
-    )
-
-    $resolvedBase = Resolve-AbsolutePath -Path $BaseOutputDir
-
-    if (-not (Test-Path -LiteralPath $resolvedBase)) {
-        $null = New-Item -ItemType Directory -Path $resolvedBase -Force
-    }
-
-    $launcherRoot = $resolvedBase
-    $leafName = [System.IO.Path]::GetFileName($resolvedBase)
-    $parentDir = Split-Path -Path $resolvedBase -Parent
-    $parentLeaf = if ($parentDir) { [System.IO.Path]::GetFileName($parentDir) } else { '' }
-
-    if ($leafName -ieq 'output' -and $parentLeaf -match '^session-\d{8}-\d{6}$') {
-        $launcherRoot = Split-Path -Path $parentDir -Parent
-    }
-
-    $companyName = Get-ScopeForgeCompanyName -ScopeFile $ScopeFile -ProgramName $ProgramName
-    $companyRoot = Join-Path $launcherRoot $companyName
-
-    if (-not (Test-Path -LiteralPath $companyRoot)) {
-        $null = New-Item -ItemType Directory -Path $companyRoot -Force
-    }
-
-    $stamp = [DateTime]::Now.ToString('yyyyMMdd-HHmmss')
-    $candidate = Join-Path $companyRoot ("session-{0}" -f $stamp)
-    $counter = 1
-
-    while (Test-Path -LiteralPath $candidate) {
-        $candidate = Join-Path $companyRoot ("session-{0}-{1}" -f $stamp, $counter)
-        $counter++
-    }
-    
-    return $candidate
-}
-
-
-
 function Invoke-BugBountyRecon {
     [CmdletBinding()]
     param(
@@ -3324,15 +3360,11 @@ function Invoke-BugBountyRecon {
     $exportHtmlEnabled = if ($exportFlagsSpecified) { [bool]$ExportHtml } else { $true }
     $exportCsvEnabled = if ($exportFlagsSpecified) { [bool]$ExportCsv } else { $true }
     $exportJsonEnabled = if ($exportFlagsSpecified) { [bool]$ExportJson } else { $true }
-    $effectiveOutputDir = if ($Resume) {
-        $OutputDir
-    } else {
-        New-ScopeForgeRunOutputDir -BaseOutputDir $OutputDir -ProgramName $ProgramName -ScopeFile $ScopeFile
-    }
 
-    $layout = Get-OutputLayout -OutputDir $effectiveOutputDir
+    $layout = Get-OutputLayout -OutputDir $OutputDir
     Initialize-OutputDirectories -Layout $layout
     $script:ScopeForgeContext = New-ScopeForgeContext -Layout $layout -ProgramName $ProgramName -Quiet ([bool]$Quiet) -ExportJsonEnabled:$exportJsonEnabled -ExportCsvEnabled:$exportCsvEnabled -ExportHtmlEnabled:$exportHtmlEnabled
+    $script:ScopeForgeContext.TriageState = Get-ScopeForgeTriageState -ProgramName $ProgramName
     Initialize-ScopeForgeProgressState -Layout $layout
     Write-ScopeForgeConsolePathsHint
 
@@ -3600,30 +3632,11 @@ function Invoke-BugBountyRecon {
                 Write-ReconLog -Level WARN -Message 'Skipping crawl because no live HTTP targets were retained after validation.'
                 $discoveredUrls = @()
             } else {
-                $discoveredUrls = Invoke-KatanaCrawl `
-                    -LiveTargets $liveTargets `
-                    -ScopeItems $scopeItems `
-                    -KatanaPath $tools.Katana.Path `
-                    -RawOutputPath $layout.KatanaRaw `
-                    -TempDirectory $layout.Temp `
-                    -Depth $Depth `
-                    -Threads $Threads `
-                    -TimeoutSeconds $TimeoutSeconds `
-                    -UniqueUserAgent $UniqueUserAgent `
-                    -RespectSchemeOnly:$RespectSchemeOnly
+                $discoveredUrls = Invoke-KatanaCrawl -LiveTargets $liveTargets -ScopeItems $scopeItems -KatanaPath $tools.Katana.Path -RawOutputPath $layout.KatanaRaw -TempDirectory $layout.Temp -Depth $Depth -Threads $Threads -TimeoutSeconds $TimeoutSeconds -UniqueUserAgent $UniqueUserAgent -RespectSchemeOnly:$RespectSchemeOnly
 
                 if ($tools.Hakrawler) {
                     Write-ReconLog -Level INFO -Message 'Running hakrawler as a supplemental strictly in-scope crawl pass.'
-                    $hakrawlerUrls = Invoke-HakrawlerCrawl `
-                        -LiveTargets $liveTargets `
-                        -ScopeItems $scopeItems `
-                        -HakrawlerPath $tools.Hakrawler.Path `
-                        -RawOutputPath $layout.HakrawlerRaw `
-                        -TempDirectory $layout.Temp `
-                        -Depth ([Math]::Max([Math]::Min($Depth, 3), 1)) `
-                        -TimeoutSeconds $TimeoutSeconds `
-                        -RespectSchemeOnly:$RespectSchemeOnly
-
+                    $hakrawlerUrls = Invoke-HakrawlerCrawl -LiveTargets $liveTargets -ScopeItems $scopeItems -HakrawlerPath $tools.Hakrawler.Path -RawOutputPath $layout.HakrawlerRaw -TempDirectory $layout.Temp -Depth ([Math]::Max([Math]::Min($Depth, 3), 1)) -TimeoutSeconds $TimeoutSeconds -RespectSchemeOnly:$RespectSchemeOnly
                     $discoveredUrls = Merge-DiscoveredUrlResults -Inputs @($discoveredUrls + $hakrawlerUrls)
                 } else {
                     $discoveredUrls = Merge-DiscoveredUrlResults -Inputs $discoveredUrls
@@ -3641,47 +3654,27 @@ function Invoke-BugBountyRecon {
         if ($exportCsvEnabled) { Export-FlatCsv -Path $layout.UrlsDiscoveredCsv -Rows $discoveredUrls }
 
         Write-StageBanner -Step 6 -Title 'Génération des rapports'
-        $interestingUrls = ConvertTo-ArrayOrEmpty -Data (
-            Get-InterestingReconFindings -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls
-        )
+        $triageData = Get-TriageReconData -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -TriageState $script:ScopeForgeContext.TriageState
+        $script:ScopeForgeContext.Triage = $triageData
+        $interestingUrls = ConvertTo-ArrayOrEmpty -Data @($triageData.ReviewableFindings)
         $liveTargets = ConvertTo-ArrayOrEmpty -Data $liveTargets
         $hostsLive = ConvertTo-ArrayOrEmpty -Data $hostsLive
         $discoveredUrls = ConvertTo-ArrayOrEmpty -Data $discoveredUrls
         $interestingUrls = ConvertTo-ArrayOrEmpty -Data $interestingUrls
-        $passiveLeads = ConvertTo-ArrayOrEmpty -Data (
-            Get-PassiveLeadFindings -HostsAll $hostsAll
-        )
+        $passiveLeads = Get-PassiveLeadFindings -HostsAll $hostsAll
+        $filteredUrls = ConvertTo-ArrayOrEmpty -Data @($triageData.FilteredFindings)
+        $noiseUrls = ConvertTo-ArrayOrEmpty -Data @($triageData.NoiseFindings)
+        $shortlist = ConvertTo-ArrayOrEmpty -Data @($triageData.Shortlist)
         $allFindings = ConvertTo-ArrayOrEmpty -Data (
             Get-UnifiedFindings -InterestingUrls $interestingUrls -PassiveLeads $passiveLeads
         )
-
-        Write-JsonFile -Path (Join-Path $layout.Normalized 'findings.json') -Data $allFindings
-        if ($exportCsvEnabled) {
-            Export-FlatCsv -Path (Join-Path $layout.Normalized 'findings.csv') -Rows $allFindings
-        }
-
+        $null = $allFindings
         $summary = Merge-ReconResults -ScopeItems $scopeItems -HostsAll $hostsAll -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls $interestingUrls -Exclusions @($script:ScopeForgeContext.Exclusions) -Errors @($script:ScopeForgeContext.Errors) -ProgramName $ProgramName -UniqueUserAgent $UniqueUserAgent
-        Export-ReconReport -Summary $summary -ScopeItems $scopeItems -HostsAll $hostsAll -HostsLive $hostsLive -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls $interestingUrls -AllFindings $allFindings -Exclusions @($script:ScopeForgeContext.Exclusions) -Errors @($script:ScopeForgeContext.Errors) -Layout $layout -ExportJson:$exportJsonEnabled -ExportCsv:$exportCsvEnabled -ExportHtml:$exportHtmlEnabled
+        Export-ReconReport -Summary $summary -ScopeItems $scopeItems -HostsAll $hostsAll -HostsLive $hostsLive -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls $interestingUrls -Exclusions @($script:ScopeForgeContext.Exclusions) -Errors @($script:ScopeForgeContext.Errors) -Layout $layout -ExportJson:$exportJsonEnabled -ExportCsv:$exportCsvEnabled -ExportHtml:$exportHtmlEnabled
         Write-StageProgress -Step 6 -Title 'Génération des rapports' -Percent 100 -Status 'Reports completed'
 
-        $result = [pscustomobject]@{
-            ProgramName = $ProgramName
-            OutputDir = $layout.Root
-            ScopeItems = $scopeItems
-            HostsAll = $hostsAll
-            HostsLive = $hostsLive
-            LiveTargets = $liveTargets
-            DiscoveredUrls = $discoveredUrls
-            InterestingUrls = $interestingUrls
-            AllFindings = $allFindings
-            Summary = $summary
-            Exclusions = @($script:ScopeForgeContext.Exclusions)
-            Errors = @($script:ScopeForgeContext.Errors)
-            ExportHtmlEnabled = $exportHtmlEnabled
-            ExportCsvEnabled = $exportCsvEnabled
-            ExportJsonEnabled = $exportJsonEnabled
-        }
-
+        Save-ScopeForgeTriageState -State $script:ScopeForgeContext.TriageState -SeenReviewKeys @($triageData.SeenReviewKeys)
+        $result = [pscustomobject]@{ ProgramName = $ProgramName; OutputDir = $layout.Root; ScopeItems = $scopeItems; HostsAll = $hostsAll; HostsLive = $hostsLive; LiveTargets = $liveTargets; DiscoveredUrls = $discoveredUrls; FilteredUrls = $filteredUrls; NoiseUrls = $noiseUrls; InterestingUrls = $interestingUrls; Shortlist = $shortlist; Summary = $summary; TriageStatePath = $script:ScopeForgeContext.TriageState.Path; Exclusions = @($script:ScopeForgeContext.Exclusions); Errors = @($script:ScopeForgeContext.Errors); ExportHtmlEnabled = $exportHtmlEnabled; ExportCsvEnabled = $exportCsvEnabled; ExportJsonEnabled = $exportJsonEnabled }
         if (-not $Quiet) {
             Write-Host ''
             Write-Host 'Recon summary' -ForegroundColor Green
@@ -3691,6 +3684,9 @@ function Invoke-BugBountyRecon {
             Write-Host ('  Live hosts       : {0}' -f $summary.LiveHostCount) -ForegroundColor Gray
             Write-Host ('  Live targets     : {0}' -f $summary.LiveTargetCount) -ForegroundColor Gray
             Write-Host ('  URLs discovered  : {0}' -f $summary.DiscoveredUrlCount) -ForegroundColor Gray
+            Write-Host ('  URLs filtrees    : {0}' -f $summary.FilteredUrlCount) -ForegroundColor Gray
+            Write-Host ('  Reviewable       : {0}' -f $summary.ReviewableUrlCount) -ForegroundColor Gray
+            Write-Host ('  Bruit retire     : {0}' -f $summary.NoiseRemovedCount) -ForegroundColor Gray
             Write-Host ('  Interesting URLs : {0}' -f $summary.InterestingUrlCount) -ForegroundColor Gray
             Write-Host ('  Errors           : {0}' -f $summary.ErrorCount) -ForegroundColor Gray
             Write-Host ('  Output           : {0}' -f $layout.Root) -ForegroundColor Gray
@@ -3701,7 +3697,9 @@ function Invoke-BugBountyRecon {
             Write-Host ('  Donnees brutes   : {0}' -f $layout.Raw) -ForegroundColor Gray
             Write-Host ('  Donnees norm.    : {0}' -f $layout.Normalized) -ForegroundColor Gray
             Write-Host ('  Rapport HTML     : {0}' -f $layout.ReportHtml) -ForegroundColor Gray
-            Write-Host ('  Triage MD        : {0}' -f $layout.TriageMarkdown) -ForegroundColor Gray            
+            Write-Host ('  Triage MD        : {0}' -f $layout.TriageMarkdown) -ForegroundColor Gray
+            Write-Host ('  Shortlist MD     : {0}' -f $layout.ShortlistMarkdown) -ForegroundColor Gray
+            Write-Host ('  Etat triage      : {0}' -f $script:ScopeForgeContext.TriageState.Path) -ForegroundColor Gray
             if ((Get-ScopeForgeItemCount -Data $interestingUrls) -gt 0) {
                 Write-Host ''
                 Write-Host 'Top interesting pages' -ForegroundColor Yellow

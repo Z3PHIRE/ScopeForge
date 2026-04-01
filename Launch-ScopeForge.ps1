@@ -924,8 +924,10 @@ function Show-RunSummaryDashboard {
         @{ Label = 'Hosts decouverts'; Count = [int]$summary.DiscoveredHostCount },
         @{ Label = 'Hosts live'; Count = [int]$summary.LiveHostCount },
         @{ Label = 'Cibles live'; Count = [int]$summary.LiveTargetCount },
-        @{ Label = 'URLs decouvertes'; Count = [int]$summary.DiscoveredUrlCount },
-        @{ Label = 'URLs interessantes'; Count = [int]$summary.InterestingUrlCount },
+        @{ Label = 'URLs brutes'; Count = [int]$summary.DiscoveredUrlCount },
+        @{ Label = 'URLs filtrees'; Count = $(if ($null -ne $summary.FilteredUrlCount) { [int]$summary.FilteredUrlCount } else { [int]$summary.DiscoveredUrlCount }) },
+        @{ Label = 'Reviewable'; Count = $(if ($null -ne $summary.ReviewableUrlCount) { [int]$summary.ReviewableUrlCount } else { [int]$summary.InterestingUrlCount }) },
+        @{ Label = 'Bruit retire'; Count = $(if ($null -ne $summary.NoiseRemovedCount) { [int]$summary.NoiseRemovedCount } else { 0 }) },
         @{ Label = 'Proteges 401/403'; Count = [int]$protectedCount },
         @{ Label = 'Erreurs'; Count = [int]$summary.ErrorCount }
     )
@@ -1124,10 +1126,20 @@ function Show-NextActionsPanel {
     if ($topFamily) {
         Write-Host ("  Priorite famille  : {0} ({1})" -f $topFamily.Family, $topFamily.Count) -ForegroundColor Gray
     }
+    if ($null -ne $Result.Summary.ShortlistCount) {
+        Write-Host ("  Shortlist utile   : {0} cible(s)" -f $Result.Summary.ShortlistCount) -ForegroundColor Green
+    }
     if ($Result.Errors -and $Result.Errors.Count -gt 0) {
         Write-Host "  Verifie errors.log et tools.log avant d'elargir le run." -ForegroundColor Yellow
     }
     Write-Host ("  Rapport HTML      : {0}" -f (Join-Path $Result.OutputDir 'reports/report.html')) -ForegroundColor Green
+    if ($Result.Summary.TriageStatePath) {
+        Write-Host ("  Etat triage       : {0}" -f $Result.Summary.TriageStatePath) -ForegroundColor Gray
+    }
+    $shortlistPath = Join-Path $Result.OutputDir 'reports/shortlist.md'
+    if (Test-Path -LiteralPath $shortlistPath) {
+        Write-Host ("  Shortlist MD      : {0}" -f $shortlistPath) -ForegroundColor Gray
+    }
 }
 
 function Get-LauncherErrorRecommendation {
@@ -1227,49 +1239,9 @@ function Get-LauncherStorageRoot {
     }
 }
 
-function ConvertTo-LauncherSafeSegment {
-    param([AllowNull()][string]$Value, [string]$Fallback = 'default')
-
-    $text = if ([string]::IsNullOrWhiteSpace($Value)) { $Fallback } else { [string]$Value }
-    $text = [System.IO.Path]::GetFileNameWithoutExtension($text)
-    $text = $text -replace '^scope-(minimal|standard|advanced)-', ''
-    $text = $text -replace '-20\d{6}-\d{6}$', ''
-    $text = $text -replace '[^a-zA-Z0-9._-]+', '-'
-    $text = $text.Trim('-_. ')
-    if ([string]::IsNullOrWhiteSpace($text)) { return $Fallback }
-    return $text.ToLowerInvariant()
-}
-
-function Get-LauncherCompanySegment {
-    param(
-        [AllowNull()][string]$ScopeFile = '',
-        [AllowNull()][string]$ProgramName = ''
-    )
-
-    if (-not [string]::IsNullOrWhiteSpace($ScopeFile)) {
-        $scopeName = [System.IO.Path]::GetFileNameWithoutExtension([string]$ScopeFile)
-        $company = ConvertTo-LauncherSafeSegment -Value $scopeName -Fallback ''
-        if (-not [string]::IsNullOrWhiteSpace($company)) { return $company }
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($ProgramName)) {
-        return (ConvertTo-LauncherSafeSegment -Value $ProgramName -Fallback 'default-program')
-    }
-
-    return 'default-program'
-}
-
-
 function Get-LauncherDefaultOutputDir {
-    param(
-        [AllowNull()][string]$ScopeFile = '',
-        [AllowNull()][string]$ProgramName = ''
-    )
-
-    return (Get-LauncherUniqueRunDirectory -ScopeFile $ScopeFile -ProgramName $ProgramName)
+    return (Get-LauncherUniqueRunDirectory)
 }
-
-
 
 function Get-LauncherOutputAnchorRoot {
     param([Parameter(Mandatory)][hashtable]$RunConfig)
@@ -3897,7 +3869,7 @@ function Select-LauncherGuidedStartupPlan {
         [bool]$AllowRerun = $false
     )
 
-    $plannedOutputDir = if ($OutputDir) { $OutputDir } else { Get-LauncherDefaultOutputDir -ScopeFile $InitialScopeFile }
+    $plannedOutputDir = if ($OutputDir) { $OutputDir } else { Get-LauncherDefaultOutputDir }
     $initialRecentScopes = @(Read-LauncherRecentScopes)
     $selectedSession = Get-LauncherSelectedSession
     $selectedScope = $null
@@ -4192,32 +4164,18 @@ function Get-LauncherRunCatalogRoot {
 }
 
 function Get-LauncherUniqueRunDirectory {
-    param(
-        [string]$Suffix = '',
-        [AllowNull()][string]$ScopeFile = '',
-        [AllowNull()][string]$ProgramName = ''
-    )
+    param([string]$Suffix = '')
 
     $runsRoot = Get-LauncherRunsRoot
-    $companySegment = Get-LauncherCompanySegment -ScopeFile $ScopeFile -ProgramName $ProgramName
-    $programSegment = ConvertTo-LauncherSafeSegment -Value $ProgramName -Fallback 'default-program'
-
-    $baseRoot = Join-Path (Join-Path $runsRoot $companySegment) $programSegment
-    if (-not (Test-Path -LiteralPath $baseRoot)) {
-        $null = New-Item -ItemType Directory -Path $baseRoot -Force
-    }
-
     $baseName = [DateTime]::Now.ToString('yyyyMMdd-HHmmss')
-    $candidatePath = Join-Path $baseRoot ($baseName + $Suffix)
+    $candidatePath = Join-Path $runsRoot ($baseName + $Suffix)
     $counter = 1
     while (Test-Path -LiteralPath $candidatePath) {
-        $candidatePath = Join-Path $baseRoot ("{0}{1}-{2}" -f $baseName, $Suffix, $counter)
+        $candidatePath = Join-Path $runsRoot ("{0}{1}-{2}" -f $baseName, $Suffix, $counter)
         $counter++
     }
     return $candidatePath
 }
-
-
 
 function Get-LauncherUniqueSessionDirectory {
     param([string]$Suffix = '')
@@ -4561,7 +4519,7 @@ function New-LauncherRerunConfigFromManifest {
     )
 
     $settings = if ($Manifest.RunSettings) { $Manifest.RunSettings } else { [pscustomobject]@{} }
-    $newOutputDir = Get-LauncherUniqueRunDirectory -Suffix '-rerun' -ScopeFile $scopeFile -ProgramName $Manifest.ProgramName
+    $newOutputDir = Get-LauncherUniqueRunDirectory -Suffix '-rerun'
     $scopeFile = if ($Manifest.FrozenScopeFile -and (Test-Path -LiteralPath $Manifest.FrozenScopeFile)) { $Manifest.FrozenScopeFile } elseif ($Manifest.OriginalScopeFile -and (Test-Path -LiteralPath $Manifest.OriginalScopeFile)) { $Manifest.OriginalScopeFile } else { $null }
     if (-not $scopeFile) {
         throw "Impossible de relancer ce run: scope figé introuvable pour $($Manifest.ProgramName)."
@@ -5053,7 +5011,7 @@ function New-LauncherDocumentSet {
     }
 
     $defaultProgramName = if ($ProgramName) { $ProgramName } else { 'authorized-bugbounty' }
-    $defaultOutputDir = if ($OutputDir) { $OutputDir } else { Get-LauncherDefaultOutputDir -ScopeFile $(if ($ManagedScopeFilePath) { $ManagedScopeFilePath } else { $InitialScopeFile }) -ProgramName $defaultProgramName }
+    $defaultOutputDir = if ($OutputDir) { $OutputDir } else { Get-LauncherDefaultOutputDir }
     $defaultUserAgent = if ($UniqueUserAgent) { $UniqueUserAgent } else { "researcher-" + ([Guid]::NewGuid().ToString('N').Substring(0, 8)) }
 
     $settingsObject = [ordered]@{
@@ -5231,7 +5189,7 @@ function Build-DocumentRunConfig {
                 New-LauncherConfigError -Field 'programName' -Value $programNameValue -Problem 'Doit etre renseigné.' -Example '"programName": "authorized-bugbounty"'
             }
 
-            $outputDirValue = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'outputDir' -Default (Get-LauncherDefaultOutputDir -ScopeFile $documentSet.ScopePath -ProgramName $ProgramName))
+            $outputDirValue = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'outputDir' -Default (Get-LauncherDefaultOutputDir))
             if ([string]::IsNullOrWhiteSpace($outputDirValue)) {
                 New-LauncherConfigError -Field 'outputDir' -Value $outputDirValue -Problem 'Doit etre renseigné.' -Example '"outputDir": "./output"'
             }
@@ -5403,7 +5361,7 @@ function Build-InteractiveRunConfig {
 
     $localScopeFile = if ($InitialScopeFile) { $InitialScopeFile } else { Get-InteractiveScopeFile }
     $localProgramName = if ($ProgramName) { $ProgramName } else { 'authorized-bugbounty' }
-    $localOutputDir = if ($OutputDir) { $OutputDir } else { Get-LauncherDefaultOutputDir -ScopeFile $localScopeFile -ProgramName $localProgramName }
+    $localOutputDir = if ($OutputDir) { $OutputDir } else { Get-LauncherDefaultOutputDir }
     $localUserAgent = if ($UniqueUserAgent) { $UniqueUserAgent } else { "researcher-" + ([Guid]::NewGuid().ToString('N').Substring(0, 8)) }
 
     Write-LauncherSection -Title 'Ajustements'
