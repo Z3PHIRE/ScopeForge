@@ -1533,6 +1533,30 @@ function Get-TriageReconData {
         [Parameter(Mandatory)][pscustomobject]$TriageState
     )
 
+    $ignoreKeys = if ($TriageState -and $null -ne $TriageState.IgnoreKeys) {
+        $TriageState.IgnoreKeys
+    } else {
+        New-ScopeForgeStringSet
+    }
+
+    $falsePositiveKeys = if ($TriageState -and $null -ne $TriageState.FalsePositiveKeys) {
+        $TriageState.FalsePositiveKeys
+    } else {
+        New-ScopeForgeStringSet
+    }
+
+    $validatedKeys = if ($TriageState -and $null -ne $TriageState.ValidatedKeys) {
+        $TriageState.ValidatedKeys
+    } else {
+        New-ScopeForgeStringSet
+    }
+
+    $seenKeysState = if ($TriageState -and $null -ne $TriageState.SeenKeys) {
+        $TriageState.SeenKeys
+    } else {
+        New-ScopeForgeStringSet
+    }
+
     $liveIndex = @{}
     foreach ($liveTarget in $LiveTargets) {
         $analysis = Get-ReviewUrlAnalysis -Url $liveTarget.Url -StatusCode ([int]$liveTarget.StatusCode)
@@ -1618,13 +1642,13 @@ function Get-TriageReconData {
         }
 
         $stateStatus = 'new'
-        if ($TriageState.IgnoreKeys.Contains($analysis.ReviewKey)) {
+        if ($ignoreKeys.Contains($analysis.ReviewKey)) {
             $stateStatus = 'ignored'
-        } elseif ($TriageState.FalsePositiveKeys.Contains($analysis.ReviewKey)) {
+        } elseif ($falsePositiveKeys.Contains($analysis.ReviewKey)) {
             $stateStatus = 'false-positive'
-        } elseif ($TriageState.ValidatedKeys.Contains($analysis.ReviewKey)) {
+        } elseif ($validatedKeys.Contains($analysis.ReviewKey)) {
             $stateStatus = 'validated'
-        } elseif ($TriageState.SeenKeys.Contains($analysis.ReviewKey)) {
+        } elseif ($seenKeysState.Contains($analysis.ReviewKey)) {
             $stateStatus = 'seen-before'
         }
 
