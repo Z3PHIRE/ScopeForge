@@ -1687,19 +1687,18 @@ function Get-TriageReconData {
             'General'
         }
 
-        $ignoreKeys = $TriageState.IgnoreKeys
-        $falsePositiveKeys = $TriageState.FalsePositiveKeys
-        $validatedKeys = $TriageState.ValidatedKeys
-        $seenKeysState = $TriageState.SeenKeys
-
         $stateStatus = 'new'
-        if ($ignoreKeys.Contains($analysis.ReviewKey)) {
+
+        if ($null -ne $ignoreKeys -and $ignoreKeys.Contains([string]$analysis.ReviewKey)) {
             $stateStatus = 'ignored'
-        } elseif ($falsePositiveKeys.Contains($analysis.ReviewKey)) {
+        }
+        elseif ($null -ne $falsePositiveKeys -and $falsePositiveKeys.Contains([string]$analysis.ReviewKey)) {
             $stateStatus = 'false-positive'
-        } elseif ($validatedKeys.Contains($analysis.ReviewKey)) {
+        }
+        elseif ($null -ne $validatedKeys -and $validatedKeys.Contains([string]$analysis.ReviewKey)) {
             $stateStatus = 'validated'
-        } elseif ($seenKeysState.Contains($analysis.ReviewKey)) {
+        }
+        elseif ($null -ne $seenKeysState -and $seenKeysState.Contains([string]$analysis.ReviewKey)) {
             $stateStatus = 'seen-before'
         }
 
