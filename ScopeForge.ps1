@@ -1424,64 +1424,128 @@ function Save-ScopeForgeTriageState {
         [AllowEmptyCollection()][string[]]$SeenReviewKeys = @()
     )
 
-    $State = ConvertTo-ScopeForgeTriageState -State $State
+    $normalizedState = $State
 
-    if ($null -eq $State) {
-        throw 'Save-ScopeForgeTriageState: triage state is null after conversion.'
+    if ($null -eq $normalizedState) {
+        $normalizedState = [pscustomobject]@{}
     }
 
-    if (-not $State.PSObject.Properties['IgnoreKeys'] -or $null -eq $State.IgnoreKeys) {
-        $State | Add-Member -NotePropertyName IgnoreKeys -NotePropertyValue (New-ScopeForgeStringSet) -Force
+    try {
+        $normalizedState = ConvertTo-ScopeForgeTriageState -State $normalizedState
+    } catch {
+        $normalizedState = [pscustomobject]@{}
     }
 
-    if (-not $State.PSObject.Properties['FalsePositiveKeys'] -or $null -eq $State.FalsePositiveKeys) {
-        $State | Add-Member -NotePropertyName FalsePositiveKeys -NotePropertyValue (New-ScopeForgeStringSet) -Force
+    $programName = if (
+        $normalizedState.PSObject.Properties['ProgramName'] -and
+        -not [string]::IsNullOrWhiteSpace([string]$normalizedState.ProgramName)
+    ) {
+        [string]$normalizedState.ProgramName
+    } else {
+        'default-program'
     }
 
-    if (-not $State.PSObject.Properties['ValidatedKeys'] -or $null -eq $State.ValidatedKeys) {
-        $State | Add-Member -NotePropertyName ValidatedKeys -NotePropertyValue (New-ScopeForgeStringSet) -Force
+    $path = if (
+        $normalizedState.PSObject.Properties['Path'] -and
+        -not [string]::IsNullOrWhiteSpace([string]$normalizedState.Path)
+    ) {
+        [string]$normalizedState.Path
+    } else {
+        Join-Path (Get-ScopeForgeStateRoot -ProgramName $programName) 'triage-state.json'
     }
 
-    if (-not $State.PSObject.Properties['SeenKeys'] -or $null -eq $State.SeenKeys) {
-        $State | Add-Member -NotePropertyName SeenKeys -NotePropertyValue (New-ScopeForgeStringSet) -Force
-    }
+    $ignoreKeys = New-ScopeForgeStringSet -Values @(
+        (ConvertTo-ArrayOrEmpty -Data $(if (
+            $normalizedState.PSObject.Properties['IgnoreKeys'] -and
+            $null -ne $normalizedState.IgnoreKeys
+        ) {
+            $normalizedState.IgnoreKeys
+        } else {
+            @()
+        })) | ForEach-Object { [string]$_ }
+    )
 
-    if (-not $State.PSObject.Properties['ReviewNotes'] -or $null -eq $State.ReviewNotes) {
-        $State | Add-Member -NotePropertyName ReviewNotes -NotePropertyValue @{} -Force
-    }
+    $falsePositiveKeys = New-ScopeForgeStringSet -Values @(
+        (ConvertTo-ArrayOrEmpty -Data $(if (
+            $normalizedState.PSObject.Properties['FalsePositiveKeys'] -and
+            $null -ne $normalizedState.FalsePositiveKeys
+        ) {
+            $normalizedState.FalsePositiveKeys
+        } else {
+            @()
+        })) | ForEach-Object { [string]$_ }
+    )
 
-    if (-not $State.PSObject.Properties['ProgramName'] -or [string]::IsNullOrWhiteSpace([string]$State.ProgramName)) {
-        $State | Add-Member -NotePropertyName ProgramName -NotePropertyValue 'default-program' -Force
-    }
+    $validatedKeys = New-ScopeForgeStringSet -Values @(
+        (ConvertTo-ArrayOrEmpty -Data $(if (
+            $normalizedState.PSObject.Properties['ValidatedKeys'] -and
+            $null -ne $normalizedState.ValidatedKeys
+        ) {
+            $normalizedState.ValidatedKeys
+        } else {
+            @()
+        })) | ForEach-Object { [string]$_ }
+    )
 
-    if (-not $State.PSObject.Properties['Path'] -or [string]::IsNullOrWhiteSpace([string]$State.Path)) {
-        $State | Add-Member -NotePropertyName Path -NotePropertyValue (Join-Path (Get-ScopeForgeStateRoot -ProgramName $State.ProgramName) 'triage-state.json') -Force
-    }
+    $seenKeys = New-ScopeForgeStringSet -Values @(
+        (ConvertTo-ArrayOrEmpty -Data $(if (
+            $normalizedState.PSObject.Properties['SeenKeys'] -and
+            $null -ne $normalizedState.SeenKeys
+        ) {
+            $normalizedState.SeenKeys
+        } else {
+            @()
+        })) | ForEach-Object { [string]$_ }
+    )
 
     foreach ($key in (ConvertTo-ArrayOrEmpty -Data $SeenReviewKeys)) {
         $reviewKey = [string]$key
         if (-not [string]::IsNullOrWhiteSpace($reviewKey)) {
-            $null = $State.SeenKeys.Add($reviewKey)
+            $null = $seenKeys.Add($reviewKey)
         }
     }
 
-    $parentDir = Split-Path -Parent $State.Path
-    if (-not [string]::IsNullOrWhiteSpace($parentDir) -and -not (Test-Path -LiteralPath $parentDir)) {
+    $reviewNotes = if (
+        $normalizedState.PSObject.Properties['ReviewNotes'] -and
+        $null -ne $normalizedState.ReviewNotes
+    ) {
+        $normalizedState.ReviewNotes
+    } else {
+        @{}
+    }
+
+    $parentDir = Split-Path -Parent $path
+    if (
+        -not [string]::IsNullOrWhiteSpace($parentDir) -and
+        -not (Test-Path -LiteralPath $parentDir)
+    ) {
         $null = New-Item -ItemType Directory -Path $parentDir -Force
     }
 
     $document = [ordered]@{
         version           = 1
-        programName       = $State.ProgramName
+        programName       = $programName
         updatedUtc        = [DateTime]::UtcNow.ToString('o')
-        ignoreKeys        = @($State.IgnoreKeys | Sort-Object)
-        falsePositiveKeys = @($State.FalsePositiveKeys | Sort-Object)
-        validatedKeys     = @($State.ValidatedKeys | Sort-Object)
-        seenKeys          = @($State.SeenKeys | Sort-Object)
-        reviewNotes       = $State.ReviewNotes
+        ignoreKeys        = @($ignoreKeys | Sort-Object)
+        falsePositiveKeys = @($falsePositiveKeys | Sort-Object)
+        validatedKeys     = @($validatedKeys | Sort-Object)
+        seenKeys          = @($seenKeys | Sort-Object)
+        reviewNotes       = $reviewNotes
     }
 
-    $document | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $State.Path -Encoding utf8
+    $document | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $path -Encoding utf8
+
+    if ($script:ScopeForgeContext) {
+        $script:ScopeForgeContext.TriageState = [pscustomobject]@{
+            Path              = $path
+            ProgramName       = $programName
+            IgnoreKeys        = $ignoreKeys
+            FalsePositiveKeys = $falsePositiveKeys
+            ValidatedKeys     = $validatedKeys
+            SeenKeys          = $seenKeys
+            ReviewNotes       = $reviewNotes
+        }
+    }
 }
 
 function Write-ScopeForgeDiagnosticLine {
