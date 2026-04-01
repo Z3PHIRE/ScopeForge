@@ -2651,56 +2651,95 @@ function Get-PassiveLeadFindings {
 function Get-UnifiedFindings {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$InterestingUrls,
-        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$PassiveLeads
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$InterestingUrls,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$PassiveLeads
     )
 
-    $confirmed = [System.Collections.Generic.List[object]]::new()
+    $normalizedInteresting = @(
+        $InterestingUrls | ForEach-Object {
+            $priority = if ($null -ne $_.PSObject.Properties['Priority'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Priority)) {
+                [string]$_.Priority
+            } else {
+                'Info'
+            }
 
-    foreach ($item in (ConvertTo-ArrayOrEmpty -Data $InterestingUrls)) {
-        if ($null -eq $item) { continue }
+            $family = if ($null -ne $_.PSObject.Properties['PrimaryFamily'] -and -not [string]::IsNullOrWhiteSpace([string]$_.PrimaryFamily)) {
+                [string]$_.PrimaryFamily
+            } elseif ($null -ne $_.PSObject.Properties['Family'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Family)) {
+                [string]$_.Family
+            } else {
+                'General'
+            }
 
-        $priority = [string](Get-ObjectValue -InputObject $item -Names @('Priority') -Default 'Info')
-        if ([string]::IsNullOrWhiteSpace($priority)) { $priority = 'Info' }
+            $categories = @()
+            if ($null -ne $_.PSObject.Properties['Categories'] -and $null -ne $_.Categories) {
+                $categories = @(
+                    $_.Categories |
+                    Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) } |
+                    ForEach-Object { [string]$_ }
+                )
+            }
 
-        $categoriesRaw = Get-ObjectValue -InputObject $item -Names @('Categories') -Default @()
-        $categories = @()
-        if ($categoriesRaw -is [System.Collections.IEnumerable] -and $categoriesRaw -isnot [string]) {
-            $categories = @($categoriesRaw | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        } elseif (-not [string]::IsNullOrWhiteSpace([string]$categoriesRaw)) {
-            $categories = @([string]$categoriesRaw)
+            $reasons = @()
+            if ($null -ne $_.PSObject.Properties['Reasons'] -and $null -ne $_.Reasons) {
+                $reasons = @(
+                    $_.Reasons |
+                    Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) } |
+                    ForEach-Object { [string]$_ }
+                )
+            }
+
+            [pscustomobject]@{
+                Severity          = $priority
+                Confidence        = 'Observed'
+                Priority          = $priority
+                Category          = if ($categories.Count -gt 0) { ($categories -join ', ') } else { 'General' }
+                Family            = $family
+                Host              = if ($null -ne $_.PSObject.Properties['Host']) { [string]$_.Host } else { '' }
+                Url               = if ($null -ne $_.PSObject.Properties['Url']) { [string]$_.Url } else { '' }
+                Evidence          = if ($reasons.Count -gt 0) { ($reasons -join ', ') } else { 'Observed candidate requiring review.' }
+                RecommendedChecks = 'Review manually and validate exploitability.'
+                Source            = if ($null -ne $_.PSObject.Properties['Source'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Source)) { [string]$_.Source } else { 'observed-url' }
+            }
         }
+    )
 
-        $reasonsRaw = Get-ObjectValue -InputObject $item -Names @('Reasons') -Default @()
-        $reasons = @()
-        if ($reasonsRaw -is [System.Collections.IEnumerable] -and $reasonsRaw -isnot [string]) {
-            $reasons = @($reasonsRaw | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        } elseif (-not [string]::IsNullOrWhiteSpace([string]$reasonsRaw)) {
-            $reasons = @([string]$reasonsRaw)
+    $normalizedPassive = @(
+        $PassiveLeads | ForEach-Object {
+            $priority = if ($null -ne $_.PSObject.Properties['Priority'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Priority)) {
+                [string]$_.Priority
+            } else {
+                'Info'
+            }
+
+            $family = if ($null -ne $_.PSObject.Properties['Family'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Family)) {
+                [string]$_.Family
+            } else {
+                'General'
+            }
+
+            $category = if ($null -ne $_.PSObject.Properties['Category'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Category)) {
+                [string]$_.Category
+            } else {
+                'General'
+            }
+
+            [pscustomobject]@{
+                Severity          = if ($null -ne $_.PSObject.Properties['Severity'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Severity)) { [string]$_.Severity } else { 'Info' }
+                Confidence        = if ($null -ne $_.PSObject.Properties['Confidence'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Confidence)) { [string]$_.Confidence } else { 'Passive' }
+                Priority          = $priority
+                Category          = $category
+                Family            = $family
+                Host              = if ($null -ne $_.PSObject.Properties['Host']) { [string]$_.Host } else { '' }
+                Url               = if ($null -ne $_.PSObject.Properties['Url']) { [string]$_.Url } else { '' }
+                Evidence          = if ($null -ne $_.PSObject.Properties['Evidence'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Evidence)) { [string]$_.Evidence } else { 'Passive lead requiring review.' }
+                RecommendedChecks = if ($null -ne $_.PSObject.Properties['RecommendedChecks'] -and -not [string]::IsNullOrWhiteSpace([string]$_.RecommendedChecks)) { [string]$_.RecommendedChecks } else { 'Manual review recommended.' }
+                Source            = if ($null -ne $_.PSObject.Properties['Source'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Source)) { [string]$_.Source } else { 'passive-lead' }
+            }
         }
+    )
 
-        $family = [string](Get-ObjectValue -InputObject $item -Names @('PrimaryFamily') -Default 'General')
-        if ([string]::IsNullOrWhiteSpace($family)) { $family = 'General' }
-
-        $hostValue = [string](Get-ObjectValue -InputObject $item -Names @('Host') -Default '')
-        $urlValue = [string](Get-ObjectValue -InputObject $item -Names @('Url') -Default '')
-        $sourceValue = [string](Get-ObjectValue -InputObject $item -Names @('Source') -Default 'interesting-url')
-
-        $confirmed.Add([pscustomobject]@{
-            Severity          = $priority
-            Confidence        = 'Observed'
-            Priority          = $priority
-            Category          = if ($categories.Count -gt 0) { ($categories -join ', ') } else { 'General' }
-            Family            = $family
-            Host              = $hostValue
-            Url               = $urlValue
-            Evidence          = if ($reasons.Count -gt 0) { ($reasons -join ', ') } else { 'Heuristic interesting finding.' }
-            RecommendedChecks = 'Review manually and validate exploitability.'
-            Source            = $sourceValue
-        }) | Out-Null
-    }
-
-    return @($confirmed + (ConvertTo-ArrayOrEmpty -Data $PassiveLeads))
+    return @($normalizedInteresting + $normalizedPassive)
 }
 
 function Get-InterestingFamilySummary {
@@ -2937,7 +2976,11 @@ function Export-ReconReport {
         [switch]$ExportHtml
     )
 
-    if ($ExportJson) { Write-JsonFile -Path $Layout.SummaryJson -Data $Summary }
+    if ($ExportJson) {
+        Write-JsonFile -Path $Layout.SummaryJson -Data $Summary
+        Write-JsonFile -Path (Join-Path $Layout.Normalized 'findings.json') -Data $AllFindings
+    }
+
     if ($ExportCsv) {
         Export-FlatCsv -Path $Layout.SummaryCsv -Rows @(
             [pscustomobject]@{ Metric = 'ProgramName'; Value = $Summary.ProgramName },
@@ -2951,20 +2994,24 @@ function Export-ReconReport {
             [pscustomobject]@{ Metric = 'InterestingUrlCount'; Value = $Summary.InterestingUrlCount },
             [pscustomobject]@{ Metric = 'ErrorCount'; Value = $Summary.ErrorCount }
         )
+
         Export-FlatCsv -Path $Layout.HostsAllCsv -Rows $HostsAll
         Export-FlatCsv -Path $Layout.LiveTargetsCsv -Rows $LiveTargets
         Export-FlatCsv -Path $Layout.UrlsDiscoveredCsv -Rows $DiscoveredUrls
         Export-FlatCsv -Path $Layout.InterestingUrlsCsv -Rows $InterestingUrls
+        Export-FlatCsv -Path (Join-Path $Layout.Normalized 'findings.csv') -Rows $AllFindings
     }
 
     $interestingFamilies = Get-InterestingFamilySummary -InterestingUrls $InterestingUrls
     if ($null -eq $interestingFamilies) { $interestingFamilies = @() }
+
     Write-JsonFile -Path $Layout.InterestingUrlsJson -Data $InterestingUrls
     Write-JsonFile -Path $Layout.InterestingFamiliesJson -Data $interestingFamilies
+
     Export-TriageMarkdownReport -Summary $Summary -InterestingUrls $InterestingUrls -InterestingFamilies $interestingFamilies -LiveTargets $LiveTargets -Exclusions $Exclusions -Errors $Errors -Layout $Layout
 
     if (-not $ExportHtml) { return }
-
+    
     function Get-HtmlTableBodyOrEmpty {
         param(
             [string]$Rows,
