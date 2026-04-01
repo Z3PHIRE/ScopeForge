@@ -1305,6 +1305,48 @@ function New-ScopeForgeStringSet {
     return $set
 }
 
+function ConvertTo-ScopeForgeTriageState {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][pscustomobject]$State,
+        [string]$ProgramName = '',
+        [string]$Path = ''
+    )
+
+    $effectiveProgramName = if (-not [string]::IsNullOrWhiteSpace($ProgramName)) {
+        $ProgramName
+    } elseif ($State -and $State.PSObject.Properties['ProgramName'] -and -not [string]::IsNullOrWhiteSpace([string]$State.ProgramName)) {
+        [string]$State.ProgramName
+    } else {
+        'default-program'
+    }
+
+    $effectivePath = if (-not [string]::IsNullOrWhiteSpace($Path)) {
+        $Path
+    } elseif ($State -and $State.PSObject.Properties['Path'] -and -not [string]::IsNullOrWhiteSpace([string]$State.Path)) {
+        [string]$State.Path
+    } else {
+        Join-Path (Get-ScopeForgeStateRoot -ProgramName $effectiveProgramName) 'triage-state.json'
+    }
+
+    $rawIgnoreKeys = if ($State -and $State.PSObject.Properties['IgnoreKeys']) { $State.IgnoreKeys } else { @() }
+    $rawFalsePositiveKeys = if ($State -and $State.PSObject.Properties['FalsePositiveKeys']) { $State.FalsePositiveKeys } else { @() }
+    $rawValidatedKeys = if ($State -and $State.PSObject.Properties['ValidatedKeys']) { $State.ValidatedKeys } else { @() }
+    $rawSeenKeys = if ($State -and $State.PSObject.Properties['SeenKeys']) { $State.SeenKeys } else { @() }
+    $reviewNotes = if ($State -and $State.PSObject.Properties['ReviewNotes'] -and $null -ne $State.ReviewNotes) { $State.ReviewNotes } else { @{} }
+
+    return [pscustomobject]@{
+        Path              = $effectivePath
+        ProgramName       = $effectiveProgramName
+        IgnoreKeys        = New-ScopeForgeStringSet -Values @((ConvertTo-ArrayOrEmpty -Data $rawIgnoreKeys) | ForEach-Object { [string]$_ })
+        FalsePositiveKeys = New-ScopeForgeStringSet -Values @((ConvertTo-ArrayOrEmpty -Data $rawFalsePositiveKeys) | ForEach-Object { [string]$_ })
+        ValidatedKeys     = New-ScopeForgeStringSet -Values @((ConvertTo-ArrayOrEmpty -Data $rawValidatedKeys) | ForEach-Object { [string]$_ })
+        SeenKeys          = New-ScopeForgeStringSet -Values @((ConvertTo-ArrayOrEmpty -Data $rawSeenKeys) | ForEach-Object { [string]$_ })
+        ReviewNotes       = $reviewNotes
+    }
+}
+
+
 function Get-ScopeForgeStateRoot {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$ProgramName)
@@ -1364,7 +1406,7 @@ function Get-ScopeForgeTriageState {
     $validatedKeys = New-ScopeForgeStringSet -Values @((ConvertTo-ArrayOrEmpty -Data $parsed.validatedKeys) | ForEach-Object { [string]$_ })
     $seenKeys = New-ScopeForgeStringSet -Values @((ConvertTo-ArrayOrEmpty -Data $parsed.seenKeys) | ForEach-Object { [string]$_ })
 
-    return [pscustomobject]@{
+        return ConvertTo-ScopeForgeTriageState -State ([pscustomobject]@{
         Path              = $path
         ProgramName       = $ProgramName
         IgnoreKeys        = $ignoreKeys
@@ -1372,7 +1414,7 @@ function Get-ScopeForgeTriageState {
         ValidatedKeys     = $validatedKeys
         SeenKeys          = $seenKeys
         ReviewNotes       = $(if ($parsed.reviewNotes) { $parsed.reviewNotes } else { @{} })
-    }
+    }) -ProgramName $ProgramName -Path $path
 }
 
 function Save-ScopeForgeTriageState {
@@ -1381,6 +1423,8 @@ function Save-ScopeForgeTriageState {
         [Parameter(Mandatory)][pscustomobject]$State,
         [AllowEmptyCollection()][string[]]$SeenReviewKeys = @()
     )
+
+    $State = Normalize-ScopeForgeTriageState -State $State
 
     foreach ($key in $SeenReviewKeys) {
         if (-not [string]::IsNullOrWhiteSpace([string]$key)) {
@@ -1533,6 +1577,8 @@ function Get-TriageReconData {
         [Parameter(Mandatory)][pscustomobject]$TriageState
     )
 
+    $TriageState = Normalize-ScopeForgeTriageState -State $TriageState
+
     $ignoreKeys = if ($TriageState -and $null -ne $TriageState.IgnoreKeys) {
         $TriageState.IgnoreKeys
     } else {
@@ -1640,6 +1686,11 @@ function Get-TriageReconData {
         } else {
             'General'
         }
+
+        $ignoreKeys = $TriageState.IgnoreKeys
+        $falsePositiveKeys = $TriageState.FalsePositiveKeys
+        $validatedKeys = $TriageState.ValidatedKeys
+        $seenKeysState = $TriageState.SeenKeys
 
         $stateStatus = 'new'
         if ($ignoreKeys.Contains($analysis.ReviewKey)) {
