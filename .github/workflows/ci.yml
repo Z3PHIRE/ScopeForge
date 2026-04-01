@@ -7,34 +7,70 @@ on:
 jobs:
   pwsh:
     runs-on: windows-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
     steps:
       - uses: actions/checkout@v4
 
       - name: Parse scripts
         shell: pwsh
         run: |
-          $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\Launch-ScopeForge.ps1), [ref]$null, [ref]$null)
-          $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\Launch-ScopeForgeFromGitHub.ps1), [ref]$null, [ref]$null)
-          $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\ScopeForge.ps1), [ref]$null, [ref]$null)
+          $ErrorActionPreference = 'Stop'
+
+          $files = @(
+            '.\Launch-ScopeForge.ps1',
+            '.\Launch-ScopeForgeFromGitHub.ps1',
+            '.\ScopeForge.ps1'
+          )
+
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file),
+              [ref]$tokens,
+              [ref]$errors
+            )
+
+            if ($errors -and $errors.Count -gt 0) {
+              foreach ($err in $errors) {
+                Write-Host "::error file=$file,line=$($err.Extent.StartLineNumber),col=$($err.Extent.StartColumnNumber)::$($err.Message)"
+              }
+              throw "Parser errors found in $file"
+            }
+          }
 
       - name: Run Pester
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+
           $requiredPesterVersion = [version]'3.4.0'
-          $installedPester = Get-Module -ListAvailable -Name Pester | Where-Object { $_.Version -eq $requiredPesterVersion } | Select-Object -First 1
+          $installedPester = Get-Module -ListAvailable -Name Pester |
+            Where-Object { $_.Version -eq $requiredPesterVersion } |
+            Select-Object -First 1
+
           if (-not $installedPester) {
-            Install-Module Pester -Name Pester -RequiredVersion $requiredPesterVersion -Scope CurrentUser -Force -SkipPublisherCheck -AllowClobber
+            Install-Module -Name Pester -RequiredVersion $requiredPesterVersion -Scope CurrentUser -Force -SkipPublisherCheck -AllowClobber
           }
+
           Import-Module Pester -RequiredVersion $requiredPesterVersion -Force
+
           $invokePester = Get-Command Invoke-Pester
           $pesterParams = @{ PassThru = $true }
+
           if ($invokePester.Parameters.ContainsKey('Path')) {
             $pesterParams.Path = '.\tests'
-          } else {
+          }
+          else {
             $pesterParams.Script = '.\tests'
           }
+
           $result = Invoke-Pester @pesterParams
           $failedCount = if ($null -ne $result.FailedCount) { [int]$result.FailedCount } else { 0 }
+
           if ($failedCount -gt 0) {
             throw "Pester failures: $failedCount"
           }
