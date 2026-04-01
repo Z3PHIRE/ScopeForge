@@ -1843,161 +1843,144 @@ function Merge-DiscoveredUrlResults {
     return @($merged | Sort-Object -Property Host, Url)
 }
 
-
-function Get-PreferredHttpProbeInputs {
+function ConvertTo-LiveTargetFromProbe {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$HostsAll,
-        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$ScopeItems,
-        [int]$MaxHistoricalPerHost = 4,
-        [int]$MaxTotal = 1600
+        [Parameter(Mandatory)][string]$FinalUrl,
+        [AllowNull()][string]$InputValue = '',
+        [Parameter(Mandatory)][pscustomobject[]]$ScopeItems,
+        [int]$StatusCode = 0,
+        [AllowNull()][string]$Title = '',
+        [AllowNull()][string[]]$Technologies = @(),
+        [AllowNull()][string]$RedirectLocation = '',
+        [AllowNull()][string]$WebServer = '',
+        [int64]$ContentLength = 0,
+        [AllowNull()][string]$Source = 'probe',
+        [switch]$RespectSchemeOnly
     )
 
-    $results = [System.Collections.Generic.List[string]]::new()
-    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $priorityPattern = '(?i)(?:/|^)(?:login|signin|sign-in|signup|register|admin|dashboard|portal|console|account|session|oauth|sso|scim|mfa|callback|api|graphql|swagger|openapi|api-docs|actuator|health|status|metrics|ready|live|robots\.txt|security\.txt|\.well-known)(?:/|$|\?)'
+    $uri = $null
+    if (-not [Uri]::TryCreate($FinalUrl, [UriKind]::Absolute, [ref]$uri)) { return $null }
 
-    foreach ($scopeItem in (ConvertTo-ArrayOrEmpty -Data $ScopeItems)) {
-        if ($scopeItem.Type -eq 'URL' -and -not [string]::IsNullOrWhiteSpace([string]$scopeItem.StartUrl)) {
-            foreach ($candidate in @([string]$scopeItem.StartUrl, ('https://{0}/' -f $scopeItem.Host), ('http://{0}/' -f $scopeItem.Host))) {
-                if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
-                if ($seen.Add($candidate)) { $results.Add($candidate) | Out-Null }
-            }
+    $resolvedHost = $uri.DnsSafeHost.ToLowerInvariant()
+    $path = if ([string]::IsNullOrWhiteSpace($uri.AbsolutePath)) { '/' } else { $uri.AbsolutePath }
+
+    $matchedScopeIds = [System.Collections.Generic.List[string]]::new()
+    $matchedScopeTypes = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($scopeItem in $ScopeItems) {
+        if (-not (Test-ScopeMatch -ScopeItem $scopeItem -Url $FinalUrl -RespectSchemeOnly:$RespectSchemeOnly)) { continue }
+
+        $exclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $resolvedHost -Url $FinalUrl -Path $path
+        if ($exclusion.IsExcluded) {
+            Add-ExclusionRecord -Phase 'HttpProbe' -ScopeItem $scopeItem -Target $FinalUrl -ExclusionResult $exclusion
+            continue
         }
+
+        $matchedScopeIds.Add($scopeItem.Id)
+        $matchedScopeTypes.Add($scopeItem.Type)
     }
 
-    foreach ($hostRecord in (ConvertTo-ArrayOrEmpty -Data $HostsAll)) {
-        $hostName = [string](Get-ObjectValue -InputObject $hostRecord -Names @('Host') -Default '')
-        if ([string]::IsNullOrWhiteSpace($hostName)) { continue }
-
-        foreach ($rootUrl in @('https://{0}/' -f $hostName, 'http://{0}/' -f $hostName)) {
-            if ($seen.Add($rootUrl)) { $results.Add($rootUrl) | Out-Null }
-        }
-
-        $candidateUrls = ConvertTo-ArrayOrEmpty -Data (Get-ObjectValue -InputObject $hostRecord -Names @('CandidateUrls') -Default @())
-        $historicalCount = 0
-        foreach ($candidateUrl in $candidateUrls) {
-            $candidateUrlString = [string]$candidateUrl
-            if ([string]::IsNullOrWhiteSpace($candidateUrlString)) { continue }
-            if ($candidateUrlString -notmatch $priorityPattern) { continue }
-            if ($seen.Add($candidateUrlString)) {
-                $results.Add($candidateUrlString) | Out-Null
-                $historicalCount++
-            }
-            if ($historicalCount -ge $MaxHistoricalPerHost) { break }
-        }
-
-        if ($results.Count -ge $MaxTotal) { break }
+    if ($matchedScopeIds.Count -eq 0) {
+        return $null
     }
 
-    return @($results | Select-Object -First $MaxTotal)
+    return [pscustomobject]@{
+        Input            = $InputValue
+        Url              = $FinalUrl
+        Host             = $resolvedHost
+        Scheme           = $uri.Scheme.ToLowerInvariant()
+        Port             = if ($uri.IsDefaultPort) { $null } else { $uri.Port }
+        Path             = $path
+        StatusCode       = [int]$StatusCode
+        Title            = [string]$Title
+        ContentLength    = [int64]$ContentLength
+        Technologies     = @($Technologies | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique)
+        RedirectLocation = [string]$RedirectLocation
+        WebServer        = [string]$WebServer
+        MatchedScopeIds  = @($matchedScopeIds)
+        MatchedTypes     = @($matchedScopeTypes | Select-Object -Unique)
+        Source           = $(if ([string]::IsNullOrWhiteSpace([string]$Source)) { 'probe' } else { [string]$Source })
+    }
 }
 
-function Invoke-BasicHttpProbeFallback {
+function Invoke-NativeHttpFallbackProbe {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string[]]$InputUrls,
         [Parameter(Mandatory)][pscustomobject[]]$ScopeItems,
         [string]$UniqueUserAgent,
-        [int]$TimeoutSeconds = 12,
-        [int]$MaxCandidates = 200,
+        [int]$TimeoutSeconds = 30,
         [switch]$RespectSchemeOnly
     )
 
-    $condensedInputs = @(
-        $InputUrls |
-        Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
-        Select-Object -Unique -First $MaxCandidates
-    )
-    if ($condensedInputs.Count -eq 0) { return @() }
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    $seenCandidates = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
-    $handler = [System.Net.Http.HttpClientHandler]::new()
-    $handler.AllowAutoRedirect = $false
-    try {
-        $handler.ServerCertificateCustomValidationCallback = { param($message, $cert, $chain, $errors) return $true }
-    } catch {
+    foreach ($url in @($InputUrls | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })) {
+        $uri = $null
+        if (-not [Uri]::TryCreate([string]$url, [UriKind]::Absolute, [ref]$uri)) { continue }
+
+        $normalizedUrl = $uri.GetLeftPart([System.UriPartial]::Path)
+        if ($seenCandidates.Add($normalizedUrl)) {
+            $candidates.Add($normalizedUrl) | Out-Null
+        }
     }
 
-    $client = [System.Net.Http.HttpClient]::new($handler)
-    $client.Timeout = [TimeSpan]::FromSeconds([Math]::Max($TimeoutSeconds, 5))
-    if ($UniqueUserAgent) {
-        try { $client.DefaultRequestHeaders.UserAgent.ParseAdd($UniqueUserAgent) } catch {}
+    $orderedCandidates = @(
+        $candidates |
+        Sort-Object {
+            $candidateUri = $null
+            if ([Uri]::TryCreate([string]$_, [UriKind]::Absolute, [ref]$candidateUri)) {
+                if ($candidateUri.AbsolutePath -eq '/' -or [string]::IsNullOrWhiteSpace($candidateUri.AbsolutePath)) { 0 } else { 1 }
+            } else {
+                2
+            }
+        }, { $_ } |
+        Select-Object -First 40
+    )
+
+    if (-not $orderedCandidates -or $orderedCandidates.Count -eq 0) { return @() }
+
+    $headers = @{}
+    if (-not [string]::IsNullOrWhiteSpace($UniqueUserAgent)) {
+        $headers['User-Agent'] = $UniqueUserAgent
     }
 
     $results = [System.Collections.Generic.List[object]]::new()
-    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
-    try {
-        foreach ($candidate in $condensedInputs) {
-            $candidateUrl = [string]$candidate
-            $uri = $null
-            if (-not [Uri]::TryCreate($candidateUrl, [UriKind]::Absolute, [ref]$uri)) { continue }
+    foreach ($candidateUrl in $orderedCandidates) {
+        try {
+            $response = Invoke-WebRequest -Uri $candidateUrl -Method GET -Headers $headers -MaximumRedirection 5 -TimeoutSec ([Math]::Max($TimeoutSeconds, 10)) -SkipCertificateCheck -SkipHttpErrorCheck -ErrorAction Stop
 
-            $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $uri)
-            $response = $null
-            try {
-                $response = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
-            } catch {
-                continue
+            $finalUrl = $candidateUrl
+            if ($response.BaseResponse -and $response.BaseResponse.RequestMessage -and $response.BaseResponse.RequestMessage.RequestUri) {
+                $finalUrl = $response.BaseResponse.RequestMessage.RequestUri.AbsoluteUri
+            } elseif ($response.BaseResponse -and $response.BaseResponse.ResponseUri) {
+                $finalUrl = $response.BaseResponse.ResponseUri.AbsoluteUri
             }
 
-            $finalUrl = [string]$uri.AbsoluteUri
-            $resolvedHost = $uri.DnsSafeHost.ToLowerInvariant()
-            $path = if ($uri.AbsolutePath) { $uri.AbsolutePath } else { '/' }
-            $matchedScopeIds = [System.Collections.Generic.List[string]]::new()
-            $matchedScopeTypes = [System.Collections.Generic.List[string]]::new()
-
-            foreach ($scopeItem in $ScopeItems) {
-                if (-not (Test-ScopeMatch -ScopeItem $scopeItem -Url $finalUrl -RespectSchemeOnly:$RespectSchemeOnly)) { continue }
-                $exclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $resolvedHost -Url $finalUrl -Path $path
-                if ($exclusion.IsExcluded) { continue }
-                $matchedScopeIds.Add($scopeItem.Id) | Out-Null
-                $matchedScopeTypes.Add($scopeItem.Type) | Out-Null
-            }
-            if ($matchedScopeIds.Count -eq 0) { continue }
-
-            $canonicalKey = Get-CanonicalUrlKey -Url $finalUrl
-            if (-not $seen.Add($canonicalKey)) { continue }
-
-            $contentType = if ($response.Content -and $response.Content.Headers.ContentType) { [string]$response.Content.Headers.ContentType.MediaType } else { '' }
-            $contentLengthHeader = if ($response.Content -and $response.Content.Headers.ContentLength) { [int64]$response.Content.Headers.ContentLength.Value } else { 0 }
             $title = ''
-            if ($contentType -like 'text/html*') {
-                try {
-                    $html = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-                    if ($html -match '<title[^>]*>(.*?)</title>') {
-                        $title = ([regex]::Replace($matches[1], '\s+', ' ')).Trim()
-                    }
-                } catch {
-                }
+            if ($response.Content -and $response.Content -match '<title[^>]*>(?<title>.*?)</title>') {
+                $title = [System.Text.RegularExpressions.Regex]::Unescape($matches['title']).Trim()
             }
 
-            $results.Add([pscustomobject]@{
-                Input            = $candidateUrl
-                Url              = $finalUrl
-                Host             = $resolvedHost
-                Scheme           = $uri.Scheme.ToLowerInvariant()
-                Port             = if ($uri.IsDefaultPort) { $null } else { $uri.Port }
-                Path             = $path
-                StatusCode       = [int]$response.StatusCode
-                Title            = $title
-                ContentLength    = $contentLengthHeader
-                Technologies     = @()
-                RedirectLocation = if ($response.Headers.Location) { [string]$response.Headers.Location } else { '' }
-                WebServer        = if ($response.Headers.Server) { [string]($response.Headers.Server -join ', ') } else { '' }
-                MatchedScopeIds  = @($matchedScopeIds)
-                MatchedTypes     = @($matchedScopeTypes | Select-Object -Unique)
-                Source           = 'basic-http-fallback'
-            }) | Out-Null
+            $serverHeader = ''
+            if ($response.Headers -and $response.Headers['Server']) {
+                $serverHeader = [string]$response.Headers['Server']
+            }
+
+            $record = ConvertTo-LiveTargetFromProbe -FinalUrl $finalUrl -InputValue $candidateUrl -ScopeItems $ScopeItems -StatusCode ([int]$response.StatusCode) -Title $title -RedirectLocation '' -WebServer $serverHeader -ContentLength ([int64]($(if ($response.RawContentLength) { $response.RawContentLength } else { 0 }))) -Source 'native-fallback' -RespectSchemeOnly:$RespectSchemeOnly
+            if ($record) {
+                $results.Add($record) | Out-Null
+            }
+        } catch {
+            Write-ReconLog -Level WARN -Message ("Native HTTP fallback failed for {0}: {1}" -f $candidateUrl, $_.Exception.Message)
         }
-    } finally {
-        $client.Dispose()
-        $handler.Dispose()
     }
 
     return @($results)
 }
-
 
 function Invoke-HttpProbe {
     [CmdletBinding()]
@@ -2096,12 +2079,10 @@ function Invoke-HttpProbe {
                     } catch {
                         Add-ErrorRecord -Phase 'HttpProbe' -Message $_.Exception.Message -Details ("batch {0}/{1}, size={2}, mode=fallback" -f $batchIndex, $batchCount, $currentBatch.Count) -Tool 'httpx' -ErrorCode $(if ($_.Exception.Message -like 'Command timed out*') { 'ToolTimeout' } else { 'RuntimeError' })
                         Write-ReconLog -Level WARN -Message ("Skipping httpx batch {0}/{1} after repeated failure." -f $batchIndex, $batchCount)
-                        continue
                     }
                 } else {
                     Add-ErrorRecord -Phase 'HttpProbe' -Message $message -Details ("batch {0}/{1}, size={2}" -f $batchIndex, $batchCount, $currentBatch.Count) -Tool 'httpx' -ErrorCode 'RuntimeError'
                     Write-ReconLog -Level WARN -Message ("Skipping httpx batch {0}/{1} after runtime failure." -f $batchIndex, $batchCount)
-                    continue
                 }
             }
 
@@ -2115,15 +2096,15 @@ function Invoke-HttpProbe {
                 }
             }
 
-            if ($result.ExitCode -ne 0) {
+            if ($result -and $result.ExitCode -ne 0) {
                 Add-ErrorRecord -Phase 'HttpProbe' -Message 'httpx returned a non-zero exit code.' -Details $result.StdErr -Tool 'httpx' -ExitCode $result.ExitCode -ErrorCode 'ToolExitCode'
             }
 
-            $lines = @(
-                if (Test-Path -LiteralPath $stdoutFile) {
-                    Get-Content -LiteralPath $stdoutFile -Encoding utf8
-                }
-            )
+            $beforeBatchCount = $liveTargets.Count
+            $lines = @()
+            if (Test-Path -LiteralPath $stdoutFile) {
+                $lines = @(Get-Content -LiteralPath $stdoutFile -Encoding utf8)
+            }
 
             foreach ($line in $lines) {
                 if ([string]::IsNullOrWhiteSpace($line)) { continue }
@@ -2139,36 +2120,6 @@ function Invoke-HttpProbe {
                 $inputValue = [string](Get-ObjectValue -InputObject $raw -Names @('input'))
                 if ([string]::IsNullOrWhiteSpace($finalUrl)) { continue }
 
-                $uri = $null
-                if (-not [Uri]::TryCreate($finalUrl, [UriKind]::Absolute, [ref]$uri)) { continue }
-
-                $resolvedHost = $uri.DnsSafeHost.ToLowerInvariant()
-                $path = if ($uri.AbsolutePath) { $uri.AbsolutePath } else { '/' }
-                $matchedScopeIds = [System.Collections.Generic.List[string]]::new()
-                $matchedScopeTypes = [System.Collections.Generic.List[string]]::new()
-
-                foreach ($scopeItem in $ScopeItems) {
-                    if (-not (Test-ScopeMatch -ScopeItem $scopeItem -Url $finalUrl -RespectSchemeOnly:$RespectSchemeOnly)) { continue }
-
-                    $exclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $resolvedHost -Url $finalUrl -Path $path
-                    if ($exclusion.IsExcluded) {
-                        Add-ExclusionRecord -Phase 'HttpProbe' -ScopeItem $scopeItem -Target $finalUrl -ExclusionResult $exclusion
-                        continue
-                    }
-
-                    $matchedScopeIds.Add($scopeItem.Id)
-                    $matchedScopeTypes.Add($scopeItem.Type)
-                }
-
-                if ($matchedScopeIds.Count -eq 0) {
-                    Write-ReconLog -Level WARN -Message ("Discarding out-of-scope live target after httpx: {0}" -f $finalUrl)
-                    continue
-                }
-
-                $canonicalKey = Get-CanonicalUrlKey -Url $finalUrl
-                if ($seen.Contains($canonicalKey)) { continue }
-                $null = $seen.Add($canonicalKey)
-
                 $technologiesRaw = Get-ObjectValue -InputObject $raw -Names @('tech', 'technologies') -Default @()
                 $technologies = if ($technologiesRaw -is [System.Collections.IEnumerable] -and $technologiesRaw -isnot [string]) {
                     @($technologiesRaw | ForEach-Object { [string]$_ } | Where-Object { $_ })
@@ -2178,45 +2129,45 @@ function Invoke-HttpProbe {
                     @()
                 }
 
-                $liveTargets.Add([pscustomobject]@{
-                    Input            = $inputValue
-                    Url              = $finalUrl
-                    Host             = $resolvedHost
-                    Scheme           = $uri.Scheme.ToLowerInvariant()
-                    Port             = if ($uri.IsDefaultPort) { $null } else { $uri.Port }
-                    Path             = $path
-                    StatusCode       = [int](Get-ObjectValue -InputObject $raw -Names @('status-code', 'status_code') -Default 0)
-                    Title            = [string](Get-ObjectValue -InputObject $raw -Names @('title') -Default '')
-                    ContentLength    = [int64](Get-ObjectValue -InputObject $raw -Names @('content-length', 'content_length') -Default 0)
-                    Technologies     = $technologies
-                    RedirectLocation = [string](Get-ObjectValue -InputObject $raw -Names @('location') -Default '')
-                    WebServer        = [string](Get-ObjectValue -InputObject $raw -Names @('webserver', 'web_server') -Default '')
-                    MatchedScopeIds  = @($matchedScopeIds)
-                    MatchedTypes     = @($matchedScopeTypes | Select-Object -Unique)
-                    Source           = 'httpx'
-                })
+                $record = ConvertTo-LiveTargetFromProbe -FinalUrl $finalUrl -InputValue $inputValue -ScopeItems $ScopeItems -StatusCode ([int](Get-ObjectValue -InputObject $raw -Names @('status-code', 'status_code') -Default 0)) -Title ([string](Get-ObjectValue -InputObject $raw -Names @('title') -Default '')) -Technologies $technologies -RedirectLocation ([string](Get-ObjectValue -InputObject $raw -Names @('location') -Default '')) -WebServer ([string](Get-ObjectValue -InputObject $raw -Names @('webserver', 'web_server') -Default '')) -ContentLength ([int64](Get-ObjectValue -InputObject $raw -Names @('content-length', 'content_length') -Default 0)) -Source 'httpx' -RespectSchemeOnly:$RespectSchemeOnly
+
+                if (-not $record) {
+                    Write-ReconLog -Level WARN -Message ("Discarding out-of-scope live target after httpx: {0}" -f $finalUrl)
+                    continue
+                }
+
+                $canonicalKey = Get-CanonicalUrlKey -Url $record.Url
+                if ($seen.Contains($canonicalKey)) { continue }
+                $null = $seen.Add($canonicalKey)
+                $liveTargets.Add($record) | Out-Null
+            }
+
+            if ($liveTargets.Count -eq $beforeBatchCount) {
+                Write-ReconLog -Level WARN -Message ("httpx batch {0}/{1} produced no retained live targets. Native fallback probing will run on a reduced set." -f $batchIndex, $batchCount)
+
+                $fallbackTargets = @(Invoke-NativeHttpFallbackProbe -InputUrls $currentBatch -ScopeItems $ScopeItems -UniqueUserAgent $UniqueUserAgent -TimeoutSeconds ([Math]::Max($TimeoutSeconds, 15)) -RespectSchemeOnly:$RespectSchemeOnly)
+                foreach ($fallbackRecord in $fallbackTargets) {
+                    $canonicalKey = Get-CanonicalUrlKey -Url $fallbackRecord.Url
+                    if ($seen.Contains($canonicalKey)) { continue }
+                    $null = $seen.Add($canonicalKey)
+                    $liveTargets.Add($fallbackRecord) | Out-Null
+                }
+
+                if ($fallbackTargets.Count -gt 0) {
+                    Write-ReconLog -Level INFO -Message ("Native HTTP fallback recovered {0} live target(s) on batch {1}/{2}." -f $fallbackTargets.Count, $batchIndex, $batchCount)
+                } else {
+                    Write-ReconLog -Level WARN -Message ("Native HTTP fallback also found no live targets on batch {0}/{1}." -f $batchIndex, $batchCount)
+                }
             }
         } finally {
             Remove-Item -LiteralPath $inputFile, $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
         }
     }
 
-    if ($liveTargets.Count -eq 0) {
-        Write-ReconLog -Level WARN -Message 'httpx returned zero retained targets. Running a lightweight built-in HTTP fallback on condensed root candidates.'
-        $fallbackTargets = Invoke-BasicHttpProbeFallback -InputUrls $normalizedInputUrls -ScopeItems $ScopeItems -UniqueUserAgent $UniqueUserAgent -TimeoutSeconds ([Math]::Min([Math]::Max($TimeoutSeconds, 8), 15)) -MaxCandidates ([Math]::Min([Math]::Max(($Threads * 10), 120), 240)) -RespectSchemeOnly:$RespectSchemeOnly
-        foreach ($fallbackTarget in (ConvertTo-ArrayOrEmpty -Data $fallbackTargets)) {
-            $canonicalKey = Get-CanonicalUrlKey -Url ([string]$fallbackTarget.Url)
-            if ($seen.Contains($canonicalKey)) { continue }
-            $null = $seen.Add($canonicalKey)
-            $liveTargets.Add($fallbackTarget) | Out-Null
-        }
-        if ($fallbackTargets.Count -gt 0) {
-            Write-ReconLog -Level INFO -Message ("Built-in fallback retained {0} live target(s)." -f $fallbackTargets.Count)
-        }
-    }
-
     return @($liveTargets)
 }
+
+
 
 function Get-KatanaScopeDefinition {
     [CmdletBinding()]
@@ -2700,95 +2651,56 @@ function Get-PassiveLeadFindings {
 function Get-UnifiedFindings {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$InterestingUrls,
-        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$PassiveLeads
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$InterestingUrls,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$PassiveLeads
     )
 
-    $normalizedInteresting = @(
-        $InterestingUrls | ForEach-Object {
-            $priority = if ($null -ne $_.PSObject.Properties['Priority'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Priority)) {
-                [string]$_.Priority
-            } else {
-                'Info'
-            }
+    $confirmed = [System.Collections.Generic.List[object]]::new()
 
-            $family = if ($null -ne $_.PSObject.Properties['PrimaryFamily'] -and -not [string]::IsNullOrWhiteSpace([string]$_.PrimaryFamily)) {
-                [string]$_.PrimaryFamily
-            } elseif ($null -ne $_.PSObject.Properties['Family'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Family)) {
-                [string]$_.Family
-            } else {
-                'General'
-            }
+    foreach ($item in (ConvertTo-ArrayOrEmpty -Data $InterestingUrls)) {
+        if ($null -eq $item) { continue }
 
-            $categories = @()
-            if ($null -ne $_.PSObject.Properties['Categories'] -and $null -ne $_.Categories) {
-                $categories = @(
-                    $_.Categories |
-                    Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) } |
-                    ForEach-Object { [string]$_ }
-                )
-            }
+        $priority = [string](Get-ObjectValue -InputObject $item -Names @('Priority') -Default 'Info')
+        if ([string]::IsNullOrWhiteSpace($priority)) { $priority = 'Info' }
 
-            $reasons = @()
-            if ($null -ne $_.PSObject.Properties['Reasons'] -and $null -ne $_.Reasons) {
-                $reasons = @(
-                    $_.Reasons |
-                    Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) } |
-                    ForEach-Object { [string]$_ }
-                )
-            }
-
-            [pscustomobject]@{
-                Severity          = $priority
-                Confidence        = 'Observed'
-                Priority          = $priority
-                Category          = if ($categories.Count -gt 0) { ($categories -join ', ') } else { 'General' }
-                Family            = $family
-                Host              = if ($null -ne $_.PSObject.Properties['Host']) { [string]$_.Host } else { '' }
-                Url               = if ($null -ne $_.PSObject.Properties['Url']) { [string]$_.Url } else { '' }
-                Evidence          = if ($reasons.Count -gt 0) { ($reasons -join ', ') } else { 'Observed candidate requiring review.' }
-                RecommendedChecks = 'Review manually and validate exploitability.'
-                Source            = if ($null -ne $_.PSObject.Properties['Source'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Source)) { [string]$_.Source } else { 'observed-url' }
-            }
+        $categoriesRaw = Get-ObjectValue -InputObject $item -Names @('Categories') -Default @()
+        $categories = @()
+        if ($categoriesRaw -is [System.Collections.IEnumerable] -and $categoriesRaw -isnot [string]) {
+            $categories = @($categoriesRaw | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        } elseif (-not [string]::IsNullOrWhiteSpace([string]$categoriesRaw)) {
+            $categories = @([string]$categoriesRaw)
         }
-    )
 
-    $normalizedPassive = @(
-        $PassiveLeads | ForEach-Object {
-            $priority = if ($null -ne $_.PSObject.Properties['Priority'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Priority)) {
-                [string]$_.Priority
-            } else {
-                'Info'
-            }
-
-            $family = if ($null -ne $_.PSObject.Properties['Family'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Family)) {
-                [string]$_.Family
-            } else {
-                'General'
-            }
-
-            $category = if ($null -ne $_.PSObject.Properties['Category'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Category)) {
-                [string]$_.Category
-            } else {
-                'General'
-            }
-
-            [pscustomobject]@{
-                Severity          = if ($null -ne $_.PSObject.Properties['Severity'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Severity)) { [string]$_.Severity } else { 'Info' }
-                Confidence        = if ($null -ne $_.PSObject.Properties['Confidence'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Confidence)) { [string]$_.Confidence } else { 'Passive' }
-                Priority          = $priority
-                Category          = $category
-                Family            = $family
-                Host              = if ($null -ne $_.PSObject.Properties['Host']) { [string]$_.Host } else { '' }
-                Url               = if ($null -ne $_.PSObject.Properties['Url']) { [string]$_.Url } else { '' }
-                Evidence          = if ($null -ne $_.PSObject.Properties['Evidence'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Evidence)) { [string]$_.Evidence } else { 'Passive lead requiring review.' }
-                RecommendedChecks = if ($null -ne $_.PSObject.Properties['RecommendedChecks'] -and -not [string]::IsNullOrWhiteSpace([string]$_.RecommendedChecks)) { [string]$_.RecommendedChecks } else { 'Manual review recommended.' }
-                Source            = if ($null -ne $_.PSObject.Properties['Source'] -and -not [string]::IsNullOrWhiteSpace([string]$_.Source)) { [string]$_.Source } else { 'passive-lead' }
-            }
+        $reasonsRaw = Get-ObjectValue -InputObject $item -Names @('Reasons') -Default @()
+        $reasons = @()
+        if ($reasonsRaw -is [System.Collections.IEnumerable] -and $reasonsRaw -isnot [string]) {
+            $reasons = @($reasonsRaw | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        } elseif (-not [string]::IsNullOrWhiteSpace([string]$reasonsRaw)) {
+            $reasons = @([string]$reasonsRaw)
         }
-    )
 
-    return @($normalizedInteresting + $normalizedPassive)
+        $family = [string](Get-ObjectValue -InputObject $item -Names @('PrimaryFamily') -Default 'General')
+        if ([string]::IsNullOrWhiteSpace($family)) { $family = 'General' }
+
+        $hostValue = [string](Get-ObjectValue -InputObject $item -Names @('Host') -Default '')
+        $urlValue = [string](Get-ObjectValue -InputObject $item -Names @('Url') -Default '')
+        $sourceValue = [string](Get-ObjectValue -InputObject $item -Names @('Source') -Default 'interesting-url')
+
+        $confirmed.Add([pscustomobject]@{
+            Severity          = $priority
+            Confidence        = 'Observed'
+            Priority          = $priority
+            Category          = if ($categories.Count -gt 0) { ($categories -join ', ') } else { 'General' }
+            Family            = $family
+            Host              = $hostValue
+            Url               = $urlValue
+            Evidence          = if ($reasons.Count -gt 0) { ($reasons -join ', ') } else { 'Heuristic interesting finding.' }
+            RecommendedChecks = 'Review manually and validate exploitability.'
+            Source            = $sourceValue
+        }) | Out-Null
+    }
+
+    return @($confirmed + (ConvertTo-ArrayOrEmpty -Data $PassiveLeads))
 }
 
 function Get-InterestingFamilySummary {
@@ -3156,6 +3068,36 @@ function Export-ReconReport {
     Set-Content -LiteralPath $Layout.ReportHtml -Value $html -Encoding utf8
 }
 
+function New-ScopeForgeRunOutputDir {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$BaseOutputDir,
+        [string]$ProgramName = 'run'
+    )
+
+    $resolvedBase = Resolve-AbsolutePath -Path $BaseOutputDir
+
+    if (-not (Test-Path -LiteralPath $resolvedBase)) {
+        $null = New-Item -ItemType Directory -Path $resolvedBase -Force
+    }
+
+    $safeProgramName = [regex]::Replace($ProgramName, '[^a-zA-Z0-9._-]+', '-').Trim('-')
+    if ([string]::IsNullOrWhiteSpace($safeProgramName)) {
+        $safeProgramName = 'run'
+    }
+
+    $stamp = [DateTime]::Now.ToString('yyyyMMdd-HHmmss')
+    $candidate = Join-Path $resolvedBase ("{0}-{1}" -f $safeProgramName, $stamp)
+    $counter = 1
+
+    while (Test-Path -LiteralPath $candidate) {
+        $candidate = Join-Path $resolvedBase ("{0}-{1}-{2}" -f $safeProgramName, $stamp, $counter)
+        $counter++
+    }
+
+    return $candidate
+}
+
 function Invoke-BugBountyRecon {
     [CmdletBinding()]
     param(
@@ -3183,8 +3125,13 @@ function Invoke-BugBountyRecon {
     $exportHtmlEnabled = if ($exportFlagsSpecified) { [bool]$ExportHtml } else { $true }
     $exportCsvEnabled = if ($exportFlagsSpecified) { [bool]$ExportCsv } else { $true }
     $exportJsonEnabled = if ($exportFlagsSpecified) { [bool]$ExportJson } else { $true }
+    $effectiveOutputDir = if ($Resume) {
+        $OutputDir
+    } else {
+        New-ScopeForgeRunOutputDir -BaseOutputDir $OutputDir -ProgramName $ProgramName
+    }
 
-    $layout = Get-OutputLayout -OutputDir $OutputDir
+    $layout = Get-OutputLayout -OutputDir $effectiveOutputDir
     Initialize-OutputDirectories -Layout $layout
     $script:ScopeForgeContext = New-ScopeForgeContext -Layout $layout -ProgramName $ProgramName -Quiet ([bool]$Quiet) -ExportJsonEnabled:$exportJsonEnabled -ExportCsvEnabled:$exportCsvEnabled -ExportHtmlEnabled:$exportHtmlEnabled
     Initialize-ScopeForgeProgressState -Layout $layout
@@ -3408,7 +3355,7 @@ function Invoke-BugBountyRecon {
         }
         if ($exportCsvEnabled) { Export-FlatCsv -Path $layout.HostsAllCsv -Rows $hostsAll }
 
-        $probeInputs = Get-PreferredHttpProbeInputs -HostsAll $hostsAll -ScopeItems $scopeItems
+        $probeInputs = @($hostsAll | ForEach-Object { $_.CandidateUrls } | Select-Object -Unique)
 
         if ($useResume -and (Test-Path -LiteralPath $layout.LiveTargetsJson)) {
             Write-StageBanner -Step 4 -Title 'Validation HTTP'
@@ -3483,15 +3430,41 @@ function Invoke-BugBountyRecon {
         $hostsLive = ConvertTo-ArrayOrEmpty -Data $hostsLive
         $discoveredUrls = ConvertTo-ArrayOrEmpty -Data $discoveredUrls
         $interestingUrls = ConvertTo-ArrayOrEmpty -Data $interestingUrls
-        $passiveLeads = Get-PassiveLeadFindings -HostsAll $hostsAll
+        $passiveLeads = ConvertTo-ArrayOrEmpty -Data (
+            Get-PassiveLeadFindings -HostsAll $hostsAll
+        )
         $allFindings = ConvertTo-ArrayOrEmpty -Data (
             Get-UnifiedFindings -InterestingUrls $interestingUrls -PassiveLeads $passiveLeads
         )
+
+        Write-JsonFile -Path (Join-Path $layout.Normalized 'findings.json') -Data $allFindings
+        if ($exportCsvEnabled) {
+            Export-FlatCsv -Path (Join-Path $layout.Normalized 'findings.csv') -Rows $allFindings
+        }
+
         $summary = Merge-ReconResults -ScopeItems $scopeItems -HostsAll $hostsAll -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls $interestingUrls -Exclusions @($script:ScopeForgeContext.Exclusions) -Errors @($script:ScopeForgeContext.Errors) -ProgramName $ProgramName -UniqueUserAgent $UniqueUserAgent
-        Export-ReconReport -Summary $summary -ScopeItems $scopeItems -HostsAll $hostsAll -HostsLive $hostsLive -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls $interestingUrls -Exclusions @($script:ScopeForgeContext.Exclusions) -Errors @($script:ScopeForgeContext.Errors) -Layout $layout -ExportJson:$exportJsonEnabled -ExportCsv:$exportCsvEnabled -ExportHtml:$exportHtmlEnabled
+        Export-ReconReport -Summary $summary -ScopeItems $scopeItems -HostsAll $hostsAll -HostsLive $hostsLive -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls $interestingUrls -AllFindings $allFindings -Exclusions @($script:ScopeForgeContext.Exclusions) -Errors @($script:ScopeForgeContext.Errors) -Layout $layout -ExportJson:$exportJsonEnabled -ExportCsv:$exportCsvEnabled -ExportHtml:$exportHtmlEnabled
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$AllFindings,
         Write-StageProgress -Step 6 -Title 'Génération des rapports' -Percent 100 -Status 'Reports completed'
 
-        $result = [pscustomobject]@{ ProgramName = $ProgramName; OutputDir = $layout.Root; ScopeItems = $scopeItems; HostsAll = $hostsAll; HostsLive = $hostsLive; LiveTargets = $liveTargets; DiscoveredUrls = $discoveredUrls; InterestingUrls = $interestingUrls; Summary = $summary; Exclusions = @($script:ScopeForgeContext.Exclusions); Errors = @($script:ScopeForgeContext.Errors); ExportHtmlEnabled = $exportHtmlEnabled; ExportCsvEnabled = $exportCsvEnabled; ExportJsonEnabled = $exportJsonEnabled }
+        $result = [pscustomobject]@{
+            ProgramName = $ProgramName
+            OutputDir = $layout.Root
+            ScopeItems = $scopeItems
+            HostsAll = $hostsAll
+            HostsLive = $hostsLive
+            LiveTargets = $liveTargets
+            DiscoveredUrls = $discoveredUrls
+            InterestingUrls = $interestingUrls
+            AllFindings = $allFindings
+            Summary = $summary
+            Exclusions = @($script:ScopeForgeContext.Exclusions)
+            Errors = @($script:ScopeForgeContext.Errors)
+            ExportHtmlEnabled = $exportHtmlEnabled
+            ExportCsvEnabled = $exportCsvEnabled
+            ExportJsonEnabled = $exportJsonEnabled
+        }
+
         if (-not $Quiet) {
             Write-Host ''
             Write-Host 'Recon summary' -ForegroundColor Green

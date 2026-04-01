@@ -1241,7 +1241,10 @@ function ConvertTo-LauncherSafeSegment {
 }
 
 function Get-LauncherCompanySegment {
-    param([AllowNull()][string]$ScopeFile, [AllowNull()][string]$ProgramName)
+    param(
+        [AllowNull()][string]$ScopeFile = '',
+        [AllowNull()][string]$ProgramName = ''
+    )
 
     if (-not [string]::IsNullOrWhiteSpace($ScopeFile)) {
         $scopeName = [System.IO.Path]::GetFileNameWithoutExtension([string]$ScopeFile)
@@ -1256,6 +1259,7 @@ function Get-LauncherCompanySegment {
     return 'default-program'
 }
 
+
 function Get-LauncherDefaultOutputDir {
     param(
         [AllowNull()][string]$ScopeFile = '',
@@ -1264,6 +1268,7 @@ function Get-LauncherDefaultOutputDir {
 
     return (Get-LauncherUniqueRunDirectory -ScopeFile $ScopeFile -ProgramName $ProgramName)
 }
+
 
 
 function Get-LauncherOutputAnchorRoot {
@@ -3892,7 +3897,7 @@ function Select-LauncherGuidedStartupPlan {
         [bool]$AllowRerun = $false
     )
 
-    $plannedOutputDir = if ($OutputDir) { $OutputDir } else { Get-LauncherDefaultOutputDir }
+    $plannedOutputDir = if ($OutputDir) { $OutputDir } else { Get-LauncherDefaultOutputDir -ScopeFile $InitialScopeFile }
     $initialRecentScopes = @(Read-LauncherRecentScopes)
     $selectedSession = Get-LauncherSelectedSession
     $selectedScope = $null
@@ -4211,6 +4216,8 @@ function Get-LauncherUniqueRunDirectory {
     }
     return $candidatePath
 }
+
+
 
 function Get-LauncherUniqueSessionDirectory {
     param([string]$Suffix = '')
@@ -5046,7 +5053,7 @@ function New-LauncherDocumentSet {
     }
 
     $defaultProgramName = if ($ProgramName) { $ProgramName } else { 'authorized-bugbounty' }
-    $defaultOutputDir = if ($OutputDir) { $OutputDir } else { Get-LauncherDefaultOutputDir -ScopeFile $scopePath -ProgramName $defaultProgramName }
+    $defaultOutputDir = if ($OutputDir) { $OutputDir } else { Get-LauncherDefaultOutputDir -ScopeFile $(if ($ManagedScopeFilePath) { $ManagedScopeFilePath } else { $InitialScopeFile }) -ProgramName $defaultProgramName }
     $defaultUserAgent = if ($UniqueUserAgent) { $UniqueUserAgent } else { "researcher-" + ([Guid]::NewGuid().ToString('N').Substring(0, 8)) }
 
     $settingsObject = [ordered]@{
@@ -5224,7 +5231,7 @@ function Build-DocumentRunConfig {
                 New-LauncherConfigError -Field 'programName' -Value $programNameValue -Problem 'Doit etre renseigné.' -Example '"programName": "authorized-bugbounty"'
             }
 
-            $outputDirValue = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'outputDir' -Default (Get-LauncherDefaultOutputDir))
+            $outputDirValue = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'outputDir' -Default (Get-LauncherDefaultOutputDir -ScopeFile $documentSet.ScopePath -ProgramName $ProgramName))
             if ([string]::IsNullOrWhiteSpace($outputDirValue)) {
                 New-LauncherConfigError -Field 'outputDir' -Value $outputDirValue -Problem 'Doit etre renseigné.' -Example '"outputDir": "./output"'
             }
@@ -5396,7 +5403,7 @@ function Build-InteractiveRunConfig {
 
     $localScopeFile = if ($InitialScopeFile) { $InitialScopeFile } else { Get-InteractiveScopeFile }
     $localProgramName = if ($ProgramName) { $ProgramName } else { 'authorized-bugbounty' }
-    $localOutputDir = if ($OutputDir) { $OutputDir } else { Get-LauncherDefaultOutputDir }
+    $localOutputDir = if ($OutputDir) { $OutputDir } else { Get-LauncherDefaultOutputDir -ScopeFile $localScopeFile -ProgramName $localProgramName }
     $localUserAgent = if ($UniqueUserAgent) { $UniqueUserAgent } else { "researcher-" + ([Guid]::NewGuid().ToString('N').Substring(0, 8)) }
 
     Write-LauncherSection -Title 'Ajustements'
