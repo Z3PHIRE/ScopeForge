@@ -1877,6 +1877,269 @@ function Test-KatanaSeedEligibility {
     return [pscustomobject]@{ Eligible = $true; Reason = 'ok' }
 }
 
+function Select-NativeProbeFallbackInputs {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$InputUrls,
+        [int]$MaxPerHost = 1,
+        [int]$MaxTotal = 250
+    )
+
+    if (-not $InputUrls -or $InputUrls.Count -eq 0) { return @() }
+
+    $ranked = [System.Collections.Generic.List[object]]::new()
+    foreach ($inputUrl in @($InputUrls)) {
+        if ([string]::IsNullOrWhiteSpace($inputUrl)) { continue }
+
+        $uri = $null
+        if (-not [Uri]::TryCreate([string]$inputUrl, [UriKind]::Absolute, [ref]$uri)) { continue }
+
+        $normalizedUrl = $uri.AbsoluteUri
+        $analysis = Get-ReviewUrlAnalysis -Url $normalizedUrl
+        $ranked.Add([pscustomobject]@{
+                Url        = $normalizedUrl
+                Host       = $uri.DnsSafeHost.ToLowerInvariant()
+                NoiseRank  = $(if ($analysis.IsNoise) { 1 } else { 0 })
+                RootRank   = $(if ($analysis.Path -eq '/') { 0 } else { 1 })
+                QueryRank  = $(if ([string]::IsNullOrWhiteSpace([string]$analysis.Query)) { 0 } else { 1 })
+                SchemeRank = $(if ($uri.Scheme -eq 'https') { 0 } elseif ($uri.Scheme -eq 'http') { 1 } else { 2 })
+                PathLength = [int]([string]$analysis.PathAndQuery).Length
+            }) | Out-Null
+    }
+
+    if ($ranked.Count -eq 0) { return @() }
+
+    $selected = foreach ($group in ($ranked | Group-Object -Property Host | Sort-Object Name)) {
+        $group.Group |
+            Sort-Object NoiseRank, RootRank, QueryRank, PathLength, SchemeRank, Url |
+            Select-Object -First ([Math]::Max($MaxPerHost, 1))
+    }
+
+    return @($selected | Select-Object -ExpandProperty Url -First ([Math]::Max($MaxTotal, 1)))
+}
+
+function Invoke-NativeHttpProbeFallback {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$InputUrls,
+        [Parameter(Mandatory)][pscustomobject[]]$ScopeItems,
+        [int]$Threads = 10,
+        [int]$TimeoutSeconds = 30,
+        [string]$UniqueUserAgent,
+        [switch]$RespectSchemeOnly
+    )
+
+    if (-not $InputUrls -or $InputUrls.Count -eq 0) { return @() }
+
+    $selectedInputs = @(Select-NativeProbeFallbackInputs -InputUrls $InputUrls -MaxPerHost 1 -MaxTotal ([Math]::Min([Math]::Max(($Threads * 20), 50), 250)))
+    if ($selectedInputs.Count -eq 0) { return @() }
+
+    $probeTimeoutSeconds = [Math]::Min([Math]::Max([int]([Math]::Floor($TimeoutSeconds / 2)), 5), 15)
+    $throttleLimit = [Math]::Min([Math]::Max($Threads, 1), 20)
+    $headers = @{}
+    if ($UniqueUserAgent) {
+        $headers['User-Agent'] = $UniqueUserAgent
+    }
+
+    Write-ReconLog -Level WARN -Message ("httpx returned no retained live targets. Native HTTP rescue will probe {0} reduced candidate(s)." -f $selectedInputs.Count)
+
+    $rawResults = @(
+        $selectedInputs |
+        ForEach-Object -ThrottleLimit $throttleLimit -Parallel {
+            $inputUrl = [string]$_
+            $headerCopy = @{}
+            $sharedHeaders = $using:headers
+            foreach ($entry in $sharedHeaders.GetEnumerator()) {
+                $headerCopy[[string]$entry.Key] = [string]$entry.Value
+            }
+
+            $response = $null
+            $methodUsed = 'HEAD'
+            $lastError = ''
+
+            try {
+                $response = Invoke-WebRequest -Uri $inputUrl -Method Head -Headers $headerCopy -TimeoutSec $using:probeTimeoutSeconds -MaximumRedirection 5 -SkipHttpErrorCheck
+            } catch {
+                $lastError = $_.Exception.Message
+            }
+
+            $statusCode = 0
+            try {
+                if ($response -and $response.PSObject.Properties['StatusCode']) {
+                    $statusCode = [int]$response.StatusCode
+                }
+            } catch {}
+
+            if ($null -eq $response -or $statusCode -in 405, 501) {
+                try {
+                    $response = Invoke-WebRequest -Uri $inputUrl -Method Get -Headers $headerCopy -TimeoutSec $using:probeTimeoutSeconds -MaximumRedirection 5 -SkipHttpErrorCheck
+                    $methodUsed = 'GET'
+                    $lastError = ''
+                    $statusCode = 0
+                    try {
+                        if ($response -and $response.PSObject.Properties['StatusCode']) {
+                            $statusCode = [int]$response.StatusCode
+                        }
+                    } catch {}
+                } catch {
+                    if ([string]::IsNullOrWhiteSpace($lastError)) {
+                        $lastError = $_.Exception.Message
+                    }
+                }
+            }
+
+            if ($null -eq $response) {
+                return [pscustomobject]@{
+                    Input  = $inputUrl
+                    Url    = $inputUrl
+                    Method = $methodUsed
+                    Error  = $lastError
+                }
+            }
+
+            $finalUrl = $inputUrl
+            try {
+                if ($response.BaseResponse -and $response.BaseResponse.RequestMessage -and $response.BaseResponse.RequestMessage.RequestUri) {
+                    $finalUrl = [string]$response.BaseResponse.RequestMessage.RequestUri.AbsoluteUri
+                } elseif ($response.BaseResponse -and $response.BaseResponse.ResponseUri) {
+                    $finalUrl = [string]$response.BaseResponse.ResponseUri.AbsoluteUri
+                }
+            } catch {}
+
+            $contentLength = 0L
+            $redirectLocation = ''
+            $webServer = ''
+            try {
+                $responseHeaders = $response.Headers
+                if ($responseHeaders) {
+                    if ($responseHeaders['Content-Length']) {
+                        $null = [int64]::TryParse([string]$responseHeaders['Content-Length'], [ref]$contentLength)
+                    }
+                    if ($responseHeaders['Location']) {
+                        $redirectLocation = [string]$responseHeaders['Location']
+                    }
+                    if ($responseHeaders['Server']) {
+                        $webServer = [string]$responseHeaders['Server']
+                    }
+                }
+            } catch {}
+
+            [pscustomobject]@{
+                Input            = $inputUrl
+                Url              = $finalUrl
+                Method           = $methodUsed
+                StatusCode       = $statusCode
+                ContentLength    = $contentLength
+                RedirectLocation = $redirectLocation
+                WebServer        = $webServer
+                Error            = ''
+            }
+        }
+    )
+
+    $allowedStatuses = @(200, 201, 202, 204, 301, 302, 303, 307, 308, 401, 403, 405)
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $liveTargets = [System.Collections.Generic.List[object]]::new()
+
+    $errorCount = 0
+    $statusFilteredCount = 0
+    $noiseCount = 0
+    $duplicateCount = 0
+    $excludedCount = 0
+    $outOfScopeCount = 0
+    $invalidUriCount = 0
+
+    foreach ($result in $rawResults) {
+        if (-not $result) { continue }
+        if ($result.PSObject.Properties['Error'] -and -not [string]::IsNullOrWhiteSpace([string]$result.Error)) {
+            $errorCount++
+            continue
+        }
+
+        $finalUrl = [string]$result.Url
+        $uri = $null
+        if (-not [Uri]::TryCreate($finalUrl, [UriKind]::Absolute, [ref]$uri)) {
+            $invalidUriCount++
+            continue
+        }
+
+        $statusCode = [int](Get-ObjectValue -InputObject $result -Names @('StatusCode', 'status-code', 'status_code') -Default 0)
+        if ($statusCode -notin $allowedStatuses) {
+            $statusFilteredCount++
+            continue
+        }
+
+        $resolvedHost = $uri.DnsSafeHost.ToLowerInvariant()
+        $path = if ($uri.AbsolutePath) { $uri.AbsolutePath } else { '/' }
+        $matchedScopeIds = [System.Collections.Generic.List[string]]::new()
+        $matchedScopeTypes = [System.Collections.Generic.List[string]]::new()
+        $matchedAnyScope = $false
+        $excludedByScope = $false
+
+        foreach ($scopeItem in $ScopeItems) {
+            if (-not (Test-ScopeMatch -ScopeItem $scopeItem -Url $finalUrl -RespectSchemeOnly:$RespectSchemeOnly)) { continue }
+            $matchedAnyScope = $true
+
+            $exclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $resolvedHost -Url $finalUrl -Path $path
+            if ($exclusion.IsExcluded) {
+                $excludedByScope = $true
+                Add-ExclusionRecord -Phase 'NativeHttpProbe' -ScopeItem $scopeItem -Target $finalUrl -ExclusionResult $exclusion
+                continue
+            }
+
+            $matchedScopeIds.Add($scopeItem.Id)
+            $matchedScopeTypes.Add($scopeItem.Type)
+        }
+
+        if ($matchedScopeIds.Count -eq 0) {
+            if ($matchedAnyScope -and $excludedByScope) {
+                $excludedCount++
+            } else {
+                $outOfScopeCount++
+            }
+            continue
+        }
+
+        $analysis = Get-ReviewUrlAnalysis -Url $finalUrl -StatusCode $statusCode
+        if ($analysis.IsNoise) {
+            $noiseCount++
+            continue
+        }
+
+        if ($seen.Contains([string]$analysis.ReviewKey)) {
+            $duplicateCount++
+            continue
+        }
+
+        $null = $seen.Add([string]$analysis.ReviewKey)
+        $liveTargets.Add([pscustomobject]@{
+                Input            = [string](Get-ObjectValue -InputObject $result -Names @('Input', 'input') -Default $finalUrl)
+                Url              = $analysis.ReviewUrl
+                Host             = $resolvedHost
+                Scheme           = $uri.Scheme.ToLowerInvariant()
+                Port             = if ($uri.IsDefaultPort) { $null } else { $uri.Port }
+                Path             = $path
+                StatusCode       = $statusCode
+                Title            = ''
+                ContentLength    = [int64](Get-ObjectValue -InputObject $result -Names @('ContentLength', 'content-length', 'content_length') -Default 0)
+                Technologies     = @()
+                RedirectLocation = [string](Get-ObjectValue -InputObject $result -Names @('RedirectLocation', 'location') -Default '')
+                WebServer        = [string](Get-ObjectValue -InputObject $result -Names @('WebServer', 'webserver', 'web_server') -Default '')
+                MatchedScopeIds  = @($matchedScopeIds)
+                MatchedTypes     = @($matchedScopeTypes | Select-Object -Unique)
+                Source           = 'native-http-fallback'
+            }) | Out-Null
+    }
+
+    $summaryLine = "NATIVE_FALLBACK|input={0}|selected={1}|retained={2}|errors={3}|status_filtered={4}|noise={5}|duplicate={6}|excluded={7}|out_of_scope={8}|invalid_uri={9}" -f $InputUrls.Count, $selectedInputs.Count, $liveTargets.Count, $errorCount, $statusFilteredCount, $noiseCount, $duplicateCount, $excludedCount, $outOfScopeCount, $invalidUriCount
+    if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Layout -and $script:ScopeForgeContext.Layout.HttpxBatchLog) {
+        Write-ScopeForgeDiagnosticLine -Path $script:ScopeForgeContext.Layout.HttpxBatchLog -Line $summaryLine
+    }
+    Write-ReconLog -Level WARN -Message $summaryLine
+
+    return @($liveTargets)
+}
+
 function Get-TriageReconData {
     [CmdletBinding()]
     param(
@@ -4037,7 +4300,15 @@ function Invoke-BugBountyRecon {
             )
 
             if ((Get-ScopeForgeItemCount -Data $liveTargets) -eq 0) {
-            Write-ReconLog -Level WARN -Message 'Validation HTTP returned no retained live targets. Empty result set will be written and the run will continue.'
+                Write-ReconLog -Level WARN -Message 'Validation HTTP returned no retained live targets from httpx. Native HTTP rescue will run on a reduced candidate set.'
+                $liveTargets = ConvertTo-ArrayOrEmpty -Data (
+                    Invoke-NativeHttpProbeFallback -InputUrls $probeInputs -ScopeItems $scopeItems -Threads $Threads -TimeoutSeconds $TimeoutSeconds -UniqueUserAgent $UniqueUserAgent -RespectSchemeOnly:$RespectSchemeOnly
+                )
+                if ((Get-ScopeForgeItemCount -Data $liveTargets) -eq 0) {
+                    Write-ReconLog -Level WARN -Message 'Native HTTP rescue also returned no retained live targets. Empty result set will be written and the run will continue.'
+                } else {
+                    Write-ReconLog -Level WARN -Message ("Native HTTP rescue retained {0} live target(s) after httpx returned none." -f $liveTargets.Count)
+                }
             }
 
             Write-JsonFile -Path $layout.LiveTargetsJson -Data $liveTargets

@@ -119,6 +119,16 @@ Describe 'ScopeForge passive discovery runtime safety' {
         Mock Write-JsonFile {}
         Mock Set-Content {}
         Mock Export-FlatCsv {}
+        Mock Get-ScopeForgeTriageState {
+            [pscustomobject]@{
+                Path              = Join-Path $TestDrive 'triage-state.json'
+                IgnoreKeys        = New-ScopeForgeStringSet
+                FalsePositiveKeys = New-ScopeForgeStringSet
+                ValidatedKeys     = New-ScopeForgeStringSet
+                SeenKeys          = New-ScopeForgeStringSet
+            }
+        }
+        Mock Save-ScopeForgeTriageState {}
         Mock Merge-ReconResults {
             param($ScopeItems, $HostsAll, $LiveTargets, $DiscoveredUrls, $InterestingUrls, $Exclusions, $Errors, $ProgramName)
             [pscustomobject]@{
@@ -165,6 +175,143 @@ Describe 'ScopeForge passive discovery runtime safety' {
         if ($wildcardRecord.CandidateUrls -notcontains 'https://api.khealth.io') { throw 'Expected the wildcard host inventory to contain the configured scheme candidate.' }
         if ($wildcardRecord.CandidateUrls -notcontains 'http://api.khealth.io') { throw 'Expected the wildcard host inventory to contain the alternate scheme candidate.' }
         if ($urlRecord.CandidateUrls -notcontains 'https://app.khealth.com/login?next=%2Fhome') { throw 'Expected the URL seed to survive candidate generation unchanged.' }
+    }
+
+    It 'uses native HTTP rescue when httpx returns no retained live targets' {
+        $scopePath = Join-Path $TestDrive 'fallback-scope.json'
+        $outputDir = Join-Path $TestDrive 'fallback-output'
+        $scopeJson = @'
+[
+  { "type": "Domain", "value": "khealth.com", "exclusions": [] },
+  { "type": "Domain", "value": "accounts.khealth.com", "exclusions": [] }
+]
+'@
+        [System.IO.File]::WriteAllText($scopePath, $scopeJson, [System.Text.Encoding]::UTF8)
+
+        $script:nativeFallbackCalled = $false
+
+        Mock Write-StageBanner {}
+        Mock Write-StageProgress {}
+        Mock Write-ReconLog {}
+        Mock Ensure-ReconTools {
+            [pscustomobject]@{
+                Subfinder   = [pscustomobject]@{ Path = 'subfinder.exe' }
+                Httpx       = [pscustomobject]@{ Path = 'httpx.exe' }
+                Katana      = [pscustomobject]@{ Path = 'katana.exe' }
+                Gau         = [pscustomobject]@{ Path = 'gau.exe' }
+                WaybackUrls = [pscustomobject]@{ Path = 'waybackurls.exe' }
+                Hakrawler   = $null
+            }
+        }
+        Mock Get-PassiveSubdomains { @() }
+        Mock Get-HistoricalUrls { @() }
+        Mock Get-WaybackUrls { @() }
+        Mock Invoke-HttpProbe { @() }
+        Mock Invoke-NativeHttpProbeFallback {
+            $script:nativeFallbackCalled = $true
+            @(
+                [pscustomobject]@{
+                    Input            = 'https://accounts.khealth.com/'
+                    Url              = 'https://accounts.khealth.com/'
+                    Host             = 'accounts.khealth.com'
+                    Scheme           = 'https'
+                    Port             = $null
+                    Path             = '/'
+                    StatusCode       = 200
+                    Title            = ''
+                    ContentLength    = 0
+                    Technologies     = @()
+                    RedirectLocation = ''
+                    WebServer        = ''
+                    MatchedScopeIds  = @('scope-002')
+                    MatchedTypes     = @('Domain')
+                    Source           = 'native-http-fallback'
+                }
+            )
+        }
+        Mock Invoke-KatanaCrawl {
+            @(
+                [pscustomobject]@{
+                    Host       = 'accounts.khealth.com'
+                    Url        = 'https://accounts.khealth.com/login'
+                    ScopeId    = 'scope-002'
+                    ScopeType  = 'Domain'
+                    ScopeValue = 'accounts.khealth.com'
+                    SeedUrl    = 'https://accounts.khealth.com/'
+                    Source     = 'katana'
+                    StatusCode = 200
+                }
+            )
+        }
+        Mock Merge-DiscoveredUrlResults {
+            @(
+                [pscustomobject]@{
+                    Host       = 'accounts.khealth.com'
+                    Url        = 'https://accounts.khealth.com/login'
+                    ScopeId    = 'scope-002'
+                    ScopeType  = 'Domain'
+                    ScopeValue = 'accounts.khealth.com'
+                    SeedUrl    = 'https://accounts.khealth.com/'
+                    Source     = 'katana'
+                    StatusCode = 200
+                }
+            )
+        }
+        Mock Get-InterestingReconFindings { @() }
+        Mock Get-PassiveLeadFindings {
+            @(
+                [pscustomobject]@{
+                    Url      = 'https://accounts.khealth.com/'
+                    Host     = 'accounts.khealth.com'
+                    Category = 'PassiveLead'
+                    Family   = 'Passive'
+                    Score    = 0
+                }
+            )
+        }
+        Mock Get-UnifiedFindings { @() }
+        Mock Write-JsonFile {}
+        Mock Set-Content {}
+        Mock Export-FlatCsv {}
+        Mock Get-ScopeForgeTriageState {
+            [pscustomobject]@{
+                Path              = Join-Path $TestDrive 'triage-state.json'
+                IgnoreKeys        = New-ScopeForgeStringSet
+                FalsePositiveKeys = New-ScopeForgeStringSet
+                ValidatedKeys     = New-ScopeForgeStringSet
+                SeenKeys          = New-ScopeForgeStringSet
+            }
+        }
+        Mock Save-ScopeForgeTriageState {}
+        Mock Merge-ReconResults {
+            param($ScopeItems, $HostsAll, $LiveTargets, $DiscoveredUrls, $InterestingUrls, $Exclusions, $Errors, $ProgramName)
+            [pscustomobject]@{
+                GeneratedAtUtc            = [DateTimeOffset]::UtcNow.ToString('o')
+                ProgramName               = $ProgramName
+                ScopeItemCount            = @($ScopeItems).Count
+                ExcludedItemCount         = @($Exclusions).Count
+                DiscoveredHostCount       = @($HostsAll).Count
+                LiveHostCount             = @($LiveTargets | Group-Object -Property Host).Count
+                LiveTargetCount           = @($LiveTargets).Count
+                DiscoveredUrlCount        = @($DiscoveredUrls).Count
+                InterestingUrlCount       = @($InterestingUrls).Count
+                ProtectedInterestingCount = 0
+                StatusFamilies            = @()
+                TopTechnologies           = @()
+                TopSubdomains             = @()
+                InterestingFamilies       = @()
+                InterestingPriorities     = @()
+                InterestingCategories     = @()
+                SuggestedAreas            = @()
+            }
+        }
+        Mock Export-ReconReport {}
+
+        $result = Invoke-BugBountyRecon -ScopeFile $scopePath -OutputDir $outputDir -ProgramName 'runtime-native-fallback-test' -UniqueUserAgent 'scopeforge-runtime-test' -EnableGau:$true -EnableWaybackUrls:$true -EnableHakrawler:$true -NoInstall -Quiet
+
+        if (-not $script:nativeFallbackCalled) { throw 'Expected native HTTP rescue to run when httpx returned no live targets.' }
+        if (@($result.LiveTargets).Count -ne 1) { throw 'Expected the native HTTP rescue target to be retained.' }
+        if ($result.LiveTargets[0].Source -ne 'native-http-fallback') { throw 'Expected the retained live target to expose the native fallback source.' }
     }
 }
 

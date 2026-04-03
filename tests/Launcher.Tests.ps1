@@ -193,8 +193,20 @@ Describe 'ScopeForge launcher boolean handling' {
     Context 'Build-DocumentRunConfig' {
         BeforeEach {
             $script:launcherSettingsJson = $null
+            $script:lastDocumentSessionRootOverride = $null
+            $script:lastDocumentPreserveExistingFiles = $null
 
             Mock New-LauncherDocumentSet {
+                param(
+                    $InitialScopeFile,
+                    $ManagedScopeFilePath,
+                    $SessionRootOverride,
+                    $PreserveExistingFiles
+                )
+
+                $script:lastDocumentSessionRootOverride = $SessionRootOverride
+                $script:lastDocumentPreserveExistingFiles = $PreserveExistingFiles
+
                 [pscustomobject]@{
                     RootPath     = 'C:\Temp\ScopeForge\Session'
                     ReadmePath   = 'C:\Temp\ScopeForge\Session\README.md'
@@ -368,6 +380,67 @@ Describe 'ScopeForge launcher boolean handling' {
             if (-not $script:launcherConfigIssueShown) { throw 'Expected invalid run-settings to trigger a validation summary.' }
             if ($script:launcherSettingsReadCount -lt 2) { throw 'Expected the launcher to reopen settings after the validation error.' }
             if ($result.Quiet) { throw 'Expected the corrected fixture to keep Quiet at $false.' }
+        }
+
+        It 'creates a fresh document session even when a saved session is selected' {
+            $script:launcherSettingsJson = @'
+{
+  "preset": "balanced",
+  "profile": "webapp",
+  "programName": "demo",
+  "outputDir": "./output",
+  "depth": 3,
+  "threads": 10,
+  "timeoutSeconds": 30,
+  "uniqueUserAgent": "ua-test",
+  "includeApex": false,
+  "respectSchemeOnly": false,
+  "enableGau": true,
+  "enableWaybackUrls": true,
+  "enableHakrawler": true,
+  "noInstall": false,
+  "quiet": false,
+  "resume": false,
+  "openReportOnFinish": true
+}
+'@
+            Mock Read-LauncherSessionMetadata {
+                [pscustomobject]@{
+                    scope_path    = 'C:\Temp\ScopeForge\managed-scope.json'
+                    logging_mode  = 'debug'
+                    session_root  = 'C:\Temp\ScopeForge\SavedSession'
+                    session_id    = 'session-demo'
+                }
+            }
+            Mock Resolve-LauncherScopePath {
+                param([string]$Path)
+                $Path
+            }
+            Mock Test-Path { $true }
+
+            $result = Build-DocumentRunConfig `
+                -InitialScopeFile '.\scope.json' `
+                -ExistingSessionRoot 'C:\Temp\ScopeForge\SavedSession' `
+                -ProgramName 'demo' `
+                -OutputDir '.\output' `
+                -Depth 3 `
+                -UniqueUserAgent 'ua-test' `
+                -Threads 10 `
+                -TimeoutSeconds 30 `
+                -EnableGau $true `
+                -EnableWaybackUrls $true `
+                -EnableHakrawler $true `
+                -NoInstall $false `
+                -Quiet $false `
+                -IncludeApex $false `
+                -RespectSchemeOnly $false `
+                -Resume $false `
+                -OpenReportOnFinish $true
+
+            if ($script:lastDocumentSessionRootOverride) { throw 'Expected Build-DocumentRunConfig to stop reusing the previous session root.' }
+            if ($script:lastDocumentPreserveExistingFiles) { throw 'Expected a fresh document session to avoid preserving the previous session files.' }
+            if ($result.LauncherSessionRoot -ne 'C:\Temp\ScopeForge\Session') { throw 'Expected the launcher session root to come from the fresh document set.' }
+            if ($result.LauncherLogMode -ne 'debug') { throw 'Expected the previous session logging mode to still be restored.' }
         }
     }
 

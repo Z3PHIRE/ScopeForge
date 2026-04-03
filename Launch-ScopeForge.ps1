@@ -5124,7 +5124,9 @@ function Build-DocumentRunConfig {
     }
     $effectiveLoggingMode = if ($LoggingMode) { $LoggingMode } elseif ($existingSession -and $existingSession.logging_mode) { [string]$existingSession.logging_mode } else { $null }
 
-    $documentSet = New-LauncherDocumentSet -InitialScopeFile $InitialScopeFile -ManagedScopeFilePath $effectiveManagedScopeFilePath -SessionRootOverride $ExistingSessionRoot -PreserveExistingFiles:([bool](-not [string]::IsNullOrWhiteSpace($ExistingSessionRoot))) -LoggingMode $effectiveLoggingMode -ProgramName $ProgramName -OutputDir $OutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -EnableGau $EnableGau -EnableWaybackUrls $EnableWaybackUrls -EnableHakrawler $EnableHakrawler -NoInstall $NoInstall -Quiet $Quiet -IncludeApex $IncludeApex -RespectSchemeOnly $RespectSchemeOnly -Resume $Resume -OpenReportOnFinish $OpenReportOnFinish
+    # Reuse prior session metadata to restore scope/logging context, but always create
+    # a fresh document session so each launch gets isolated logs, output, and settings.
+    $documentSet = New-LauncherDocumentSet -InitialScopeFile $InitialScopeFile -ManagedScopeFilePath $effectiveManagedScopeFilePath -SessionRootOverride '' -PreserveExistingFiles:$false -LoggingMode $effectiveLoggingMode -ProgramName $ProgramName -OutputDir $OutputDir -Depth $Depth -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -EnableGau $EnableGau -EnableWaybackUrls $EnableWaybackUrls -EnableHakrawler $EnableHakrawler -NoInstall $NoInstall -Quiet $Quiet -IncludeApex $IncludeApex -RespectSchemeOnly $RespectSchemeOnly -Resume $Resume -OpenReportOnFinish $OpenReportOnFinish
 
     $documentSessionRecord = if ($documentSet.PSObject.Properties['SessionRecord']) { $documentSet.SessionRecord } else { $null }
 
