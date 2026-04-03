@@ -1667,6 +1667,98 @@ function Invoke-HttpxEmptyBatchDiagnostic {
         }
 
         Write-ScopeForgeDiagnosticLine -Path $LogPath -Line ("BATCH_EMPTY_DIAG|{0}|sample={1}|diag_lines={2}|diag_exit={3}|parse_errors={4}|reasons={5}" -f $BatchLabel, $sampleUrls.Count, $diagLines.Count, $result.ExitCode, $diagParseErrors, $reasonSummary)
+
+        if ($reasonSummary -eq 'no-json-output' -and $sampleUrls.Count -gt 0) {
+            $singleUrl = [string]$sampleUrls[0]
+            $safeSingleUrl = (($singleUrl -replace '\|', '%7C') -replace '\r?\n', '').Trim()
+            $singleStdoutFile = Join-Path ([System.IO.Path]::GetTempPath()) ("scopeforge-httpx-diag-single-{0}.jsonl" -f ([Guid]::NewGuid().ToString('N')))
+            $singleStderrFile = Join-Path ([System.IO.Path]::GetTempPath()) ("scopeforge-httpx-diag-single-{0}.err" -f ([Guid]::NewGuid().ToString('N')))
+
+            try {
+                $singleArguments = @(
+                    '-json',
+                    '-probe',
+                    '-status-code',
+                    '-timeout', ([string]([Math]::Min([Math]::Max($TimeoutSeconds, 5), 15)))
+                )
+                if (Test-ToolFlagSupport -HelpText $HelpText -Flag '-duc') { $singleArguments += '-duc' }
+
+                if ($UniqueUserAgent) {
+                    if (Test-ToolFlagSupport -HelpText $HelpText -Flag '-H') {
+                        $singleArguments += @('-H', "User-Agent: $UniqueUserAgent")
+                    } elseif (Test-ToolFlagSupport -HelpText $HelpText -Flag '-header') {
+                        $singleArguments += @('-header', "User-Agent: $UniqueUserAgent")
+                    }
+                }
+
+                $singleArguments += @('-u', $singleUrl)
+
+                $singleResult = Invoke-ExternalCommand -FilePath $HttpxPath -Arguments $singleArguments -TimeoutSeconds ([Math]::Min([Math]::Max($TimeoutSeconds, 10), 30)) -StdOutPath $singleStdoutFile -StdErrPath $singleStderrFile -IgnoreExitCode
+                $singleLines = @(
+                    if (Test-Path -LiteralPath $singleStdoutFile) {
+                        Get-Content -LiteralPath $singleStdoutFile -Encoding utf8
+                    }
+                )
+
+                $singleParseErrors = 0
+                $singleReasonCounts = [ordered]@{}
+
+                foreach ($line in $singleLines) {
+                    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+
+                    try {
+                        $raw = $line | ConvertFrom-Json -Depth 100
+                    } catch {
+                        $singleParseErrors++
+                        continue
+                    }
+
+                    $singleReason = [string](Get-ObjectValue -InputObject $raw -Names @('error') -Default '')
+                    if ($singleReason -match 'cause="([^"]+)"') {
+                        $singleReason = $Matches[1]
+                    }
+
+                    if ([string]::IsNullOrWhiteSpace($singleReason)) {
+                        $statusCode = [int](Get-ObjectValue -InputObject $raw -Names @('status-code', 'status_code') -Default 0)
+                        $failed = [bool](Get-ObjectValue -InputObject $raw -Names @('failed') -Default $false)
+                        if ($failed) {
+                            $singleReason = 'failed-no-error'
+                        } elseif ($statusCode -gt 0) {
+                            $singleReason = ('status-{0}' -f $statusCode)
+                        } else {
+                            $singleReason = 'unknown'
+                        }
+                    }
+
+                    $singleReason = (($singleReason -replace '\r?\n', ' ') -replace '\|', '/').Trim()
+                    if ([string]::IsNullOrWhiteSpace($singleReason)) { $singleReason = 'unknown' }
+                    if (-not $singleReasonCounts.Contains($singleReason)) { $singleReasonCounts[$singleReason] = 0 }
+                    $singleReasonCounts[$singleReason]++
+                }
+
+                $singleReasonSummary = (
+                    $singleReasonCounts.GetEnumerator() |
+                    Sort-Object -Property @{ Expression = 'Value'; Descending = $true }, @{ Expression = 'Key'; Descending = $false } |
+                    ForEach-Object { '{0}={1}' -f $_.Key, $_.Value }
+                ) -join ','
+
+                if ([string]::IsNullOrWhiteSpace($singleReasonSummary)) {
+                    $singleStderrSummary = ''
+                    if ($singleResult.StdErr) {
+                        $singleStderrSummary = (($singleResult.StdErr -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1) -join '')
+                        $singleStderrSummary = (($singleStderrSummary -replace '\|', '/') -replace '\r?\n', ' ').Trim()
+                    }
+                    $singleReasonSummary = if ($singleStderrSummary) { 'stderr:' + $singleStderrSummary } else { 'no-json-output' }
+                }
+
+                Write-ScopeForgeDiagnosticLine -Path $LogPath -Line ("BATCH_EMPTY_DIAG_SINGLE|{0}|url={1}|diag_lines={2}|diag_exit={3}|parse_errors={4}|reasons={5}" -f $BatchLabel, $safeSingleUrl, $singleLines.Count, $singleResult.ExitCode, $singleParseErrors, $singleReasonSummary)
+            } catch {
+                $message = (($_.Exception.Message -replace '\|', '/') -replace '\r?\n', ' ').Trim()
+                Write-ScopeForgeDiagnosticLine -Path $LogPath -Line ("BATCH_EMPTY_DIAG_SINGLE|{0}|url={1}|error={2}" -f $BatchLabel, $safeSingleUrl, $message)
+            } finally {
+                Remove-Item -LiteralPath $singleStdoutFile, $singleStderrFile -Force -ErrorAction SilentlyContinue
+            }
+        }
     } catch {
         $message = (($_.Exception.Message -replace '\|', '/') -replace '\r?\n', ' ').Trim()
         Write-ScopeForgeDiagnosticLine -Path $LogPath -Line ("BATCH_EMPTY_DIAG|{0}|sample={1}|error={2}" -f $BatchLabel, $sampleUrls.Count, $message)
