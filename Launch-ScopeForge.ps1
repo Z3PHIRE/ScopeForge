@@ -5580,6 +5580,17 @@ function Start-ScopeForgeLauncher {
         Write-LauncherDiagnosticLog -Message ("Invocation ScopeForge avec {0} parametres." -f $invokeParams.Count)
         Show-LauncherInvokeDebugPanel -RunConfig $runConfig -InvokeParams $invokeParams
         $result = Invoke-BugBountyRecon @invokeParams
+        if ($result) {
+            $launcherSessionRoot = if ($runConfig.ContainsKey('LauncherSessionRoot')) { [string]$runConfig.LauncherSessionRoot } else { '' }
+            $launcherLogRoot = if ($runConfig.ContainsKey('LauncherLogRoot')) { [string]$runConfig.LauncherLogRoot } else { '' }
+
+            if (-not [string]::IsNullOrWhiteSpace($launcherSessionRoot)) {
+                $result | Add-Member -NotePropertyName 'LauncherSessionRoot' -NotePropertyValue $launcherSessionRoot -Force
+            }
+            if (-not [string]::IsNullOrWhiteSpace($launcherLogRoot)) {
+                $result | Add-Member -NotePropertyName 'LauncherLogRoot' -NotePropertyValue $launcherLogRoot -Force
+            }
+        }
         Write-LauncherDiagnosticLog -Message ("Execution terminee. OutputDir={0}" -f [string]$result.OutputDir)
     } catch {
         Write-LauncherDiagnosticLog -Message ("Echec launcher/run: {0}" -f $_.Exception.Message) -Level ERROR
