@@ -167,3 +167,135 @@ Describe 'ScopeForge passive discovery runtime safety' {
         if ($urlRecord.CandidateUrls -notcontains 'https://app.khealth.com/login?next=%2Fhome') { throw 'Expected the URL seed to survive candidate generation unchanged.' }
     }
 }
+
+Describe 'ScopeForge httpx diagnostics' {
+    BeforeEach {
+        $layout = Get-OutputLayout -OutputDir (Join-Path $TestDrive 'output')
+        Initialize-OutputDirectories -Layout $layout
+        $script:ScopeForgeContext = New-ScopeForgeContext -Layout $layout -ProgramName 'httpx-diagnostics-test' -Quiet:$true -ExportJsonEnabled:$true -ExportCsvEnabled:$true -ExportHtmlEnabled:$true
+
+        Mock Write-StageProgress {}
+        Mock Write-ReconLog {}
+        Mock Get-ToolHelpText { 'usage' }
+    }
+
+    AfterEach {
+        $script:ScopeForgeContext = $null
+    }
+
+    It 'logs retained and discarded httpx results by reason without changing retained targets' {
+        $scopeItem = [pscustomobject]@{
+            Id              = 'scope-001'
+            Index           = 1
+            Type            = 'URL'
+            OriginalValue   = 'https://app.example.com/'
+            NormalizedValue = 'https://app.example.com/'
+            Scheme          = 'https'
+            Host            = 'app.example.com'
+            Port            = $null
+            RootDomain      = 'app.example.com'
+            PathPrefix      = '/'
+            StartUrl        = 'https://app.example.com/'
+            IncludeApex     = $false
+            Exclusions      = @('logout')
+            HostRegexString = '^app\.example\.com$'
+            ScopeRegexString = ''
+            Description     = 'URL seed https://app.example.com/'
+        }
+
+        Mock Invoke-ExternalCommand {
+            param($FilePath, $Arguments, $TimeoutSeconds, $StdOutPath, $StdErrPath, $IgnoreExitCode)
+
+            $lines = @(
+                ([pscustomobject]@{ input = 'https://app.example.com/'; url = 'https://app.example.com/login'; 'status-code' = 200; title = 'Sign in' } | ConvertTo-Json -Compress),
+                ([pscustomobject]@{ input = 'https://app.example.com/'; url = 'https://app.example.com/login'; 'status-code' = 200; title = 'Sign in' } | ConvertTo-Json -Compress),
+                ([pscustomobject]@{ input = 'https://app.example.com/'; url = 'https://app.example.com/_next/static/chunk.js'; 'status-code' = 200; title = '' } | ConvertTo-Json -Compress),
+                ([pscustomobject]@{ input = 'https://app.example.com/'; url = 'https://other.example.net/login'; 'status-code' = 200; title = 'External' } | ConvertTo-Json -Compress),
+                ([pscustomobject]@{ input = 'https://app.example.com/'; url = 'https://app.example.com/logout'; 'status-code' = 200; title = 'Sign out' } | ConvertTo-Json -Compress),
+                ([pscustomobject]@{ input = 'https://app.example.com/'; 'status-code' = 200; title = 'Missing URL' } | ConvertTo-Json -Compress),
+                ([pscustomobject]@{ input = 'https://app.example.com/'; url = 'not-a-valid-uri'; 'status-code' = 200; title = 'Broken URL' } | ConvertTo-Json -Compress),
+                '{"url":'
+            )
+
+            Set-Content -LiteralPath $StdOutPath -Value $lines -Encoding utf8
+            Set-Content -LiteralPath $StdErrPath -Value '' -Encoding utf8
+
+            [pscustomobject]@{
+                ExitCode  = 0
+                StdOut    = ''
+                StdErr    = ''
+                FilePath  = $FilePath
+                Arguments = @($Arguments)
+            }
+        }
+
+        $liveTargets = @(Invoke-HttpProbe -InputUrls @('https://app.example.com/') -ScopeItems @($scopeItem) -HttpxPath 'httpx.exe' -RawOutputPath $script:ScopeForgeContext.Layout.HttpxRaw -Threads 1 -TimeoutSeconds 10)
+        $batchLog = Get-Content -LiteralPath $script:ScopeForgeContext.Layout.HttpxBatchLog -Raw -Encoding utf8
+
+        if ($liveTargets.Count -ne 1) { throw 'Expected only one live target to survive the diagnostic batch.' }
+        if ($liveTargets[0].Url -ne 'https://app.example.com/login') { throw 'Expected the retained live target URL to remain unchanged.' }
+        if ($batchLog -notlike '*BATCH|index=1/1|input=1|stdout_lines=8|exit=0*') { throw 'Expected the batch log to record the raw stdout line count.' }
+        if ($batchLog -notlike '*BATCH_SUMMARY|index=1/1|input=1|json_parsed=7|in_scope_after_exclusions=3|retained=1|discarded=6|parse_errors=1|reasons=missing_url=1,invalid_uri=1,out_of_scope=1,excluded=1,noise=1,duplicate=1*') {
+            throw ("Expected the batch summary to expose retained/discarded counts and detailed discard reasons. Actual log: {0}" -f $batchLog)
+        }
+    }
+
+    It 'logs a diagnostic sample when an httpx batch returns no JSON lines' {
+        $scopeItem = [pscustomobject]@{
+            Id              = 'scope-001'
+            Index           = 1
+            Type            = 'URL'
+            OriginalValue   = 'https://app.example.com/'
+            NormalizedValue = 'https://app.example.com/'
+            Scheme          = 'https'
+            Host            = 'app.example.com'
+            Port            = $null
+            RootDomain      = 'app.example.com'
+            PathPrefix      = '/'
+            StartUrl        = 'https://app.example.com/'
+            IncludeApex     = $false
+            Exclusions      = @()
+            HostRegexString = '^app\.example\.com$'
+            ScopeRegexString = ''
+            Description     = 'URL seed https://app.example.com/'
+        }
+
+        Mock Get-ToolHelpText { '-duc -H -header -probe -status-code -follow-redirects -location -tech-detect' }
+        Mock Invoke-ExternalCommand {
+            param($FilePath, $Arguments, $TimeoutSeconds, $StdOutPath, $StdErrPath, $IgnoreExitCode)
+
+            if (@($Arguments) -contains '-probe') {
+                $diagLine = ([pscustomobject]@{
+                        timestamp   = '2026-04-03T15:23:40.1020496+02:00'
+                        url         = 'https://app.example.com/'
+                        input       = 'https://app.example.com/'
+                        error       = 'cause="no address found for host"'
+                        status_code = 0
+                        failed      = $true
+                    } | ConvertTo-Json -Compress)
+                Set-Content -LiteralPath $StdOutPath -Value $diagLine -Encoding utf8
+            } else {
+                Set-Content -LiteralPath $StdOutPath -Value @() -Encoding utf8
+            }
+
+            Set-Content -LiteralPath $StdErrPath -Value '' -Encoding utf8
+
+            [pscustomobject]@{
+                ExitCode  = 0
+                StdOut    = ''
+                StdErr    = ''
+                FilePath  = $FilePath
+                Arguments = @($Arguments)
+            }
+        }
+
+        $liveTargets = @(Invoke-HttpProbe -InputUrls @('https://app.example.com/') -ScopeItems @($scopeItem) -HttpxPath 'httpx.exe' -RawOutputPath $script:ScopeForgeContext.Layout.HttpxRaw -Threads 1 -TimeoutSeconds 10)
+        $batchLog = Get-Content -LiteralPath $script:ScopeForgeContext.Layout.HttpxBatchLog -Raw -Encoding utf8
+
+        if ($liveTargets.Count -ne 0) { throw 'Expected an empty primary httpx batch to keep zero retained targets.' }
+        if ($batchLog -notlike '*BATCH|index=1/1|input=1|stdout_lines=0|exit=0*') { throw ("Expected the batch log to record the empty primary batch. Actual log: {0}" -f $batchLog) }
+        if ($batchLog -notlike '*BATCH_EMPTY_DIAG|index=1/1|sample=1|diag_lines=1|diag_exit=0|parse_errors=0|reasons=no address found for host=1*') {
+            throw ("Expected the empty-batch diagnostic to capture the failed probe reason. Actual log: {0}" -f $batchLog)
+        }
+    }
+}

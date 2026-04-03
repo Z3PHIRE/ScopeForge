@@ -1562,6 +1562,119 @@ function Write-ScopeForgeDiagnosticLine {
     }
 }
 
+function Invoke-HttpxEmptyBatchDiagnostic {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$HttpxPath,
+        [Parameter(Mandatory)][string]$HelpText,
+        [Parameter(Mandatory)][string[]]$InputUrls,
+        [string]$UniqueUserAgent,
+        [int]$TimeoutSeconds = 30,
+        [Parameter(Mandatory)][string]$LogPath,
+        [Parameter(Mandatory)][string]$BatchLabel
+    )
+
+    $sampleUrls = @(
+        $InputUrls |
+        Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+        Select-Object -First 5
+    )
+    if ($sampleUrls.Count -eq 0) { return }
+
+    $inputFile = Join-Path ([System.IO.Path]::GetTempPath()) ("scopeforge-httpx-diag-input-{0}.txt" -f ([Guid]::NewGuid().ToString('N')))
+    $stdoutFile = Join-Path ([System.IO.Path]::GetTempPath()) ("scopeforge-httpx-diag-{0}.jsonl" -f ([Guid]::NewGuid().ToString('N')))
+    $stderrFile = Join-Path ([System.IO.Path]::GetTempPath()) ("scopeforge-httpx-diag-{0}.err" -f ([Guid]::NewGuid().ToString('N')))
+
+    try {
+        Set-Content -LiteralPath $inputFile -Value $sampleUrls -Encoding utf8
+
+        $arguments = @(
+            '-silent',
+            '-json',
+            '-probe',
+            '-status-code',
+            '-threads', '2',
+            '-timeout', ([string]([Math]::Min([Math]::Max($TimeoutSeconds, 5), 15)))
+        )
+        if (Test-ToolFlagSupport -HelpText $HelpText -Flag '-duc') { $arguments += '-duc' }
+
+        if ($UniqueUserAgent) {
+            if (Test-ToolFlagSupport -HelpText $HelpText -Flag '-H') {
+                $arguments += @('-H', "User-Agent: $UniqueUserAgent")
+            } elseif (Test-ToolFlagSupport -HelpText $HelpText -Flag '-header') {
+                $arguments += @('-header', "User-Agent: $UniqueUserAgent")
+            }
+        }
+
+        $arguments += @('-l', $inputFile)
+
+        $result = Invoke-ExternalCommand -FilePath $HttpxPath -Arguments $arguments -TimeoutSeconds ([Math]::Min([Math]::Max($TimeoutSeconds, 10), 30)) -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
+        $diagLines = @(
+            if (Test-Path -LiteralPath $stdoutFile) {
+                Get-Content -LiteralPath $stdoutFile -Encoding utf8
+            }
+        )
+
+        $diagParseErrors = 0
+        $reasonCounts = [ordered]@{}
+
+        foreach ($line in $diagLines) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+
+            try {
+                $raw = $line | ConvertFrom-Json -Depth 100
+            } catch {
+                $diagParseErrors++
+                continue
+            }
+
+            $reason = [string](Get-ObjectValue -InputObject $raw -Names @('error') -Default '')
+            if ($reason -match 'cause="([^"]+)"') {
+                $reason = $Matches[1]
+            }
+
+            if ([string]::IsNullOrWhiteSpace($reason)) {
+                $statusCode = [int](Get-ObjectValue -InputObject $raw -Names @('status-code', 'status_code') -Default 0)
+                $failed = [bool](Get-ObjectValue -InputObject $raw -Names @('failed') -Default $false)
+                if ($failed) {
+                    $reason = 'failed-no-error'
+                } elseif ($statusCode -gt 0) {
+                    $reason = ('status-{0}' -f $statusCode)
+                } else {
+                    $reason = 'unknown'
+                }
+            }
+
+            $reason = (($reason -replace '\r?\n', ' ') -replace '\|', '/').Trim()
+            if ([string]::IsNullOrWhiteSpace($reason)) { $reason = 'unknown' }
+            if (-not $reasonCounts.Contains($reason)) { $reasonCounts[$reason] = 0 }
+            $reasonCounts[$reason]++
+        }
+
+        $reasonSummary = (
+            $reasonCounts.GetEnumerator() |
+            Sort-Object -Property @{ Expression = 'Value'; Descending = $true }, @{ Expression = 'Key'; Descending = $false } |
+            ForEach-Object { '{0}={1}' -f $_.Key, $_.Value }
+        ) -join ','
+
+        if ([string]::IsNullOrWhiteSpace($reasonSummary)) {
+            $stderrSummary = ''
+            if ($result.StdErr) {
+                $stderrSummary = (($result.StdErr -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1) -join '')
+                $stderrSummary = (($stderrSummary -replace '\|', '/') -replace '\r?\n', ' ').Trim()
+            }
+            $reasonSummary = if ($stderrSummary) { 'stderr:' + $stderrSummary } else { 'no-json-output' }
+        }
+
+        Write-ScopeForgeDiagnosticLine -Path $LogPath -Line ("BATCH_EMPTY_DIAG|{0}|sample={1}|diag_lines={2}|diag_exit={3}|parse_errors={4}|reasons={5}" -f $BatchLabel, $sampleUrls.Count, $diagLines.Count, $result.ExitCode, $diagParseErrors, $reasonSummary)
+    } catch {
+        $message = (($_.Exception.Message -replace '\|', '/') -replace '\r?\n', ' ').Trim()
+        Write-ScopeForgeDiagnosticLine -Path $LogPath -Line ("BATCH_EMPTY_DIAG|{0}|sample={1}|error={2}" -f $BatchLabel, $sampleUrls.Count, $message)
+    } finally {
+        Remove-Item -LiteralPath $inputFile, $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-ReviewUrlAnalysis {
     [CmdletBinding()]
     param(
@@ -2502,6 +2615,8 @@ function Invoke-HttpProbe {
     $liveTargets = [System.Collections.Generic.List[object]]::new()
     $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $batchCount = [int][Math]::Ceiling($normalizedInputUrls.Count / [double]$batchSize)
+    $emptyBatchDiagnosticsPerformed = 0
+    $emptyBatchDiagnosticLimit = 3
 
     for ($offset = 0; $offset -lt $normalizedInputUrls.Count; $offset += $batchSize) {
         $batchIndex = [int][Math]::Floor($offset / $batchSize) + 1
@@ -2569,9 +2684,23 @@ function Invoke-HttpProbe {
                     Get-Content -LiteralPath $stdoutFile -Encoding utf8
                 }
             )
-            $parsedCount = 0
+            $jsonParsedCount = 0
+            $scopeCandidateCount = 0
+            $parseErrors = 0
+            $discardCounts = [ordered]@{
+                missing_url = 0
+                invalid_uri = 0
+                out_of_scope = 0
+                excluded = 0
+                noise = 0
+                duplicate = 0
+            }
             $retainedBeforeBatch = $liveTargets.Count
             Write-ScopeForgeDiagnosticLine -Path $script:ScopeForgeContext.Layout.HttpxBatchLog -Line ("BATCH|index={0}/{1}|input={2}|stdout_lines={3}|exit={4}" -f $batchIndex, $batchCount, $currentBatch.Count, $lines.Count, $result.ExitCode)
+            if ($lines.Count -eq 0 -and $emptyBatchDiagnosticsPerformed -lt $emptyBatchDiagnosticLimit) {
+                $emptyBatchDiagnosticsPerformed++
+                Invoke-HttpxEmptyBatchDiagnostic -HttpxPath $HttpxPath -HelpText $helpText -InputUrls $currentBatch -UniqueUserAgent $UniqueUserAgent -TimeoutSeconds $TimeoutSeconds -LogPath $script:ScopeForgeContext.Layout.HttpxBatchLog -BatchLabel ("index={0}/{1}" -f $batchIndex, $batchCount)
+            }
 
             foreach ($line in $lines) {
                 if ([string]::IsNullOrWhiteSpace($line)) { continue }
@@ -2579,27 +2708,39 @@ function Invoke-HttpProbe {
                 try {
                     $raw = $line | ConvertFrom-Json -Depth 100
                 } catch {
+                    $parseErrors++
                     Add-ErrorRecord -Phase 'HttpProbe' -Message 'Failed to parse httpx JSON line.' -Details $line -Tool 'httpx' -ErrorCode 'ParseError'
                     continue
                 }
+                $jsonParsedCount++
 
                 $finalUrl = [string](Get-ObjectValue -InputObject $raw -Names @('url'))
                 $inputValue = [string](Get-ObjectValue -InputObject $raw -Names @('input'))
-                if ([string]::IsNullOrWhiteSpace($finalUrl)) { continue }
+                if ([string]::IsNullOrWhiteSpace($finalUrl)) {
+                    $discardCounts['missing_url']++
+                    continue
+                }
 
                 $uri = $null
-                if (-not [Uri]::TryCreate($finalUrl, [UriKind]::Absolute, [ref]$uri)) { continue }
+                if (-not [Uri]::TryCreate($finalUrl, [UriKind]::Absolute, [ref]$uri)) {
+                    $discardCounts['invalid_uri']++
+                    continue
+                }
 
                 $resolvedHost = $uri.DnsSafeHost.ToLowerInvariant()
                 $path = if ($uri.AbsolutePath) { $uri.AbsolutePath } else { '/' }
                 $matchedScopeIds = [System.Collections.Generic.List[string]]::new()
                 $matchedScopeTypes = [System.Collections.Generic.List[string]]::new()
+                $matchedAnyScope = $false
+                $excludedByScope = $false
 
                 foreach ($scopeItem in $ScopeItems) {
                     if (-not (Test-ScopeMatch -ScopeItem $scopeItem -Url $finalUrl -RespectSchemeOnly:$RespectSchemeOnly)) { continue }
+                    $matchedAnyScope = $true
 
                     $exclusion = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $resolvedHost -Url $finalUrl -Path $path
                     if ($exclusion.IsExcluded) {
+                        $excludedByScope = $true
                         Add-ExclusionRecord -Phase 'HttpProbe' -ScopeItem $scopeItem -Target $finalUrl -ExclusionResult $exclusion
                         continue
                     }
@@ -2609,15 +2750,26 @@ function Invoke-HttpProbe {
                 }
 
                 if ($matchedScopeIds.Count -eq 0) {
-                    Write-ReconLog -Level WARN -Message ("Discarding out-of-scope live target after httpx: {0}" -f $finalUrl)
+                    if ($matchedAnyScope -and $excludedByScope) {
+                        $discardCounts['excluded']++
+                    } else {
+                        $discardCounts['out_of_scope']++
+                        Write-ReconLog -Level WARN -Message ("Discarding out-of-scope live target after httpx: {0}" -f $finalUrl)
+                    }
                     continue
                 }
 
-                $parsedCount++
+                $scopeCandidateCount++
                 $reviewAnalysis = Get-ReviewUrlAnalysis -Url $finalUrl -StatusCode ([int](Get-ObjectValue -InputObject $raw -Names @('status-code', 'status_code') -Default 0))
-                if ($reviewAnalysis.IsNoise) { continue }
+                if ($reviewAnalysis.IsNoise) {
+                    $discardCounts['noise']++
+                    continue
+                }
                 $canonicalKey = $reviewAnalysis.ReviewKey
-                if ($seen.Contains($canonicalKey)) { continue }
+                if ($seen.Contains($canonicalKey)) {
+                    $discardCounts['duplicate']++
+                    continue
+                }
                 $null = $seen.Add($canonicalKey)
                 $finalUrl = $reviewAnalysis.ReviewUrl
 
@@ -2649,7 +2801,14 @@ function Invoke-HttpProbe {
                 })
             }
             $retainedAfterHttpx = $liveTargets.Count - $retainedBeforeBatch
-            Write-ScopeForgeDiagnosticLine -Path $script:ScopeForgeContext.Layout.HttpxBatchLog -Line ("BATCH_SUMMARY|index={0}/{1}|input={2}|json_parsed={3}|retained={4}" -f $batchIndex, $batchCount, $currentBatch.Count, $parsedCount, $retainedAfterHttpx)
+            $discardedAfterHttpx = [int](($discardCounts.Values | Measure-Object -Sum).Sum)
+            $reasonSummary = (
+                $discardCounts.GetEnumerator() |
+                Where-Object { $_.Value -gt 0 } |
+                ForEach-Object { '{0}={1}' -f $_.Key, $_.Value }
+            ) -join ','
+            if ([string]::IsNullOrWhiteSpace($reasonSummary)) { $reasonSummary = 'none' }
+            Write-ScopeForgeDiagnosticLine -Path $script:ScopeForgeContext.Layout.HttpxBatchLog -Line ("BATCH_SUMMARY|index={0}/{1}|input={2}|json_parsed={3}|in_scope_after_exclusions={4}|retained={5}|discarded={6}|parse_errors={7}|reasons={8}" -f $batchIndex, $batchCount, $currentBatch.Count, $jsonParsedCount, $scopeCandidateCount, $retainedAfterHttpx, $discardedAfterHttpx, $parseErrors, $reasonSummary)
         } finally {
             Remove-Item -LiteralPath $inputFile, $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
         }
