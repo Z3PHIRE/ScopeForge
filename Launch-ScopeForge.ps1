@@ -4407,6 +4407,48 @@ function Save-LauncherRunManifest {
     return [pscustomobject]$manifest
 }
 
+function Sync-LauncherReportHtml {
+    param([Parameter(Mandatory)][pscustomobject]$Result)
+
+    if (-not $Result -or -not $Result.OutputDir -or -not $Result.ExportHtmlEnabled) { return }
+    if (-not (Get-Command -Name Get-OutputLayout -ErrorAction SilentlyContinue) -or -not (Get-Command -Name Export-ReconReport -ErrorAction SilentlyContinue)) { return }
+
+    $previousContext = $script:ScopeForgeContext
+    try {
+        $layout = Get-OutputLayout -OutputDir $Result.OutputDir
+        $script:ScopeForgeContext = [pscustomobject]@{
+            Layout = $layout
+            Triage = [pscustomobject]@{
+                FilteredFindings   = @($Result.FilteredUrls)
+                NoiseFindings      = @($Result.NoiseUrls)
+                ReviewableFindings = @($Result.InterestingUrls)
+                Shortlist          = @($Result.Shortlist)
+            }
+        }
+
+        Export-ReconReport `
+            -Summary $Result.Summary `
+            -ScopeItems @($Result.ScopeItems) `
+            -HostsAll @($Result.HostsAll) `
+            -HostsLive @($Result.HostsLive) `
+            -LiveTargets @($Result.LiveTargets) `
+            -DiscoveredUrls @($Result.DiscoveredUrls) `
+            -InterestingUrls @($Result.InterestingUrls) `
+            -Exclusions @($Result.Exclusions) `
+            -Errors @($Result.Errors) `
+            -Layout $layout `
+            -ExportJson:$Result.ExportJsonEnabled `
+            -ExportCsv:$Result.ExportCsvEnabled `
+            -ExportHtml:$Result.ExportHtmlEnabled
+
+        Write-LauncherDiagnosticLog -Message ("HTML report synchronized after manifest save: {0}" -f $layout.ReportHtml)
+    } catch {
+        Write-LauncherDiagnosticLog -Message ("HTML report synchronization failed: {0}" -f $_.Exception.Message)
+    } finally {
+        $script:ScopeForgeContext = $previousContext
+    }
+}
+
 function Read-LauncherStoredRunManifest {
     param([Parameter(Mandatory)][string]$ManifestPath)
 
@@ -5637,6 +5679,7 @@ function Start-ScopeForgeLauncher {
     }
 
     Save-LauncherRunManifest -RunConfig $runConfig -Result $result -RunStartedAtUtc $runStartedAtUtc -RunEndedAtUtc ([DateTimeOffset]::UtcNow.ToString('o')) | Out-Null
+    Sync-LauncherReportHtml -Result $result
 
     $recentScopePath = Get-LauncherRecentScopeUpdatePath -RunConfig $runConfig
     if (-not [string]::IsNullOrWhiteSpace([string]$recentScopePath)) {

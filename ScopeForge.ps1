@@ -604,6 +604,9 @@ function Get-OutputLayout {
         SummaryJson          = Join-Path (Join-Path $root 'reports') 'summary.json'
         SummaryCsv           = Join-Path (Join-Path $root 'reports') 'summary.csv'
         ReportHtml           = Join-Path (Join-Path $root 'reports') 'report.html'
+        RunManifestJson      = Join-Path (Join-Path $root 'reports') 'run-manifest.json'
+        FrozenScopeJson      = Join-Path (Join-Path $root 'reports') 'scope-frozen.json'
+        FrozenSettingsJson   = Join-Path (Join-Path $root 'reports') 'run-settings-frozen.json'
         TriageMarkdown       = Join-Path (Join-Path $root 'reports') 'triage.md'
         ShortlistMarkdown    = Join-Path (Join-Path $root 'reports') 'shortlist.md'
     }
@@ -3893,24 +3896,29 @@ function Export-ReconReport {
 
     $triageData = if ($script:ScopeForgeContext) { $script:ScopeForgeContext.Triage } else { $null }
     if ($triageData) {
-        Write-JsonFile -Path $Layout.FilteredUrlsJson -Data $triageData.FilteredFindings
-        Write-JsonFile -Path $Layout.NoiseUrlsJson -Data $triageData.NoiseFindings
-        Write-JsonFile -Path $Layout.ReviewableUrlsJson -Data $triageData.ReviewableFindings
-        Write-JsonFile -Path $Layout.ShortlistJson -Data $triageData.Shortlist
+        $triageFilteredFindings = ConvertTo-ArrayOrEmpty -Data @($triageData.FilteredFindings)
+        $triageNoiseFindings = ConvertTo-ArrayOrEmpty -Data @($triageData.NoiseFindings)
+        $triageReviewableFindings = ConvertTo-ArrayOrEmpty -Data @($triageData.ReviewableFindings)
+        $triageShortlist = ConvertTo-ArrayOrEmpty -Data @($triageData.Shortlist)
+
+        Write-JsonFile -Path $Layout.FilteredUrlsJson -Data $triageFilteredFindings
+        Write-JsonFile -Path $Layout.NoiseUrlsJson -Data $triageNoiseFindings
+        Write-JsonFile -Path $Layout.ReviewableUrlsJson -Data $triageReviewableFindings
+        Write-JsonFile -Path $Layout.ShortlistJson -Data $triageShortlist
         if ($ExportCsv) {
-            Export-FlatCsv -Path $Layout.FilteredUrlsCsv -Rows $triageData.FilteredFindings
-            Export-FlatCsv -Path $Layout.NoiseUrlsCsv -Rows $triageData.NoiseFindings
-            Export-FlatCsv -Path $Layout.ReviewableUrlsCsv -Rows $triageData.ReviewableFindings
+            Export-FlatCsv -Path $Layout.FilteredUrlsCsv -Rows $triageFilteredFindings
+            Export-FlatCsv -Path $Layout.NoiseUrlsCsv -Rows $triageNoiseFindings
+            Export-FlatCsv -Path $Layout.ReviewableUrlsCsv -Rows $triageReviewableFindings
         }
 
         $shortlistLines = [System.Collections.Generic.List[string]]::new()
         $shortlistLines.Add('# Shortlist') | Out-Null
         $shortlistLines.Add('') | Out-Null
-        $shortlistLines.Add(('- reviewable: {0}' -f @($triageData.ReviewableFindings).Count)) | Out-Null
-        $shortlistLines.Add(('- filtered: {0}' -f @($triageData.FilteredFindings).Count)) | Out-Null
-        $shortlistLines.Add(('- noise removed: {0}' -f @($triageData.NoiseFindings).Count)) | Out-Null
+        $shortlistLines.Add(('- reviewable: {0}' -f @($triageReviewableFindings).Count)) | Out-Null
+        $shortlistLines.Add(('- filtered: {0}' -f @($triageFilteredFindings).Count)) | Out-Null
+        $shortlistLines.Add(('- noise removed: {0}' -f @($triageNoiseFindings).Count)) | Out-Null
         $shortlistLines.Add('') | Out-Null
-        foreach ($item in ($triageData.Shortlist | Select-Object -First 20)) {
+        foreach ($item in ($triageShortlist | Select-Object -First 20)) {
             $shortlistLines.Add(('## [{0}/{1}] {2}' -f $item.Priority, $item.Score, $item.Url)) | Out-Null
             $shortlistLines.Add(('- Family: {0}' -f $item.PrimaryFamily)) | Out-Null
             $shortlistLines.Add(('- Categories: {0}' -f ($item.Categories -join ', '))) | Out-Null
@@ -3948,8 +3956,194 @@ function Export-ReconReport {
         return ("<div class=""url-cell""><a href=""{0}"" target=""_blank"" rel=""noreferrer"">{0}</a><button type=""button"" class=""copy-btn"" data-copy=""{0}"">Copy</button></div>" -f (ConvertTo-HtmlSafe $Url))
     }
 
+    function Get-PriorityClass {
+        param([string]$Priority)
+
+        switch ($Priority) {
+            'Critical' { return 'priority-critical' }
+            'High' { return 'priority-high' }
+            'Medium' { return 'priority-medium' }
+            default { return 'priority-low' }
+        }
+    }
+
+    function Get-StatusClass {
+        param([object]$StatusCode)
+
+        $numericStatus = 0
+        [int]::TryParse([string]$StatusCode, [ref]$numericStatus) | Out-Null
+
+        switch ($numericStatus) {
+            { $_ -eq 403 } { return 'status-danger' }
+            { $_ -eq 401 } { return 'status-warning' }
+            { $_ -ge 500 } { return 'status-danger' }
+            { $_ -ge 400 } { return 'status-warning' }
+            { $_ -ge 300 } { return 'status-info' }
+            { $_ -ge 200 } { return 'status-ok' }
+            default { return 'status-muted' }
+        }
+    }
+
+    function Get-StatusBadgeHtml {
+        param([object]$StatusCode)
+
+        $safeStatus = ConvertTo-HtmlSafe ([string]$StatusCode)
+        $statusClass = Get-StatusClass -StatusCode $StatusCode
+        return "<span class=""status-badge $statusClass"">$safeStatus</span>"
+    }
+
+    function Format-RunDuration {
+        param([TimeSpan]$Duration)
+
+        if ($Duration.TotalHours -ge 1) {
+            return ('{0}h {1}m {2}s' -f [int][Math]::Floor($Duration.TotalHours), $Duration.Minutes, $Duration.Seconds)
+        }
+        if ($Duration.TotalMinutes -ge 1) {
+            return ('{0}m {1}s' -f [int][Math]::Floor($Duration.TotalMinutes), $Duration.Seconds)
+        }
+        return ('{0}s' -f [int][Math]::Max([Math]::Floor($Duration.TotalSeconds), 0))
+    }
+
+    function Convert-ToReportDateTimeOffset {
+        param([AllowNull()][object]$Value)
+
+        if ($null -eq $Value) {
+            return $null
+        }
+        if ($Value -is [DateTimeOffset]) {
+            return [DateTimeOffset]$Value
+        }
+        if ($Value -is [DateTime]) {
+            return [DateTimeOffset]$Value
+        }
+
+        $text = [string]$Value
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            return $null
+        }
+
+        $parsed = [DateTimeOffset]::MinValue
+        $styles = [System.Globalization.DateTimeStyles]::AllowWhiteSpaces -bor [System.Globalization.DateTimeStyles]::RoundtripKind
+        if ([DateTimeOffset]::TryParseExact($text, 'o', [System.Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$parsed)) {
+            return $parsed
+        }
+        if ([DateTimeOffset]::TryParse($text, [System.Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$parsed)) {
+            return $parsed
+        }
+        if ([DateTimeOffset]::TryParse($text, [ref]$parsed)) {
+            return $parsed
+        }
+
+        return $null
+    }
+
+    function Get-OAuthTenantLabel {
+        param([pscustomobject]$Finding)
+
+        if ($null -eq $Finding) { return '' }
+        if ([string]$Finding.Host -ne 'descope.khealth.com') { return '' }
+        if ([string]$Finding.PathAndQuery -match '^/([^/]+)/oauth2/') {
+            return $Matches[1]
+        }
+        return ''
+    }
+
+    function Get-SuggestedActionText {
+        param([pscustomobject]$Finding)
+
+        if ($null -eq $Finding) { return 'Manual review.' }
+        if (@($Finding.Categories) -contains 'Auth') {
+            return 'Tester auth, tokens, method handling et rate-limit.'
+        }
+        if (@($Finding.Categories) -contains 'Admin' -or [string]$Finding.PrimaryFamily -eq 'Administrative') {
+            return 'Verifier authz, role split et isolation tenant.'
+        }
+        if (@($Finding.Categories) -contains 'Files') {
+            return 'Verifier upload, download, ACL et references d''objets.'
+        }
+        if (@($Finding.Categories) -contains 'Protected' -or [string]$Finding.StatusCode -in @('401', '403')) {
+            return 'Verifier authz, redirections et protections contournables.'
+        }
+        if (@($Finding.Categories) -contains 'API' -or [string]$Finding.PrimaryFamily -eq 'API') {
+            return 'Verifier schema, authz, parametres et erreurs verbeuses.'
+        }
+        return 'Triage manuel prioritaire.'
+    }
+
+    function Get-ToolVersionText {
+        param([pscustomobject]$ToolInfo)
+
+        $version = if ($ToolInfo -and $ToolInfo.PSObject.Properties['Version']) { [string]$ToolInfo.Version } else { '' }
+        if ([string]::IsNullOrWhiteSpace($version)) { return 'version unavailable' }
+        if ($version -match 'v\d+(?:\.\d+)+') { return $Matches[0] }
+        if ($version -match '\d+\.\d+\.\d+') { return $Matches[0] }
+        if ($version -match 'RemoteException|flag provided but not defined') { return 'version unavailable' }
+        return $version.Trim()
+    }
+
+    function Get-ReportExclusionRecords {
+        param(
+            [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$ScopeItems,
+            [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$Exclusions,
+            [Parameter(Mandatory)][pscustomobject]$Layout
+        )
+
+        if (@($Exclusions).Count -gt 0) {
+            return @($Exclusions)
+        }
+        if (-not (Test-Path -LiteralPath $Layout.ExclusionsLog)) {
+            return @()
+        }
+
+        $records = [System.Collections.Generic.List[object]]::new()
+        foreach ($line in Get-Content -LiteralPath $Layout.ExclusionsLog -Encoding utf8) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            if ($line -notmatch "^(?<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{2}:\d{2}) \[EXCLUDED\] \[(?<phase>[^\]]+)\] Excluded by token '(?<token>[^']+)' on (?<matchedOn>[^:]+): (?<target>.+)$") {
+                continue
+            }
+
+            $target = [string]$Matches.target
+            $token = [string]$Matches.token
+            $matchedOn = [string]$Matches.matchedOn
+            $targetUrl = if ($target -match '^(?i)https?://') { $target } else { "https://$target" }
+            $targetUri = $null
+            $targetHost = $target
+            $targetPath = '/'
+            if ([Uri]::TryCreate($targetUrl, [UriKind]::Absolute, [ref]$targetUri)) {
+                $targetHost = $targetUri.DnsSafeHost.ToLowerInvariant()
+                $targetPath = $targetUri.AbsolutePath
+            }
+
+            $matchedScope = $null
+            foreach ($scopeItem in $ScopeItems) {
+                if (-not (@($scopeItem.Exclusions) -contains $token)) { continue }
+                $exclusionResult = Test-ExclusionMatch -ScopeItem $scopeItem -TargetHost $targetHost -Url $targetUrl -Path $targetPath
+                if ($exclusionResult.IsExcluded) {
+                    $matchedScope = $scopeItem
+                    break
+                }
+            }
+
+            $records.Add([pscustomobject]@{
+                Timestamp = [string]$Matches.timestamp
+                Phase     = [string]$Matches.phase
+                ScopeId   = $(if ($matchedScope) { [string]$matchedScope.Id } else { '' })
+                ScopeType = $(if ($matchedScope) { [string]$matchedScope.Type } else { '' })
+                ScopeValue = $(if ($matchedScope) { [string]$matchedScope.NormalizedValue } else { '' })
+                Target    = $target
+                Token     = $token
+                MatchedOn = $matchedOn
+                MatchedText = $target
+            }) | Out-Null
+        }
+
+        return @($records)
+    }
+
+    $reportExclusions = @(Get-ReportExclusionRecords -ScopeItems $ScopeItems -Exclusions $Exclusions -Layout $Layout)
+    $reportExcludedCount = if ($reportExclusions.Count -gt 0) { $reportExclusions.Count } else { [int]$Summary.ExcludedItemCount }
     $scopeRows = ($ScopeItems | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Type) $(ConvertTo-HtmlSafe $_.NormalizedValue) $(ConvertTo-HtmlSafe ($_.Exclusions -join ' '))""><td>$(ConvertTo-HtmlSafe $_.Id)</td><td>$(ConvertTo-HtmlSafe $_.Type)</td><td>$(ConvertTo-HtmlSafe $_.NormalizedValue)</td><td>$(ConvertTo-HtmlSafe ($_.Exclusions -join ', '))</td></tr>" }) -join [Environment]::NewLine
-    $excludedRows = ($Exclusions | Select-Object -First 500 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.ScopeId) $(ConvertTo-HtmlSafe $_.Target) $(ConvertTo-HtmlSafe $_.Token)""><td>$(ConvertTo-HtmlSafe $_.Phase)</td><td>$(ConvertTo-HtmlSafe $_.ScopeId)</td><td>$(ConvertTo-HtmlSafe $_.Target)</td><td>$(ConvertTo-HtmlSafe $_.Token)</td><td>$(ConvertTo-HtmlSafe $_.MatchedOn)</td></tr>" }) -join [Environment]::NewLine
+    $excludedRows = ($reportExclusions | Select-Object -First 500 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.ScopeId) $(ConvertTo-HtmlSafe $_.Target) $(ConvertTo-HtmlSafe $_.Token)""><td>$(ConvertTo-HtmlSafe $_.Phase)</td><td>$(ConvertTo-HtmlSafe $_.ScopeId)</td><td>$(ConvertTo-HtmlSafe $_.Target)</td><td>$(ConvertTo-HtmlSafe $_.Token)</td><td>$(ConvertTo-HtmlSafe $_.MatchedOn)</td></tr>" }) -join [Environment]::NewLine
     $liveRows = ($LiveTargets | Select-Object -First 1000 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe ($_.Technologies -join ' '))""><td>$(ConvertTo-HtmlSafe $_.Host)</td><td>$(Get-HtmlUrlCell -Url $_.Url)</td><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(ConvertTo-HtmlSafe $_.Title)</td><td>$(ConvertTo-HtmlSafe ($_.Technologies -join ', '))</td></tr>" }) -join [Environment]::NewLine
     $urlRows = ($DiscoveredUrls | Select-Object -First 2000 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe $_.ScopeId)""><td>$(ConvertTo-HtmlSafe $_.Host)</td><td>$(Get-HtmlUrlCell -Url $_.Url)</td><td>$(ConvertTo-HtmlSafe $_.ScopeId)</td><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(ConvertTo-HtmlSafe $_.Source)</td></tr>" }) -join [Environment]::NewLine
     $interestingRows = ($InterestingUrls | Select-Object -First 250 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe $_.PrimaryFamily) $(ConvertTo-HtmlSafe $_.Priority) $(ConvertTo-HtmlSafe ($_.Categories -join ' '))""><td><span class=""priority-badge priority-$(ConvertTo-HtmlSafe $_.Priority.ToLowerInvariant())"">$(ConvertTo-HtmlSafe $_.Priority)</span></td><td>$(ConvertTo-HtmlSafe $_.Score)</td><td>$(ConvertTo-HtmlSafe $_.PrimaryFamily)</td><td>$(Get-HtmlUrlCell -Url $_.Url)</td><td>$(ConvertTo-HtmlSafe ($_.Categories -join ', '))</td><td>$(ConvertTo-HtmlSafe ($_.Reasons -join ', '))</td></tr>" }) -join [Environment]::NewLine
@@ -3963,7 +4157,7 @@ function Export-ReconReport {
     $priorityBars = ($Summary.InterestingPriorityDistribution | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Priority)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
     $errorPhaseBars = ($Summary.ErrorPhaseDistribution | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Phase)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
     $exclusionBars = (
-        $Exclusions |
+        $reportExclusions |
         Group-Object -Property Token |
         Sort-Object -Property @{ Expression = 'Count'; Descending = $true }, Name |
         Select-Object -First 6 |
@@ -3991,6 +4185,125 @@ function Export-ReconReport {
     $protectedRows = Get-HtmlTableBodyOrEmpty -Rows $protectedRows -ColumnCount 4 -Message 'No 401/403 live targets were captured for this run.'
     $errorRows = Get-HtmlTableBodyOrEmpty -Rows $errorRows -ColumnCount 5 -Message 'No non-fatal errors were captured for this run.'
     $familyRows = Get-HtmlTableBodyOrEmpty -Rows $familyRows -ColumnCount 6 -Message 'No interesting families were generated for this run.'
+    $protectedTargetCount = @($LiveTargets | Where-Object { $_.StatusCode -in 401, 403 }).Count
+    $interestingFamilyCount = @($interestingFamilies).Count
+    $manifest = $null
+    if ($Layout.PSObject.Properties.Name -contains 'RunManifestJson' -and -not [string]::IsNullOrWhiteSpace([string]$Layout.RunManifestJson) -and (Test-Path -LiteralPath $Layout.RunManifestJson)) {
+        try {
+            $manifest = Get-Content -LiteralPath $Layout.RunManifestJson -Raw -Encoding utf8 | ConvertFrom-Json -Depth 100
+        } catch {
+            $manifest = $null
+        }
+    }
+
+    $runSettings = if ($manifest -and $manifest.RunSettings) { $manifest.RunSettings } else { $null }
+    $toolSnapshot = if ($manifest -and $manifest.ToolSnapshot) { @($manifest.ToolSnapshot) } else { @() }
+    $shortlistItems = if ($triageData -and $triageData.Shortlist) { @($triageData.Shortlist | Select-Object -First 15) } else { @() }
+    $programLabel = if ($manifest -and $manifest.ProgramName) { [string]$manifest.ProgramName } else { [string]$Summary.ProgramName }
+    $runIdLabel = if ($manifest -and $manifest.RunId) { [string]$manifest.RunId } else { 'n/a' }
+    $presetLabel = if ($runSettings) { '{0} / {1}' -f [string]$runSettings.PresetName, [string]$runSettings.ProfileName } else { 'n/a' }
+    $userAgentLabel = if ($runSettings -and $runSettings.UniqueUserAgent) { [string]$runSettings.UniqueUserAgent } elseif ($Summary.UniqueUserAgent) { [string]$Summary.UniqueUserAgent } else { 'n/a' }
+    $runStartedDisplay = 'n/a'
+    $runEndedDisplay = if ($Summary.GeneratedAtUtc) { [string]$Summary.GeneratedAtUtc } else { 'n/a' }
+    $durationDisplay = 'n/a'
+    if ($manifest) {
+        $parsedStart = Convert-ToReportDateTimeOffset -Value $manifest.StartTimeUtc
+        $parsedEnd = Convert-ToReportDateTimeOffset -Value $manifest.EndTimeUtc
+        if ($null -ne $parsedStart) { $runStartedDisplay = $parsedStart.UtcDateTime.ToString('yyyy-MM-dd HH:mm:ss ''UTC''') }
+        if ($null -ne $parsedEnd) { $runEndedDisplay = $parsedEnd.UtcDateTime.ToString('yyyy-MM-dd HH:mm:ss ''UTC''') }
+        if (($null -ne $parsedStart) -and ($null -ne $parsedEnd)) { $durationDisplay = Format-RunDuration -Duration ($parsedEnd - $parsedStart) }
+    }
+
+    $statusDistributionMap = @{}
+    foreach ($statusEntry in @($Summary.StatusCodeDistribution)) {
+        $statusDistributionMap[[string]$statusEntry.StatusCode] = [int]$statusEntry.Count
+    }
+    foreach ($knownStatus in @('200', '401', '403')) {
+        if (-not $statusDistributionMap.ContainsKey($knownStatus)) {
+            $statusDistributionMap[$knownStatus] = 0
+        }
+    }
+    $maxStatusBar = [Math]::Max(($statusDistributionMap.Values | Measure-Object -Maximum).Maximum, 1)
+    $statusChartHtml = @(
+        foreach ($statusCode in @('200', '401', '403')) {
+            $count = [int]$statusDistributionMap[$statusCode]
+            $width = [int][Math]::Round(($count / $maxStatusBar) * 100)
+            if ($count -gt 0 -and $width -lt 8) { $width = 8 }
+            $barClass = switch ($statusCode) {
+                '200' { 'status-ok' }
+                '401' { 'status-warning' }
+                default { 'status-danger' }
+            }
+            "<div class=""status-chart-row""><span class=""mono"">$statusCode</span><div class=""status-chart-track""><div class=""status-chart-bar $barClass"" style=""width:${width}%""></div></div><strong class=""mono"">$count</strong></div>"
+        }
+    ) -join [Environment]::NewLine
+
+    $priorityOverviewHtml = @(
+        foreach ($priorityName in @('Critical', 'High', 'Medium')) {
+            $priorityItems = @($InterestingUrls | Where-Object { $_.Priority -eq $priorityName })
+            $priorityClass = Get-PriorityClass -Priority $priorityName
+            $priorityEntries = @(
+                foreach ($item in $priorityItems) {
+                    "<article class=""priority-entry"" data-search-card=""true"" data-search=""$(ConvertTo-HtmlSafe ($priorityName + ' ' + $item.Score + ' ' + $item.Url + ' ' + $item.PrimaryFamily + ' ' + ($item.Categories -join ' ')))""><div class=""priority-entry-head""><span class=""priority-badge $priorityClass"">$priorityName</span><span class=""score-pill mono"">[$priorityName/$($item.Score)]</span><button type=""button"" class=""copy-btn"" data-copy=""$(ConvertTo-HtmlSafe $item.Url)"">Copy</button></div><a class=""priority-url mono"" href=""$(ConvertTo-HtmlSafe $item.Url)"" target=""_blank"" rel=""noreferrer"" title=""$(ConvertTo-HtmlSafe $item.Url)"">$(ConvertTo-HtmlSafe $item.Url)</a></article>"
+                }
+            ) -join [Environment]::NewLine
+            if ([string]::IsNullOrWhiteSpace($priorityEntries)) {
+                $priorityEntries = '<div class="empty-card">No URLs in this priority.</div>'
+            }
+            "<section class=""priority-column $priorityClass""><div class=""priority-column-head""><div><h3>$priorityName</h3><small class=""mono"">$($priorityItems.Count) item(s)</small></div><span class=""priority-badge $priorityClass"">$($priorityItems.Count)</span></div><div class=""priority-column-body"">$priorityEntries</div></section>"
+        }
+    ) -join [Environment]::NewLine
+
+    $shortlistCardsHtml = @(
+        foreach ($item in $shortlistItems) {
+            $priorityClass = Get-PriorityClass -Priority ([string]$item.Priority)
+            $tenantLabel = Get-OAuthTenantLabel -Finding $item
+            $tenantChip = if ($tenantLabel) { "<span class=""chip tenant-chip mono"">$(ConvertTo-HtmlSafe $tenantLabel)</span>" } else { '' }
+            $categoryChips = if (@($item.Categories).Count -gt 0) {
+                (@($item.Categories) | ForEach-Object { "<span class=""chip"">$(ConvertTo-HtmlSafe ([string]$_))</span>" }) -join ' '
+            } else {
+                '<span class="chip muted-chip">General</span>'
+            }
+            "<article class=""shortlist-card"" data-search-card=""true"" data-search=""$(ConvertTo-HtmlSafe ($item.Priority + ' ' + $item.Score + ' ' + $item.Url + ' ' + $item.PrimaryFamily + ' ' + ($item.Categories -join ' ') + ' ' + ($item.Reasons -join ' ')))""><div class=""shortlist-topline""><span class=""priority-badge $priorityClass"">$(ConvertTo-HtmlSafe ([string]$item.Priority))</span><span class=""score-pill mono"">Score $($item.Score)</span><span class=""family-pill mono"">$(ConvertTo-HtmlSafe ([string]$item.PrimaryFamily))</span>$(Get-StatusBadgeHtml -StatusCode $item.StatusCode)$tenantChip</div>$(Get-HtmlUrlCell -Url ([string]$item.Url))<div class=""chip-row"">$categoryChips</div><div class=""reason-copy"">$(ConvertTo-HtmlSafe ((@($item.Reasons) | ForEach-Object { [string]$_ }) -join '; '))</div></article>"
+        }
+    ) -join [Environment]::NewLine
+    if ([string]::IsNullOrWhiteSpace($shortlistCardsHtml)) {
+        $shortlistCardsHtml = '<div class="empty-card">No shortlist entries were generated for this run.</div>'
+    }
+
+    $authRows = @(
+        foreach ($authUrl in @($Summary.TopAuthReviewable | Select-Object -First 5)) {
+            $authFinding = @($InterestingUrls | Where-Object { $_.Url -eq $authUrl } | Select-Object -First 1)
+            $authItem = if ($authFinding.Count -gt 0) { $authFinding[0] } else { $null }
+            $reasonText = if ($authItem -and @($authItem.Reasons).Count -gt 0) { (@($authItem.Reasons) | ForEach-Object { [string]$_ }) -join ', ' } else { 'Authentication surface.' }
+            "<tr data-search=""$(ConvertTo-HtmlSafe (([string]$authUrl) + ' ' + $reasonText))""><td>$(Get-HtmlUrlCell -Url ([string]$authUrl))</td><td>$(Get-StatusBadgeHtml -StatusCode $(if ($authItem) { $authItem.StatusCode } else { 0 }))</td><td>$(ConvertTo-HtmlSafe $reasonText)</td><td>$(ConvertTo-HtmlSafe (Get-SuggestedActionText -Finding $authItem))</td></tr>"
+        }
+    ) -join [Environment]::NewLine
+    $authRows = Get-HtmlTableBodyOrEmpty -Rows $authRows -ColumnCount 4 -Message 'No authentication endpoints were ranked for this run.'
+
+    $toolRows = @(
+        foreach ($tool in $toolSnapshot) {
+            "<tr data-search=""$(ConvertTo-HtmlSafe (([string]$tool.Name) + ' ' + (Get-ToolVersionText -ToolInfo $tool) + ' ' + ([string]$tool.BinaryPath)))""><td class=""mono"">$(ConvertTo-HtmlSafe ([string]$tool.Name))</td><td class=""mono"">$(ConvertTo-HtmlSafe (Get-ToolVersionText -ToolInfo $tool))</td><td class=""mono"">$(ConvertTo-HtmlSafe ([string]$tool.Binary))</td><td class=""mono"">$(ConvertTo-HtmlSafe ([string]$tool.BinaryPath))</td></tr>"
+        }
+    ) -join [Environment]::NewLine
+    $toolRows = Get-HtmlTableBodyOrEmpty -Rows $toolRows -ColumnCount 4 -Message 'No tool snapshot was persisted for this run.'
+
+    $nextActionChecklistHtml = @(
+        foreach ($suggestion in (Get-SuggestedReviewAreas -InterestingUrls $InterestingUrls -LiveTargets $LiveTargets -Errors $Errors | Select-Object -First 6)) {
+            "<label class=""action-item""><input type=""checkbox"" /><span class=""action-copy""><span class=""action-title"">$(ConvertTo-HtmlSafe ([string]$suggestion.Area))</span><span class=""action-reason"">$(ConvertTo-HtmlSafe ([string]$suggestion.Reason))</span></span></label>"
+        }
+    ) -join [Environment]::NewLine
+
+    $kpiCardsHtml = @(
+        "<div class=""kpi-card""><div class=""kpi-icon tone-accent""><svg viewBox=""0 0 24 24"" fill=""none"" stroke=""currentColor"" stroke-width=""1.8""><path d=""M4 7h16M4 12h16M4 17h16""/><rect x=""3"" y=""4"" width=""18"" height=""16"" rx=""2""/></svg></div><div><div class=""kpi-label"">Scope Items</div><div class=""kpi-value"">$(ConvertTo-HtmlSafe ([string]$Summary.ScopeItemCount))</div></div></div>"
+        "<div class=""kpi-card""><div class=""kpi-icon tone-warning""><svg viewBox=""0 0 24 24"" fill=""none"" stroke=""currentColor"" stroke-width=""1.8""><circle cx=""12"" cy=""12"" r=""9""/><path d=""M8 8l8 8""/></svg></div><div><div class=""kpi-label"">Excluded</div><div class=""kpi-value"">$(ConvertTo-HtmlSafe ([string]$Summary.ExcludedItemCount))</div></div></div>"
+        "<div class=""kpi-card""><div class=""kpi-icon tone-info""><svg viewBox=""0 0 24 24"" fill=""none"" stroke=""currentColor"" stroke-width=""1.8""><path d=""M4 12h16""/><path d=""M12 4a15 15 0 0 1 0 16""/><path d=""M12 4a15 15 0 0 0 0 16""/><circle cx=""12"" cy=""12"" r=""9""/></svg></div><div><div class=""kpi-label"">Hosts Discovered</div><div class=""kpi-value"">$(ConvertTo-HtmlSafe ([string]$Summary.DiscoveredHostCount))</div></div></div>"
+        "<div class=""kpi-card""><div class=""kpi-icon tone-accent""><svg viewBox=""0 0 24 24"" fill=""none"" stroke=""currentColor"" stroke-width=""1.8""><path d=""M5 12l4 4L19 6""/><circle cx=""12"" cy=""12"" r=""9""/></svg></div><div><div class=""kpi-label"">Live Hosts</div><div class=""kpi-value"">$(ConvertTo-HtmlSafe ([string]$Summary.LiveHostCount))</div></div></div>"
+        "<div class=""kpi-card""><div class=""kpi-icon tone-info""><svg viewBox=""0 0 24 24"" fill=""none"" stroke=""currentColor"" stroke-width=""1.8""><circle cx=""12"" cy=""12"" r=""8""/><circle cx=""12"" cy=""12"" r=""3""/><path d=""M12 2v3M12 19v3M2 12h3M19 12h3""/></svg></div><div><div class=""kpi-label"">Live Targets</div><div class=""kpi-value"">$(ConvertTo-HtmlSafe ([string]$Summary.LiveTargetCount))</div></div></div>"
+        "<div class=""kpi-card""><div class=""kpi-icon tone-info""><svg viewBox=""0 0 24 24"" fill=""none"" stroke=""currentColor"" stroke-width=""1.8""><path d=""M10 13a5 5 0 0 1 0-7l1-1a5 5 0 0 1 7 7l-1 1""/><path d=""M14 11a5 5 0 0 1 0 7l-1 1a5 5 0 0 1-7-7l1-1""/></svg></div><div><div class=""kpi-label"">URLs Discovered</div><div class=""kpi-value"">$(ConvertTo-HtmlSafe ([string]$Summary.DiscoveredUrlCount))</div></div></div>"
+        "<div class=""kpi-card""><div class=""kpi-icon tone-danger""><svg viewBox=""0 0 24 24"" fill=""none"" stroke=""currentColor"" stroke-width=""1.8""><path d=""M12 3l2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2l1.1-6.2L3 9.6l6.2-.9z""/></svg></div><div><div class=""kpi-label"">Interesting URLs</div><div class=""kpi-value"">$(ConvertTo-HtmlSafe ([string]$Summary.InterestingUrlCount))</div></div></div>"
+        "<div class=""kpi-card""><div class=""kpi-icon tone-danger""><svg viewBox=""0 0 24 24"" fill=""none"" stroke=""currentColor"" stroke-width=""1.8""><path d=""M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6l7-3z""/><path d=""M9.5 12.5l1.8 1.8 3.7-4""/></svg></div><div><div class=""kpi-label"">Protected</div><div class=""kpi-value"">$(ConvertTo-HtmlSafe ([string]$Summary.ProtectedInterestingCount))</div></div></div>"
+    ) -join [Environment]::NewLine
     $spotlightSections = $(
         foreach ($familyStat in ($Summary.TopInterestingFamilies | Select-Object -First 4)) {
             $familyName = [string]$familyStat.Family
@@ -4007,28 +4320,31 @@ function Export-ReconReport {
                 $categoryRows = '<div class="mini-row"><span>No URLs in this category.</span><strong>0</strong></div>'
             }
 
-            "<section><h2>Spotlight: $(ConvertTo-HtmlSafe $familyName)</h2>$categoryRows</section>"
+            "<section class=""card spotlight-card""><h2>Spotlight: $(ConvertTo-HtmlSafe $familyName)</h2>$categoryRows</section>"
         }
     ) -join [Environment]::NewLine
 
     $html = @"
 <!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>ScopeForge Report - $(ConvertTo-HtmlSafe $Summary.ProgramName)</title><style>
-:root{--bg:#0a1016;--panel:#111c25;--panel2:#162633;--text:#edf4f8;--muted:#9eb4c2;--accent:#51d0b1;--accent2:#6db8ff;--border:rgba(255,255,255,.08);--shadow:0 24px 80px rgba(0,0,0,.35)}*{box-sizing:border-box}body{margin:0;font-family:"Segoe UI","Helvetica Neue",sans-serif;background:radial-gradient(circle at top right,rgba(81,208,177,.15),transparent 28%),radial-gradient(circle at top left,rgba(109,184,255,.12),transparent 22%),linear-gradient(180deg,#091018 0%,#0b141b 100%);color:var(--text)}.wrap{max-width:1500px;margin:0 auto;padding:32px 20px 60px}.hero,.card,.report-section{background:rgba(17,28,37,.9);border:1px solid var(--border);box-shadow:var(--shadow)}.hero{padding:24px;border-radius:22px;margin-bottom:24px}.hero h1{margin:0 0 8px;font-size:30px}.hero p,.hint,.mini-row,.label,th,summary small{color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin:24px 0}.card{padding:18px;border-radius:18px}.value{margin-top:10px;font-size:28px;font-weight:700}.two-col{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:24px}.mini-row{display:flex;justify-content:space-between;gap:16px;padding:10px 0;border-bottom:1px solid var(--border)}.mini-row strong{color:var(--text);font-weight:600}.search{width:100%;margin:0 0 16px;padding:14px 16px;border:1px solid var(--border);border-radius:14px;background:rgba(10,16,22,.8);color:var(--text)}details.report-section{margin-bottom:18px;border-radius:18px;overflow:hidden}details.report-section>summary{cursor:pointer;list-style:none;padding:18px 20px;background:rgba(22,38,51,.82);display:flex;justify-content:space-between;gap:16px;align-items:center}details.report-section>summary::-webkit-details-marker{display:none}.section-body{padding:18px}table{width:100%;border-collapse:collapse}th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top;font-size:14px}td.empty-state{text-align:center;font-style:italic;color:var(--muted)}th{font-size:11px;text-transform:uppercase;letter-spacing:.08em}th button{all:unset;cursor:pointer;color:inherit}a{color:var(--accent2);text-decoration:none}.url-cell{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.copy-btn{border:1px solid var(--border);background:rgba(10,16,22,.7);color:var(--text);border-radius:999px;padding:4px 10px;font-size:11px;cursor:pointer}.priority-badge{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;padding:4px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}.priority-critical{background:#ff6b6b;color:#240808}.priority-high{background:#ffb454;color:#2f1b00}.priority-medium{background:#ffe066;color:#2d2800}.priority-low{background:#7bd88f;color:#0d2415}@media (prefers-color-scheme: light){:root{--bg:#f3f7fb;--panel:#ffffff;--panel2:#eff5fb;--text:#10202c;--muted:#5d7384;--border:rgba(16,32,44,.12);--shadow:0 18px 50px rgba(31,54,79,.14)}body{background:linear-gradient(180deg,#eef5fb 0%,#f7fafc 100%)}.copy-btn{background:#fff}}@media(max-width:720px){.wrap{padding:20px 12px 40px}.hero h1{font-size:24px}.url-cell{flex-direction:column;align-items:flex-start}}</style></head>
-<body><div class="wrap"><div class="hero"><h1>ScopeForge Recon Report</h1><p>Program: $(ConvertTo-HtmlSafe $Summary.ProgramName) | Generated: $(ConvertTo-HtmlSafe $Summary.GeneratedAtUtc) | PowerShell $(ConvertTo-HtmlSafe $Summary.PowerShellVersion)</p></div>
-<div class="grid"><div class="card"><div class="label">Scope Items</div><div class="value">$(ConvertTo-HtmlSafe $Summary.ScopeItemCount)</div></div><div class="card"><div class="label">Excluded</div><div class="value">$(ConvertTo-HtmlSafe $Summary.ExcludedItemCount)</div></div><div class="card"><div class="label">Hosts Found</div><div class="value">$(ConvertTo-HtmlSafe $Summary.DiscoveredHostCount)</div></div><div class="card"><div class="label">Live Hosts</div><div class="value">$(ConvertTo-HtmlSafe $Summary.LiveHostCount)</div></div><div class="card"><div class="label">Live Targets</div><div class="value">$(ConvertTo-HtmlSafe $Summary.LiveTargetCount)</div></div><div class="card"><div class="label">URLs Found</div><div class="value">$(ConvertTo-HtmlSafe $Summary.DiscoveredUrlCount)</div></div><div class="card"><div class="label">Interesting</div><div class="value">$(ConvertTo-HtmlSafe $Summary.InterestingUrlCount)</div></div></div>
-<div class="two-col"><section class="card"><h2>HTTP Codes</h2>$statusBars</section><section class="card"><h2>Top Technologies</h2>$technologyBars</section><section class="card"><h2>Top Subdomains</h2>$subdomainBars</section><section class="card"><h2>Interesting Families</h2>$familyBars</section><section class="card"><h2>Interesting Priorities</h2>$priorityBars</section><section class="card"><h2>Interesting Categories</h2>$interestingBars</section><section class="card"><h2>Error Phases</h2>$errorPhaseBars</section><section class="card"><h2>Exclusion Tokens</h2>$exclusionBars</section></div>
-<div class="two-col"><section class="card"><h2>Next Actions</h2>$suggestedAreaRows</section>$spotlightSections</div>
-<input id="globalSearch" class="search" type="search" placeholder="Filter all tables..." />
-<details open class="report-section"><summary><span>In Scope</span><small>Normalized scope after validation and wildcard parsing.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">ID</button></th><th><button type="button">Type</button></th><th><button type="button">Value</button></th><th><button type="button">Exclusions</button></th></tr></thead><tbody>$scopeRows</tbody></table></div></details>
-<details open class="report-section"><summary><span>Excluded</span><small>Assets removed because they matched exclusion strings before probe or after crawl filtering.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Phase</button></th><th><button type="button">Scope</button></th><th><button type="button">Target</button></th><th><button type="button">Token</button></th><th><button type="button">Matched On</button></th></tr></thead><tbody>$excludedRows</tbody></table></div></details>
-<details open class="report-section"><summary><span>Live Targets</span><small>Reachable HTTP(S) targets retained after in-scope validation.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Host</button></th><th><button type="button">URL</button></th><th><button type="button">Status</button></th><th><button type="button">Title</button></th><th><button type="button">Technologies</button></th></tr></thead><tbody>$liveRows</tbody></table></div></details>
-<details open class="report-section"><summary><span>Interesting Families</span><small>Primary families used to group triage targets for manual review.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Family</button></th><th><button type="button">Count</button></th><th><button type="button">Max Score</button></th><th><button type="button">Priorities</button></th><th><button type="button">Top Categories</button></th><th><button type="button">Sample URLs</button></th></tr></thead><tbody>$familyRows</tbody></table></div></details>
-<details open class="report-section"><summary><span>Protected Endpoints</span><small>Live endpoints returning 401 or 403.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Status</button></th><th><button type="button">URL</button></th><th><button type="button">Title</button></th><th><button type="button">Technologies</button></th></tr></thead><tbody>$protectedRows</tbody></table></div></details>
-<details open class="report-section"><summary><span>Interesting Pages</span><small>Heuristically ranked URLs grouped by family and priority.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Priority</button></th><th><button type="button">Score</button></th><th><button type="button">Family</button></th><th><button type="button">URL</button></th><th><button type="button">Categories</button></th><th><button type="button">Reasons</button></th></tr></thead><tbody>$interestingRows</tbody></table></div></details>
-<details open class="report-section"><summary><span>Discovered URLs</span><small>Unique endpoints collected from katana and seeds.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Host</button></th><th><button type="button">URL</button></th><th><button type="button">Scope</button></th><th><button type="button">Status</button></th><th><button type="button">Source</button></th></tr></thead><tbody>$urlRows</tbody></table></div></details>
-<details open class="report-section"><summary><span>Errors</span><small>Non-fatal errors captured during execution.</small></summary><div class="section-body"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Phase</button></th><th><button type="button">Tool</button></th><th><button type="button">Code</button></th><th><button type="button">Message</button></th><th><button type="button">Recommendation</button></th></tr></thead><tbody>$errorRows</tbody></table></div></details></div>
-<script>const input=document.getElementById('globalSearch');const tables=Array.from(document.querySelectorAll('[data-filter-table="true"]'));function applyFilter(){const query=input.value.trim().toLowerCase();tables.forEach(table=>{table.querySelectorAll('tbody tr').forEach(row=>{const haystack=(row.dataset.search||row.textContent||'').toLowerCase();row.style.display=!query||haystack.includes(query)?'':'none';});});}function wireSort(table){const headers=Array.from(table.querySelectorAll('thead th button'));headers.forEach((button,index)=>{button.addEventListener('click',()=>{const tbody=table.querySelector('tbody');const rows=Array.from(tbody.querySelectorAll('tr'));const ascending=button.dataset.sortDir!=='asc';headers.forEach(header=>{header.dataset.sortDir='';});button.dataset.sortDir=ascending?'asc':'desc';rows.sort((a,b)=>{const left=(a.children[index]?.innerText||'').trim();const right=(b.children[index]?.innerText||'').trim();const leftNumber=Number(left);const rightNumber=Number(right);const comparison=!Number.isNaN(leftNumber)&&!Number.isNaN(rightNumber)?leftNumber-rightNumber:left.localeCompare(right,undefined,{numeric:true,sensitivity:'base'});return ascending?comparison:-comparison;});rows.forEach(row=>tbody.appendChild(row));});});}document.querySelectorAll('[data-sort-table="true"]').forEach(wireSort);document.querySelectorAll('.copy-btn').forEach(button=>{button.addEventListener('click',async()=>{const value=button.dataset.copy||'';const previous=button.textContent;try{if(navigator.clipboard&&value){await navigator.clipboard.writeText(value);button.textContent='Copied';setTimeout(()=>button.textContent=previous,1200);}}catch(_){button.textContent=previous;}});});input.addEventListener('input',applyFilter);applyFilter();</script></body></html>
+<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>ScopeForge Report - $(ConvertTo-HtmlSafe $programLabel)</title><link rel="preconnect" href="https://fonts.googleapis.com" /><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin /><link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" /><style>
+:root{--bg:#080d12;--panel:#0f1923;--panel2:#13202c;--panel3:#182a37;--text:#e7f0f7;--muted:#7f95a8;--accent:#00e5a0;--danger:#ff4757;--warning:#ffa502;--info:#5bc0ff;--border:rgba(255,255,255,.08);--shadow:0 22px 56px rgba(0,0,0,.34)}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;font-family:"IBM Plex Sans",sans-serif;background:var(--bg);color:var(--text)}a{color:var(--info);text-decoration:none}.mono,.url-cell a,.score-pill,.family-pill,.type-badge,.section-count,.status-badge{font-family:"JetBrains Mono",monospace}.wrap{max-width:1600px;margin:0 auto;padding:120px 20px 48px}.hero-header{position:fixed;top:0;left:0;right:0;z-index:40;background:rgba(8,13,18,.94);border-bottom:1px solid var(--border);backdrop-filter:blur(12px)}.hero-inner{max-width:1600px;margin:0 auto;padding:16px 20px;display:grid;grid-template-columns:2fr 1fr;gap:16px;align-items:start}.hero-title{display:flex;gap:14px;align-items:flex-start}.hero-badge{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;background:rgba(0,229,160,.12);border:1px solid rgba(0,229,160,.25);color:var(--accent)}.hero-badge svg{width:22px;height:22px}.hero-eyebrow{color:var(--accent);font-size:11px;letter-spacing:.14em;text-transform:uppercase;margin-bottom:4px}.hero-title h1{margin:0;font-size:28px;line-height:1.1}.hero-meta-line{margin-top:8px;color:var(--muted);font-size:14px}.hero-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.hero-card,.hero,.card,.report-section,.toolbar-card{background:var(--panel);border:1px solid var(--border);box-shadow:var(--shadow)}.hero-card{border-radius:14px;padding:11px 12px}.hero-card-label{color:var(--muted);font-size:10px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:5px}.hero-card-value{font-size:13px;line-height:1.35;word-break:break-word}.toolbar-card{position:sticky;top:12px;z-index:20;padding:18px;border-radius:18px;margin-bottom:18px;backdrop-filter:blur(12px)}.toolbar-row{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}.toolbar-row+.toolbar-row{margin-top:14px}.toolbar-copy{color:var(--muted);font-size:13px}.toolbar-actions,.quick-filters,.quick-nav{display:flex;gap:10px;flex-wrap:wrap}.tool-btn,.filter-chip,.nav-pill{border:1px solid var(--border);background:rgba(8,13,18,.82);color:var(--text);border-radius:999px;padding:9px 14px;font-size:12px;cursor:pointer;text-decoration:none}.tool-btn:hover,.filter-chip:hover,.nav-pill:hover,.copy-btn:hover{border-color:rgba(91,192,255,.45);background:#122434}.nav-pill{display:inline-flex;align-items:center;gap:8px}.section-count{display:inline-flex;align-items:center;justify-content:center;min-width:28px;padding:2px 8px;border-radius:999px;background:rgba(0,229,160,.14);color:var(--accent);font-size:11px}.search{width:100%;margin:0 0 16px;padding:14px 16px;border:1px solid var(--border);border-radius:14px;background:rgba(8,13,18,.88);color:var(--text)}.search-inline{margin:0;flex:1 1 380px;min-width:260px}.grid{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:12px;margin:20px 0}.kpi-card{display:flex;gap:12px;align-items:center;border-radius:16px;padding:14px;min-height:94px}.kpi-icon{width:40px;height:40px;display:grid;place-items:center;border-radius:12px;border:1px solid currentColor;background:rgba(255,255,255,.04)}.kpi-icon svg{width:20px;height:20px}.kpi-label{font-size:11px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px}.kpi-value{font-size:28px;font-weight:700;line-height:1}.tone-accent{color:var(--accent)}.tone-info{color:var(--info)}.tone-warning{color:var(--warning)}.tone-danger{color:var(--danger)}.dashboard-shell{display:grid;grid-template-columns:1.7fr 1fr;gap:18px;margin-bottom:18px}.panel-title{margin:0;font-size:18px}.panel-subtitle{margin-top:5px;color:var(--muted);font-size:13px}.priority-columns{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:16px}.priority-column{border:1px solid var(--border);border-radius:14px;min-height:430px;display:flex;flex-direction:column}.priority-column.priority-critical{background:rgba(255,71,87,.09);border-color:rgba(255,71,87,.26)}.priority-column.priority-high{background:rgba(255,165,2,.08);border-color:rgba(255,165,2,.24)}.priority-column.priority-medium{background:rgba(255,209,102,.08);border-color:rgba(255,209,102,.2)}.priority-column-head{padding:14px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.priority-column-head h3{margin:0;font-size:18px}.priority-column-body{padding:10px;display:grid;gap:10px;max-height:560px;overflow:auto}.priority-entry{background:rgba(8,13,18,.44);border:1px solid var(--border);border-radius:12px;padding:10px}.priority-entry-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}.priority-url{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.score-pill,.family-pill,.chip,.type-badge{display:inline-flex;align-items:center;padding:4px 9px;border-radius:999px;border:1px solid var(--border);background:rgba(255,255,255,.04);font-size:11px}.priority-badge{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;padding:4px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}.priority-critical{background:rgba(255,71,87,.18);color:#ffd6db}.priority-high{background:rgba(255,165,2,.18);color:#ffe4b0}.priority-medium{background:rgba(255,209,102,.18);color:#fff2c7}.priority-low{background:rgba(91,192,255,.16);color:#d9efff}.insight-stack{display:grid;gap:18px}.status-chart-row{display:grid;grid-template-columns:48px 1fr 44px;gap:12px;align-items:center}.status-chart-row+.status-chart-row{margin-top:10px}.status-chart-track{height:12px;border-radius:999px;background:rgba(255,255,255,.06);overflow:hidden}.status-chart-bar{height:100%;border-radius:999px}.status-chart-bar.status-ok{background:var(--accent)}.status-chart-bar.status-warning{background:var(--warning)}.status-chart-bar.status-danger{background:var(--danger)}.shortlist-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.shortlist-card{background:var(--panel);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);padding:14px;display:grid;gap:12px}.shortlist-topline,.chip-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.tenant-chip{background:rgba(91,192,255,.12);color:#d9efff}.muted-chip{color:var(--muted)}.reason-copy,.next-actions-copy{color:var(--muted);font-size:13px;line-height:1.45}.two-col{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:18px}.mini-row{display:flex;justify-content:space-between;gap:16px;padding:10px 0;border-bottom:1px solid var(--border)}.mini-row strong{color:var(--text);font-weight:600}.hero,.card{padding:18px;border-radius:18px}.next-actions-panel{background:rgba(0,229,160,.08);border-color:rgba(0,229,160,.24)}.actions-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}.action-item{display:flex;gap:12px;align-items:flex-start;background:rgba(8,13,18,.42);border:1px solid rgba(0,229,160,.14);border-radius:14px;padding:12px}.action-item input{width:18px;height:18px;margin-top:2px;accent-color:var(--accent)}.action-copy{display:grid;gap:4px}.action-title{font-weight:600}.action-reason{color:var(--muted);font-size:13px;line-height:1.4}.run-info-grid{display:grid;grid-template-columns:minmax(320px,420px) 1fr;gap:18px}.info-list{display:grid;gap:12px}.info-row{border:1px solid var(--border);border-radius:14px;background:rgba(8,13,18,.42);padding:12px}.info-label{color:var(--muted);font-size:10px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px}.info-value{font-size:13px;line-height:1.4;word-break:break-word}.spotlight-card h2{margin:0 0 6px;font-size:18px}.spotlight-card .mini-row span{max-width:calc(100% - 64px)}details.report-section{margin-bottom:18px;border-radius:18px;overflow:hidden;scroll-margin-top:110px}details.report-section>summary{cursor:pointer;list-style:none;padding:18px 20px;background:var(--panel2);display:flex;justify-content:space-between;gap:16px;align-items:center}details.report-section>summary::-webkit-details-marker{display:none}.section-body{padding:18px}.table-scroll{overflow:auto;border-radius:14px}.table-scroll table{min-width:720px}table{width:100%;border-collapse:collapse}th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top;font-size:14px}td.empty-state{text-align:center;font-style:italic;color:var(--muted)}th{font-size:11px;text-transform:uppercase;letter-spacing:.08em}th button{all:unset;cursor:pointer;color:inherit}.url-cell{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.url-cell a{overflow-wrap:anywhere;word-break:break-word}.copy-btn{border:1px solid var(--border);background:rgba(8,13,18,.82);color:var(--text);border-radius:999px;padding:4px 10px;font-size:11px;cursor:pointer}.status-badge{display:inline-flex;align-items:center;justify-content:center;min-width:44px;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:700}.status-ok{background:rgba(0,229,160,.14);color:#bafee6}.status-warning{background:rgba(255,165,2,.16);color:#ffe2b2}.status-danger{background:rgba(255,71,87,.16);color:#ffd4d8}.status-info{background:rgba(91,192,255,.16);color:#d9efff}.status-muted{background:rgba(255,255,255,.08);color:#d2d9df}@media(max-width:1380px){.grid{grid-template-columns:repeat(4,minmax(0,1fr))}.shortlist-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:1080px){.hero-inner,.dashboard-shell,.run-info-grid{grid-template-columns:1fr}.priority-columns,.actions-grid{grid-template-columns:1fr}}@media(max-width:720px){.wrap{padding:132px 12px 32px}.hero-inner{padding:14px 12px}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.shortlist-grid{grid-template-columns:1fr}.toolbar-card{position:static}.table-scroll table{min-width:640px}.url-cell{flex-direction:column;align-items:flex-start}}</style></head>
+<body><header class="hero-header"><div class="hero-inner"><div class="hero-title"><div class="hero-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12h16"/><path d="M12 4v16"/><circle cx="12" cy="12" r="9"/></svg></div><div><div class="hero-eyebrow">Security Recon Dashboard</div><h1>$(ConvertTo-HtmlSafe $programLabel)</h1><div class="hero-meta-line">Run <span class="mono">$(ConvertTo-HtmlSafe $runIdLabel)</span> · Timestamp <span class="mono">$(ConvertTo-HtmlSafe $runEndedDisplay)</span> · Duration <span class="mono">$(ConvertTo-HtmlSafe $durationDisplay)</span></div></div></div><div class="hero-cards"><div class="hero-card"><div class="hero-card-label">Preset</div><div class="hero-card-value mono">$(ConvertTo-HtmlSafe $presetLabel)</div></div><div class="hero-card"><div class="hero-card-label">User-Agent</div><div class="hero-card-value mono">$(ConvertTo-HtmlSafe $userAgentLabel)</div></div><div class="hero-card"><div class="hero-card-label">Run Started</div><div class="hero-card-value mono">$(ConvertTo-HtmlSafe $runStartedDisplay)</div></div><div class="hero-card"><div class="hero-card-label">Run Ended</div><div class="hero-card-value mono">$(ConvertTo-HtmlSafe $runEndedDisplay)</div></div></div></div></header><div class="wrap">
+<div class="toolbar-card"><div class="toolbar-row"><div class="toolbar-copy">Professional offensive-security layout with triage-first navigation.</div><div class="toolbar-actions"><button type="button" class="tool-btn" data-expand-sections="true">Expand All</button><button type="button" class="tool-btn" data-collapse-sections="true">Collapse All</button><button type="button" class="tool-btn" data-clear-search="true">Clear Filter</button></div></div><div class="toolbar-row"><input id="globalSearch" class="search search-inline" type="search" placeholder="Filter URLs, families, scopes, status codes..." /><div class="quick-filters"><button type="button" class="filter-chip" data-filter-value="critical">Critical</button><button type="button" class="filter-chip" data-filter-value="protected">Protected</button><button type="button" class="filter-chip" data-filter-value="api">API</button><button type="button" class="filter-chip" data-filter-value="auth">Auth</button><button type="button" class="filter-chip" data-filter-value="admin">Admin</button><button type="button" class="filter-chip" data-filter-value="401">401</button><button type="button" class="filter-chip" data-filter-value="403">403</button></div></div><nav class="quick-nav"><a class="nav-pill" href="#section-shortlist" data-open-section="section-shortlist">Shortlist <span class="section-count">$(@($shortlistItems).Count)</span></a><a class="nav-pill" href="#section-auth" data-open-section="section-auth">Auth <span class="section-count">$(@($Summary.TopAuthReviewable).Count)</span></a><a class="nav-pill" href="#section-interesting" data-open-section="section-interesting">Interesting <span class="section-count">$(@($InterestingUrls).Count)</span></a><a class="nav-pill" href="#section-protected" data-open-section="section-protected">Protected <span class="section-count">$protectedTargetCount</span></a><a class="nav-pill" href="#section-live" data-open-section="section-live">Live Targets <span class="section-count">$(@($LiveTargets).Count)</span></a><a class="nav-pill" href="#section-discovered" data-open-section="section-discovered">Discovered URLs <span class="section-count">$(@($DiscoveredUrls).Count)</span></a><a class="nav-pill" href="#section-excluded" data-open-section="section-excluded">Excluded <span class="section-count">$reportExcludedCount</span></a></nav></div>
+<div class="grid">$kpiCardsHtml</div>
+<div class="dashboard-shell"><section class="card"><h2 class="panel-title">Priority Overview</h2><div class="panel-subtitle">Critical, high and medium findings grouped for immediate triage. URLs stay fully clickable and copyable.</div><div class="priority-columns">$priorityOverviewHtml</div></section><div class="insight-stack"><section class="card"><h2 class="panel-title">HTTP Status Distribution</h2><div class="panel-subtitle">Current retained live-target mix by HTTP status.</div><div style="margin-top:16px;">$statusChartHtml</div></section><section class="card"><h2 class="panel-title">Run Snapshot</h2><div class="mini-row"><span>Preset / Profile</span><strong class="mono">$(ConvertTo-HtmlSafe $presetLabel)</strong></div><div class="mini-row"><span>User-Agent</span><strong class="mono">$(ConvertTo-HtmlSafe $userAgentLabel)</strong></div><div class="mini-row"><span>Interesting Families</span><strong class="mono">$interestingFamilyCount</strong></div><div class="mini-row"><span>Protected Endpoints</span><strong class="mono">$protectedTargetCount</strong></div></section></div></div>
+<details open id="section-shortlist" class="report-section"><summary><span>Shortlist</span><small>Top 15 URLs to investigate first, kept inline as cards for fast review.</small></summary><div class="section-body"><div class="shortlist-grid">$shortlistCardsHtml</div></div></details>
+<details open id="section-auth" class="report-section"><summary><span>Auth Endpoints</span><small>Top authentication reviewables with status, reason and suggested action.</small></summary><div class="section-body"><div class="table-scroll"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">URL</button></th><th><button type="button">Status</button></th><th><button type="button">Reason</button></th><th><button type="button">Suggested Action</button></th></tr></thead><tbody>$authRows</tbody></table></div></div></details>
+<section class="card next-actions-panel"><h2 class="panel-title">Next Actions</h2><div class="panel-subtitle">Checklist built from the current triage signals.</div><div class="actions-grid">$nextActionChecklistHtml</div></section>
+<details open id="section-runinfo" class="report-section"><summary><span>Run Info / Tools Snapshot</span><small>Run metadata, persisted tool snapshot and exact runtime context when available.</small></summary><div class="section-body"><div class="run-info-grid"><div class="info-list"><div class="info-row"><div class="info-label">Run ID</div><div class="info-value mono">$(ConvertTo-HtmlSafe $runIdLabel)</div></div><div class="info-row"><div class="info-label">Preset / Profile</div><div class="info-value mono">$(ConvertTo-HtmlSafe $presetLabel)</div></div><div class="info-row"><div class="info-label">User-Agent</div><div class="info-value mono">$(ConvertTo-HtmlSafe $userAgentLabel)</div></div><div class="info-row"><div class="info-label">Output</div><div class="info-value mono">$(ConvertTo-HtmlSafe ([string]$Layout.Root))</div></div></div><div class="table-scroll"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Tool</button></th><th><button type="button">Version</button></th><th><button type="button">Binary</button></th><th><button type="button">Path</button></th></tr></thead><tbody>$toolRows</tbody></table></div></div></div></details>
+<details open id="section-scope" class="report-section"><summary><span>In Scope</span><small>Normalized scope after validation and wildcard parsing. $(@($ScopeItems).Count) item(s).</small></summary><div class="section-body"><div class="table-scroll"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">ID</button></th><th><button type="button">Type</button></th><th><button type="button">Value</button></th><th><button type="button">Exclusions</button></th></tr></thead><tbody>$scopeRows</tbody></table></div></div></details>
+<details open id="section-excluded" class="report-section"><summary><span>Excluded</span><small>Assets removed because they matched exclusion strings before probe or after crawl filtering. $reportExcludedCount item(s).</small></summary><div class="section-body"><div class="table-scroll"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Phase</button></th><th><button type="button">Scope</button></th><th><button type="button">Target</button></th><th><button type="button">Token</button></th><th><button type="button">Matched On</button></th></tr></thead><tbody>$excludedRows</tbody></table></div></div></details>
+<details open id="section-live" class="report-section"><summary><span>Live Targets</span><small>Reachable HTTP(S) targets retained after in-scope validation. $(@($LiveTargets).Count) item(s).</small></summary><div class="section-body"><div class="table-scroll"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Host</button></th><th><button type="button">URL</button></th><th><button type="button">Status</button></th><th><button type="button">Title</button></th><th><button type="button">Technologies</button></th></tr></thead><tbody>$liveRows</tbody></table></div></div></details>
+<details open id="section-families" class="report-section"><summary><span>Interesting Families</span><small>Primary families used to group triage targets for manual review. $interestingFamilyCount group(s).</small></summary><div class="section-body"><div class="table-scroll"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Family</button></th><th><button type="button">Count</button></th><th><button type="button">Max Score</button></th><th><button type="button">Priorities</button></th><th><button type="button">Top Categories</button></th><th><button type="button">Sample URLs</button></th></tr></thead><tbody>$familyRows</tbody></table></div></div></details>
+<details open id="section-protected" class="report-section"><summary><span>Protected Endpoints</span><small>Live endpoints returning 401 or 403. $protectedTargetCount item(s).</small></summary><div class="section-body"><div class="table-scroll"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Status</button></th><th><button type="button">URL</button></th><th><button type="button">Title</button></th><th><button type="button">Technologies</button></th></tr></thead><tbody>$protectedRows</tbody></table></div></div></details>
+<details open id="section-interesting" class="report-section"><summary><span>Interesting Pages</span><small>Heuristically ranked URLs grouped by family and priority. $(@($InterestingUrls).Count) item(s).</small></summary><div class="section-body"><div class="table-scroll"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Priority</button></th><th><button type="button">Score</button></th><th><button type="button">Family</button></th><th><button type="button">URL</button></th><th><button type="button">Categories</button></th><th><button type="button">Reasons</button></th></tr></thead><tbody>$interestingRows</tbody></table></div></div></details>
+<details open id="section-discovered" class="report-section"><summary><span>Discovered URLs</span><small>Unique endpoints collected from katana and seeds. $(@($DiscoveredUrls).Count) item(s).</small></summary><div class="section-body"><div class="table-scroll"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Host</button></th><th><button type="button">URL</button></th><th><button type="button">Scope</button></th><th><button type="button">Status</button></th><th><button type="button">Source</button></th></tr></thead><tbody>$urlRows</tbody></table></div></div></details>
+<details open id="section-errors" class="report-section"><summary><span>Errors</span><small>Non-fatal errors captured during execution. $(@($Errors).Count) item(s).</small></summary><div class="section-body"><div class="table-scroll"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Phase</button></th><th><button type="button">Tool</button></th><th><button type="button">Code</button></th><th><button type="button">Message</button></th><th><button type="button">Recommendation</button></th></tr></thead><tbody>$errorRows</tbody></table></div></div></details></div>
+<script>const input=document.getElementById('globalSearch');const tables=Array.from(document.querySelectorAll('[data-filter-table=\"true\"]'));const sections=Array.from(document.querySelectorAll('details.report-section'));const cards=Array.from(document.querySelectorAll('[data-search-card=\"true\"]'));function applyFilter(){const query=input.value.trim().toLowerCase();tables.forEach(table=>{let visibleRows=0;table.querySelectorAll('tbody tr').forEach(row=>{const haystack=(row.dataset.search||row.textContent||'').toLowerCase();const visible=!query||haystack.includes(query);row.style.display=visible?'':'none';if(visible){visibleRows++;}});const section=table.closest('details.report-section');if(section&&query&&visibleRows>0){section.open=true;}});cards.forEach(card=>{const haystack=(card.dataset.search||card.textContent||'').toLowerCase();card.style.display=!query||haystack.includes(query)?'':'none';});}function wireSort(table){const headers=Array.from(table.querySelectorAll('thead th button'));headers.forEach((button,index)=>{button.addEventListener('click',()=>{const tbody=table.querySelector('tbody');const rows=Array.from(tbody.querySelectorAll('tr'));const ascending=button.dataset.sortDir!=='asc';headers.forEach(header=>{header.dataset.sortDir='';});button.dataset.sortDir=ascending?'asc':'desc';rows.sort((a,b)=>{const left=(a.children[index]?.innerText||'').trim();const right=(b.children[index]?.innerText||'').trim();const leftNumber=Number(left);const rightNumber=Number(right);const comparison=!Number.isNaN(leftNumber)&&!Number.isNaN(rightNumber)?leftNumber-rightNumber:left.localeCompare(right,undefined,{numeric:true,sensitivity:'base'});return ascending?comparison:-comparison;});rows.forEach(row=>tbody.appendChild(row));});});}document.querySelectorAll('[data-sort-table=\"true\"]').forEach(wireSort);document.querySelectorAll('.copy-btn').forEach(button=>{button.addEventListener('click',async()=>{const value=button.dataset.copy||'';const previous=button.textContent;try{if(navigator.clipboard&&value){await navigator.clipboard.writeText(value);button.textContent='Copied';setTimeout(()=>button.textContent=previous,1200);}}catch(_){button.textContent=previous;}});});document.querySelectorAll('[data-expand-sections=\"true\"]').forEach(button=>button.addEventListener('click',()=>sections.forEach(section=>section.open=true)));document.querySelectorAll('[data-collapse-sections=\"true\"]').forEach(button=>button.addEventListener('click',()=>sections.forEach(section=>section.open=false)));document.querySelectorAll('[data-clear-search=\"true\"]').forEach(button=>button.addEventListener('click',()=>{input.value='';applyFilter();input.focus();}));document.querySelectorAll('.filter-chip').forEach(button=>button.addEventListener('click',()=>{input.value=button.dataset.filterValue||'';applyFilter();input.focus();}));document.querySelectorAll('[data-open-section]').forEach(link=>link.addEventListener('click',()=>{const section=document.getElementById(link.dataset.openSection||'');if(section){section.open=true;}}));input.addEventListener('input',applyFilter);applyFilter();</script></body></html>
 "@
     Set-Content -LiteralPath $Layout.ReportHtml -Value $html -Encoding utf8
 }
