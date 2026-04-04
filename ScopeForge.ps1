@@ -2010,6 +2010,7 @@ function Invoke-NativeHttpProbeFallback {
             } catch {}
 
             $contentLength = 0L
+            $contentType = ''
             $redirectLocation = ''
             $webServer = ''
             try {
@@ -2020,6 +2021,9 @@ function Invoke-NativeHttpProbeFallback {
                     }
                     if ($responseHeaders['Location']) {
                         $redirectLocation = [string]$responseHeaders['Location']
+                    }
+                    if ($responseHeaders['Content-Type']) {
+                        $contentType = [string]$responseHeaders['Content-Type']
                     }
                     if ($responseHeaders['Server']) {
                         $webServer = [string]$responseHeaders['Server']
@@ -2032,6 +2036,7 @@ function Invoke-NativeHttpProbeFallback {
                 Url              = $finalUrl
                 Method           = $methodUsed
                 StatusCode       = $statusCode
+                ContentType      = $contentType
                 ContentLength    = $contentLength
                 RedirectLocation = $redirectLocation
                 WebServer        = $webServer
@@ -2124,6 +2129,7 @@ function Invoke-NativeHttpProbeFallback {
                 Path             = $path
                 StatusCode       = $statusCode
                 Title            = ''
+                ContentType      = [string](Get-ObjectValue -InputObject $result -Names @('ContentType', 'content-type', 'content_type') -Default '')
                 ContentLength    = [int64](Get-ObjectValue -InputObject $result -Names @('ContentLength', 'content-length', 'content_length') -Default 0)
                 Technologies     = @()
                 RedirectLocation = [string](Get-ObjectValue -InputObject $result -Names @('RedirectLocation', 'location') -Default '')
@@ -2955,6 +2961,7 @@ function Invoke-HttpProbe {
         '-content-length'
     )
 
+    if (Test-ToolFlagSupport -HelpText $helpText -Flag '-content-type') { $baseArguments += '-content-type' }
     if (Test-ToolFlagSupport -HelpText $helpText -Flag '-tech-detect') { $baseArguments += '-tech-detect' }
     if (Test-ToolFlagSupport -HelpText $helpText -Flag '-follow-redirects') { $baseArguments += '-follow-redirects' }
     if (Test-ToolFlagSupport -HelpText $helpText -Flag '-location') { $baseArguments += '-location' }
@@ -3149,6 +3156,7 @@ function Invoke-HttpProbe {
                     Path             = $path
                     StatusCode       = [int](Get-ObjectValue -InputObject $raw -Names @('status-code', 'status_code') -Default 0)
                     Title            = [string](Get-ObjectValue -InputObject $raw -Names @('title') -Default '')
+                    ContentType      = [string](Get-ObjectValue -InputObject $raw -Names @('content-type', 'content_type') -Default '')
                     ContentLength    = [int64](Get-ObjectValue -InputObject $raw -Names @('content-length', 'content_length') -Default 0)
                     Technologies     = $technologies
                     RedirectLocation = [string](Get-ObjectValue -InputObject $raw -Names @('location') -Default '')
@@ -3361,7 +3369,7 @@ function Invoke-KatanaCrawl {
         $key = $analysis.ReviewKey
         if ($seenUrls.Contains($key)) { continue }
         $null = $seenUrls.Add($key)
-        $results.Add([pscustomobject]@{ Url = $analysis.ReviewUrl; Host = $liveTarget.Host; Scheme = $liveTarget.Scheme; Path = $liveTarget.Path; Query = ''; ScopeId = ($liveTarget.MatchedScopeIds -join ';'); ScopeType = ($liveTarget.MatchedTypes -join ';'); ScopeValue = 'live-target'; SeedUrl = $analysis.ReviewUrl; Source = 'seed'; StatusCode = $liveTarget.StatusCode; ContentType = '' }) | Out-Null
+        $results.Add([pscustomobject]@{ Url = $analysis.ReviewUrl; Host = $liveTarget.Host; Scheme = $liveTarget.Scheme; Path = $liveTarget.Path; Query = ''; ScopeId = ($liveTarget.MatchedScopeIds -join ';'); ScopeType = ($liveTarget.MatchedTypes -join ';'); ScopeValue = 'live-target'; SeedUrl = $analysis.ReviewUrl; Source = 'seed'; StatusCode = $liveTarget.StatusCode; ContentType = [string](Get-ObjectValue -InputObject $liveTarget -Names @('ContentType') -Default '') }) | Out-Null
     }
 
     return @($results)
