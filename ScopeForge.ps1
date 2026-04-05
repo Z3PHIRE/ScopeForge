@@ -2224,6 +2224,25 @@ function Get-TriageReconData {
         $reasons = [System.Collections.Generic.List[string]]::new()
         $categories = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         $familyScores = @{}
+        $suppressionReason = ''
+
+        switch ($statusCode) {
+            0 {
+                $suppressionReason = 'status-0'
+                $reasons.Add('HTTP status unavailable during crawl') | Out-Null
+                $categories.Add('Unstable') | Out-Null
+            }
+            404 {
+                $suppressionReason = 'status-404'
+                $reasons.Add('Missing endpoint during crawl validation') | Out-Null
+                $categories.Add('Dead') | Out-Null
+            }
+            410 {
+                $suppressionReason = 'status-410'
+                $reasons.Add('Gone endpoint during crawl validation') | Out-Null
+                $categories.Add('Dead') | Out-Null
+            }
+        }
 
         foreach ($pattern in $patterns) {
             if ($pathQuery -match $pattern.Pattern) {
@@ -2303,6 +2322,7 @@ function Get-TriageReconData {
             StateStatus   = $stateStatus
             SeenBefore    = [bool]($stateStatus -eq 'seen-before')
             HasVolatileParams = [bool]$analysis.HasVolatileParams
+            TriageSuppressionReason = $suppressionReason
         }
 
         if ($analysis.IsNoise) {
@@ -2313,8 +2333,9 @@ function Get-TriageReconData {
         $filtered.Add($record) | Out-Null
 
         $suppressedByState = $stateStatus -in @('ignored', 'false-positive')
+        $suppressedByReachability = -not [string]::IsNullOrWhiteSpace($suppressionReason)
         $reviewableSignal = ($score -gt 0) -or ($statusCode -in 401,403,405)
-        if (-not $suppressedByState -and $reviewableSignal) {
+        if (-not $suppressedByState -and -not $suppressedByReachability -and $reviewableSignal) {
             $reviewable.Add($record) | Out-Null
         }
     }

@@ -315,6 +315,64 @@ Describe 'ScopeForge passive discovery runtime safety' {
     }
 }
 
+Describe 'ScopeForge triage reachability guardrails' {
+    It 'keeps dead or unstable interesting paths out of reviewable and shortlist while preserving them in filtered outputs' {
+        $triageState = [pscustomobject]@{
+            Path              = Join-Path $TestDrive 'triage-state.json'
+            IgnoreKeys        = New-ScopeForgeStringSet
+            FalsePositiveKeys = New-ScopeForgeStringSet
+            ValidatedKeys     = New-ScopeForgeStringSet
+            SeenKeys          = New-ScopeForgeStringSet
+        }
+
+        $liveTargets = @()
+        $discoveredUrls = @(
+            [pscustomobject]@{
+                Url        = 'https://app.example.com/login'
+                Host       = 'app.example.com'
+                ScopeId    = 'scope-001'
+                Source     = 'katana'
+                StatusCode = 404
+                ContentType = 'text/html'
+            },
+            [pscustomobject]@{
+                Url        = 'https://app.example.com/admin'
+                Host       = 'app.example.com'
+                ScopeId    = 'scope-001'
+                Source     = 'katana'
+                StatusCode = 0
+                ContentType = 'text/html'
+            },
+            [pscustomobject]@{
+                Url        = 'https://app.example.com/graphql'
+                Host       = 'app.example.com'
+                ScopeId    = 'scope-001'
+                Source     = 'katana'
+                StatusCode = 403
+                ContentType = 'text/html'
+            }
+        )
+
+        $triage = Get-TriageReconData -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -TriageState $triageState
+
+        if (@($triage.FilteredFindings).Count -ne 3) { throw 'Expected all non-noise findings to remain preserved in filtered outputs.' }
+        if (@($triage.ReviewableFindings).Count -ne 1) { throw 'Expected only the reachable protected endpoint to remain reviewable.' }
+        if (@($triage.Shortlist).Count -ne 1) { throw 'Expected only the reachable protected endpoint to remain in the shortlist.' }
+
+        $filtered404 = @($triage.FilteredFindings | Where-Object { $_.Url -eq 'https://app.example.com/login' } | Select-Object -First 1)
+        $filtered0 = @($triage.FilteredFindings | Where-Object { $_.Url -eq 'https://app.example.com/admin' } | Select-Object -First 1)
+        $reviewableUrls = @($triage.ReviewableFindings | Select-Object -ExpandProperty Url)
+
+        if (-not $filtered404) { throw 'Expected the 404 login route to remain available in filtered findings.' }
+        if (-not $filtered0) { throw 'Expected the status-0 admin route to remain available in filtered findings.' }
+        if ($filtered404[0].TriageSuppressionReason -ne 'status-404') { throw 'Expected the 404 route to expose a suppression reason.' }
+        if ($filtered0[0].TriageSuppressionReason -ne 'status-0') { throw 'Expected the status-0 route to expose a suppression reason.' }
+        if ($reviewableUrls -contains 'https://app.example.com/login') { throw 'Expected the 404 route to stay out of reviewable findings.' }
+        if ($reviewableUrls -contains 'https://app.example.com/admin') { throw 'Expected the status-0 route to stay out of reviewable findings.' }
+        if ($reviewableUrls -notcontains 'https://app.example.com/graphql') { throw 'Expected the 403 route to remain reviewable.' }
+    }
+}
+
 Describe 'ScopeForge httpx diagnostics' {
     BeforeEach {
         $layout = Get-OutputLayout -OutputDir (Join-Path $TestDrive 'output')
