@@ -2951,7 +2951,8 @@ function Invoke-HttpProbe {
         [string]$UniqueUserAgent,
         [int]$Threads = 10,
         [int]$TimeoutSeconds = 30,
-        [switch]$RespectSchemeOnly
+        [switch]$RespectSchemeOnly,
+        [switch]$AppendOutput
     )
 
     if (-not $InputUrls -or $InputUrls.Count -eq 0) { return @() }
@@ -2995,8 +2996,18 @@ function Invoke-HttpProbe {
         }
     }
 
-    Set-Content -LiteralPath $RawOutputPath -Value '' -Encoding utf8
-    Set-Content -LiteralPath $script:ScopeForgeContext.Layout.HttpxBatchLog -Value '' -Encoding utf8
+    if (-not $AppendOutput) {
+        Set-Content -LiteralPath $RawOutputPath -Value '' -Encoding utf8
+        Set-Content -LiteralPath $script:ScopeForgeContext.Layout.HttpxBatchLog -Value '' -Encoding utf8
+    } else {
+        if (-not (Test-Path -LiteralPath $RawOutputPath)) {
+            Set-Content -LiteralPath $RawOutputPath -Value '' -Encoding utf8
+        }
+        if (-not (Test-Path -LiteralPath $script:ScopeForgeContext.Layout.HttpxBatchLog)) {
+            Set-Content -LiteralPath $script:ScopeForgeContext.Layout.HttpxBatchLog -Value '' -Encoding utf8
+        }
+        Write-ScopeForgeDiagnosticLine -Path $script:ScopeForgeContext.Layout.HttpxBatchLog -Line ("RETRY|mode=reduced-httpx|input={0}" -f $normalizedInputUrls.Count)
+    }
 
     $liveTargets = [System.Collections.Generic.List[object]]::new()
     $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -4643,6 +4654,19 @@ function Invoke-BugBountyRecon {
             $liveTargets = ConvertTo-ArrayOrEmpty -Data (
                 Invoke-HttpProbe -InputUrls $probeInputs -ScopeItems $scopeItems -HttpxPath $tools.Httpx.Path -RawOutputPath $layout.HttpxRaw -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -RespectSchemeOnly:$RespectSchemeOnly
             )
+
+            if ((Get-ScopeForgeItemCount -Data $liveTargets) -eq 0) {
+                $reducedHttpxInputs = @(Select-NativeProbeFallbackInputs -InputUrls $probeInputs -MaxPerHost 1 -MaxTotal ([Math]::Min([Math]::Max(($Threads * 20), 50), 250)))
+                if ($reducedHttpxInputs.Count -gt 0) {
+                    Write-ReconLog -Level WARN -Message ("Validation HTTP returned no retained live targets from httpx. Reduced httpx rescue will probe {0} bounded candidate(s) before native fallback." -f $reducedHttpxInputs.Count)
+                    $liveTargets = ConvertTo-ArrayOrEmpty -Data (
+                        Invoke-HttpProbe -InputUrls $reducedHttpxInputs -ScopeItems $scopeItems -HttpxPath $tools.Httpx.Path -RawOutputPath $layout.HttpxRaw -UniqueUserAgent $UniqueUserAgent -Threads $Threads -TimeoutSeconds $TimeoutSeconds -RespectSchemeOnly:$RespectSchemeOnly -AppendOutput
+                    )
+                    if ((Get-ScopeForgeItemCount -Data $liveTargets) -gt 0) {
+                        Write-ReconLog -Level WARN -Message ("Reduced httpx rescue retained {0} live target(s) after the full pass returned none." -f $liveTargets.Count)
+                    }
+                }
+            }
 
             if ((Get-ScopeForgeItemCount -Data $liveTargets) -eq 0) {
                 Write-ReconLog -Level WARN -Message 'Validation HTTP returned no retained live targets from httpx. Native HTTP rescue will run on a reduced candidate set.'

@@ -313,6 +313,115 @@ Describe 'ScopeForge passive discovery runtime safety' {
         if (@($result.LiveTargets).Count -ne 1) { throw 'Expected the native HTTP rescue target to be retained.' }
         if ($result.LiveTargets[0].Source -ne 'native-http-fallback') { throw 'Expected the retained live target to expose the native fallback source.' }
     }
+
+    It 'retries httpx on a reduced bounded candidate set before using native fallback' {
+        $scopePath = Join-Path $TestDrive 'reduced-httpx-scope.json'
+        $outputDir = Join-Path $TestDrive 'reduced-httpx-output'
+        $scopeJson = @'
+[
+  { "type": "Domain", "value": "khealth.com", "exclusions": [] },
+  { "type": "Domain", "value": "accounts.khealth.com", "exclusions": [] }
+]
+'@
+        [System.IO.File]::WriteAllText($scopePath, $scopeJson, [System.Text.Encoding]::UTF8)
+
+        $script:nativeFallbackCalled = $false
+        $script:httpxInputCounts = @()
+
+        Mock Write-StageBanner {}
+        Mock Write-StageProgress {}
+        Mock Write-ReconLog {}
+        Mock Ensure-ReconTools {
+            [pscustomobject]@{
+                Subfinder   = [pscustomobject]@{ Path = 'subfinder.exe' }
+                Httpx       = [pscustomobject]@{ Path = 'httpx.exe' }
+                Katana      = [pscustomobject]@{ Path = 'katana.exe' }
+                Gau         = [pscustomobject]@{ Path = 'gau.exe' }
+                WaybackUrls = [pscustomobject]@{ Path = 'waybackurls.exe' }
+                Hakrawler   = $null
+            }
+        }
+        Mock Get-PassiveSubdomains { @() }
+        Mock Get-HistoricalUrls { @() }
+        Mock Get-WaybackUrls { @() }
+        Mock Invoke-HttpProbe {
+            param($InputUrls)
+            $script:httpxInputCounts += @(@($InputUrls).Count)
+            if ($script:httpxInputCounts.Count -eq 1) { return @() }
+            @(
+                [pscustomobject]@{
+                    Input            = 'https://accounts.khealth.com/'
+                    Url              = 'https://accounts.khealth.com/'
+                    Host             = 'accounts.khealth.com'
+                    Scheme           = 'https'
+                    Port             = $null
+                    Path             = '/'
+                    StatusCode       = 403
+                    Title            = 'Just a moment...'
+                    ContentType      = 'text/html'
+                    ContentLength    = 4698
+                    Technologies     = @('Cloudflare')
+                    RedirectLocation = ''
+                    WebServer        = 'cloudflare'
+                    MatchedScopeIds  = @('scope-002')
+                    MatchedTypes     = @('Domain')
+                    Source           = 'httpx'
+                }
+            )
+        }
+        Mock Invoke-NativeHttpProbeFallback {
+            $script:nativeFallbackCalled = $true
+            @()
+        }
+        Mock Invoke-KatanaCrawl { ,@() }
+        Mock Merge-DiscoveredUrlResults { @() }
+        Mock Get-PassiveLeadFindings { ,@() }
+        Mock Get-UnifiedFindings { ,@() }
+        Mock Write-JsonFile {}
+        Mock Set-Content {}
+        Mock Export-FlatCsv {}
+        Mock Get-ScopeForgeTriageState {
+            [pscustomobject]@{
+                Path              = Join-Path $TestDrive 'triage-state.json'
+                IgnoreKeys        = New-ScopeForgeStringSet
+                FalsePositiveKeys = New-ScopeForgeStringSet
+                ValidatedKeys     = New-ScopeForgeStringSet
+                SeenKeys          = New-ScopeForgeStringSet
+            }
+        }
+        Mock Save-ScopeForgeTriageState {}
+        Mock Merge-ReconResults {
+            param($ScopeItems, $HostsAll, $LiveTargets, $DiscoveredUrls, $InterestingUrls, $Exclusions, $Errors, $ProgramName)
+            [pscustomobject]@{
+                GeneratedAtUtc            = [DateTimeOffset]::UtcNow.ToString('o')
+                ProgramName               = $ProgramName
+                ScopeItemCount            = @($ScopeItems).Count
+                ExcludedItemCount         = @($Exclusions).Count
+                DiscoveredHostCount       = @($HostsAll).Count
+                LiveHostCount             = @($LiveTargets | Group-Object -Property Host).Count
+                LiveTargetCount           = @($LiveTargets).Count
+                DiscoveredUrlCount        = @($DiscoveredUrls).Count
+                InterestingUrlCount       = @($InterestingUrls).Count
+                ProtectedInterestingCount = 0
+                StatusFamilies            = @()
+                TopTechnologies           = @()
+                TopSubdomains             = @()
+                InterestingFamilies       = @()
+                InterestingPriorities     = @()
+                InterestingCategories     = @()
+                SuggestedAreas            = @()
+            }
+        }
+        Mock Export-ReconReport {}
+
+        $result = Invoke-BugBountyRecon -ScopeFile $scopePath -OutputDir $outputDir -ProgramName 'runtime-reduced-httpx-test' -UniqueUserAgent 'scopeforge-runtime-test' -EnableGau:$true -EnableWaybackUrls:$true -EnableHakrawler:$true -NoInstall -Quiet
+
+        if ($script:httpxInputCounts.Count -ne 2) { throw 'Expected httpx to be attempted twice: full pass then reduced rescue.' }
+        if ($script:httpxInputCounts[0] -le $script:httpxInputCounts[1]) { throw 'Expected the reduced httpx rescue to probe fewer candidates than the full pass.' }
+        if ($script:nativeFallbackCalled) { throw 'Expected native fallback to stay unused when reduced httpx rescue succeeds.' }
+        if (@($result.LiveTargets).Count -ne 1) { throw 'Expected the reduced httpx rescue to retain one live target.' }
+        if ($result.LiveTargets[0].Source -ne 'httpx') { throw 'Expected the retained live target to remain attributed to httpx.' }
+    }
 }
 
 Describe 'ScopeForge triage reachability guardrails' {
