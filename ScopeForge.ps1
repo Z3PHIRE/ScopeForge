@@ -580,6 +580,10 @@ function Get-OutputLayout {
         GauRaw               = Join-Path (Join-Path $root 'raw') 'gau_raw.txt'
         WaybackRaw           = Join-Path (Join-Path $root 'raw') 'waybackurls_raw.txt'
         HttpxRaw             = Join-Path (Join-Path $root 'raw') 'httpx_raw.jsonl'
+        HttpxEmptyBatchInput = Join-Path (Join-Path $root 'raw') 'httpx_empty_batch_input.txt'
+        HttpxEmptyBatchStdOut = Join-Path (Join-Path $root 'raw') 'httpx_empty_batch_stdout.jsonl'
+        HttpxEmptyBatchStdErr = Join-Path (Join-Path $root 'raw') 'httpx_empty_batch_stderr.log'
+        HttpxEmptyBatchMeta  = Join-Path (Join-Path $root 'raw') 'httpx_empty_batch_context.json'
         KatanaRaw            = Join-Path (Join-Path $root 'raw') 'katana_raw.jsonl'
         HakrawlerRaw         = Join-Path (Join-Path $root 'raw') 'hakrawler_raw.txt'
         ScopeNormalized      = Join-Path (Join-Path $root 'normalized') 'scope_normalized.json'
@@ -3014,6 +3018,7 @@ function Invoke-HttpProbe {
     $batchCount = [int][Math]::Ceiling($normalizedInputUrls.Count / [double]$batchSize)
     $emptyBatchDiagnosticsPerformed = 0
     $emptyBatchDiagnosticLimit = 3
+    $emptyBatchSnapshotCaptured = $false
 
     for ($offset = 0; $offset -lt $normalizedInputUrls.Count; $offset += $batchSize) {
         $batchIndex = [int][Math]::Floor($offset / $batchSize) + 1
@@ -3094,6 +3099,39 @@ function Invoke-HttpProbe {
             }
             $retainedBeforeBatch = $liveTargets.Count
             Write-ScopeForgeDiagnosticLine -Path $script:ScopeForgeContext.Layout.HttpxBatchLog -Line ("BATCH|index={0}/{1}|input={2}|stdout_lines={3}|exit={4}" -f $batchIndex, $batchCount, $currentBatch.Count, $lines.Count, $result.ExitCode)
+            if (-not $emptyBatchSnapshotCaptured -and $lines.Count -eq 0 -and $script:ScopeForgeContext -and $script:ScopeForgeContext.Layout) {
+                $snapshotLayout = $script:ScopeForgeContext.Layout
+                $snapshotInputPath = $snapshotLayout.PSObject.Properties['HttpxEmptyBatchInput']
+                $snapshotStdOutPath = $snapshotLayout.PSObject.Properties['HttpxEmptyBatchStdOut']
+                $snapshotStdErrPath = $snapshotLayout.PSObject.Properties['HttpxEmptyBatchStdErr']
+                $snapshotMetaPath = $snapshotLayout.PSObject.Properties['HttpxEmptyBatchMeta']
+                if ($snapshotInputPath -and $snapshotStdOutPath -and $snapshotStdErrPath -and $snapshotMetaPath) {
+                    if (-not (Test-Path -LiteralPath $snapshotLayout.HttpxEmptyBatchInput)) {
+                        Set-Content -LiteralPath $snapshotLayout.HttpxEmptyBatchInput -Value $currentBatch -Encoding utf8
+                        if (Test-Path -LiteralPath $stdoutFile) {
+                            Copy-Item -LiteralPath $stdoutFile -Destination $snapshotLayout.HttpxEmptyBatchStdOut -Force
+                        } else {
+                            Set-Content -LiteralPath $snapshotLayout.HttpxEmptyBatchStdOut -Value '' -Encoding utf8
+                        }
+                        if (Test-Path -LiteralPath $stderrFile) {
+                            Copy-Item -LiteralPath $stderrFile -Destination $snapshotLayout.HttpxEmptyBatchStdErr -Force
+                        } else {
+                            Set-Content -LiteralPath $snapshotLayout.HttpxEmptyBatchStdErr -Value '' -Encoding utf8
+                        }
+                        $snapshotMeta = [pscustomobject]@{
+                            BatchIndex     = $batchIndex
+                            BatchCount     = $batchCount
+                            InputCount     = $currentBatch.Count
+                            ExitCode       = $result.ExitCode
+                            FirstInputUrl  = if ($currentBatch.Count -gt 0) { [string]$currentBatch[0] } else { '' }
+                            CapturedAtUtc  = [DateTimeOffset]::UtcNow.ToString('o')
+                        }
+                        Set-Content -LiteralPath $snapshotLayout.HttpxEmptyBatchMeta -Value ($snapshotMeta | ConvertTo-Json -Depth 10) -Encoding utf8
+                        Write-ScopeForgeDiagnosticLine -Path $script:ScopeForgeContext.Layout.HttpxBatchLog -Line ("BATCH_EMPTY_SNAPSHOT|index={0}/{1}|input={2}|stdout={3}|stderr={4}" -f $batchIndex, $batchCount, $currentBatch.Count, $snapshotLayout.HttpxEmptyBatchStdOut, $snapshotLayout.HttpxEmptyBatchStdErr)
+                    }
+                    $emptyBatchSnapshotCaptured = $true
+                }
+            }
             if ($lines.Count -eq 0 -and $emptyBatchDiagnosticsPerformed -lt $emptyBatchDiagnosticLimit) {
                 $emptyBatchDiagnosticsPerformed++
                 Invoke-HttpxEmptyBatchDiagnostic -HttpxPath $HttpxPath -HelpText $helpText -InputUrls $currentBatch -UniqueUserAgent $UniqueUserAgent -TimeoutSeconds $TimeoutSeconds -LogPath $script:ScopeForgeContext.Layout.HttpxBatchLog -BatchLabel ("index={0}/{1}" -f $batchIndex, $batchCount)

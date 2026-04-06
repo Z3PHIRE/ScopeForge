@@ -605,14 +605,21 @@ Describe 'ScopeForge httpx diagnostics' {
 
         $liveTargets = @(Invoke-HttpProbe -InputUrls @('https://app.example.com/') -ScopeItems @($scopeItem) -HttpxPath 'httpx.exe' -RawOutputPath $script:ScopeForgeContext.Layout.HttpxRaw -Threads 1 -TimeoutSeconds 10)
         $batchLog = Get-Content -LiteralPath $script:ScopeForgeContext.Layout.HttpxBatchLog -Raw -Encoding utf8
+        $snapshotInput = Get-Content -LiteralPath $script:ScopeForgeContext.Layout.HttpxEmptyBatchInput -Raw -Encoding utf8
+        $snapshotMeta = Get-Content -LiteralPath $script:ScopeForgeContext.Layout.HttpxEmptyBatchMeta -Raw -Encoding utf8 | ConvertFrom-Json -Depth 10
 
         if ($liveTargets.Count -ne 0) { throw 'Expected an empty primary httpx batch to keep zero retained targets.' }
         if ($batchLog -notlike '*BATCH|index=1/1|input=1|stdout_lines=0|exit=0*') { throw ("Expected the batch log to record the empty primary batch. Actual log: {0}" -f $batchLog) }
+        if ($batchLog -notlike '*BATCH_EMPTY_SNAPSHOT|index=1/1|input=1*') { throw ("Expected the empty primary batch to preserve a raw snapshot. Actual log: {0}" -f $batchLog) }
         if ($batchLog -notlike '*BATCH_EMPTY_DIAG|index=1/1|sample=1|diag_lines=0|diag_exit=0|parse_errors=0|reasons=no-json-output*') {
             throw ("Expected the empty-batch list diagnostic to record the empty list-mode behavior. Actual log: {0}" -f $batchLog)
         }
         if ($batchLog -notlike '*BATCH_EMPTY_DIAG_SINGLE|index=1/1|url=https://app.example.com/|diag_lines=1|diag_exit=0|parse_errors=0|reasons=no address found for host=1*') {
             throw ("Expected the empty-batch single-target diagnostic to capture the failed probe reason. Actual log: {0}" -f $batchLog)
         }
+        if (-not (Test-Path -LiteralPath $script:ScopeForgeContext.Layout.HttpxEmptyBatchStdOut)) { throw 'Expected the empty-batch stdout snapshot to exist.' }
+        if (-not (Test-Path -LiteralPath $script:ScopeForgeContext.Layout.HttpxEmptyBatchStdErr)) { throw 'Expected the empty-batch stderr snapshot to exist.' }
+        if ($snapshotInput -notlike '*https://app.example.com/*') { throw 'Expected the empty-batch input snapshot to preserve the original URL.' }
+        if ($snapshotMeta.InputCount -ne 1 -or $snapshotMeta.FirstInputUrl -ne 'https://app.example.com/') { throw 'Expected the empty-batch context snapshot to preserve the first input URL and input count.' }
     }
 }
