@@ -687,15 +687,22 @@ Describe 'ScopeForge HTML report segmentation' {
         try {
             Export-ReconReport -Summary $summary -ScopeItems $scopeItems -HostsAll $hostsAll -HostsLive $hostsLive -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls @() -Exclusions @() -Errors @() -Layout $layout -ExportHtml
             $reportHtml = Get-Content -LiteralPath $layout.ReportHtml -Raw -Encoding utf8
+            $shortlistMarkdown = Get-Content -LiteralPath $layout.ShortlistMarkdown -Raw -Encoding utf8
         } finally {
             $script:ScopeForgeContext = $null
         }
 
         if ($reportHtml -notlike '*HTTP Targets*') { throw 'Expected the KPI label to use HTTP Targets.' }
+        if ($reportHtml -notlike '*Shortlist <span class="section-count">1</span>*') { throw 'Expected the shortlist quick navigation count to reflect the displayed fallback card.' }
         if ($reportHtml -notlike '*Reachable <span class="section-count">1</span>*') { throw 'Expected the quick navigation to expose one reachable target.' }
         if ($reportHtml -notlike '*Dead / Unstable <span class="section-count">1</span>*') { throw 'Expected the quick navigation to expose one dead or unstable target.' }
+        if ($reportHtml -notlike '*No scored shortlist entries were generated; retained reachable targets are shown here for first-pass manual review.*') { throw 'Expected the shortlist section to explain the fallback baseline view.' }
+        if ($reportHtml -notlike '*Baseline*') { throw 'Expected the fallback shortlist card to be labeled as baseline.' }
+        if ($reportHtml -notlike '*https://app.example.com/*') { throw 'Expected the fallback shortlist card to expose the reachable URL.' }
         if ($reportHtml -notlike '*Reachable HTTP(S) targets retained after in-scope validation. 1 item(s).*') { throw 'Expected the live section summary to count only reachable targets.' }
         if ($reportHtml -notlike '*Dead or unstable HTTP targets preserved for evidence and noise separation. 1 item(s).*') { throw 'Expected the dead/unstable section summary to be present.' }
+        if ($shortlistMarkdown -notlike '*## Baseline Reachable Targets*') { throw 'Expected shortlist markdown to include baseline reachable targets when no scored shortlist exists.' }
+        if (-not $shortlistMarkdown.Contains('### [Baseline/200] https://app.example.com/')) { throw 'Expected shortlist markdown to surface the reachable baseline URL.' }
     }
 }
 
