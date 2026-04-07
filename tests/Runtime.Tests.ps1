@@ -508,6 +508,104 @@ Describe 'ScopeForge triage content signals' {
     }
 }
 
+Describe 'ScopeForge crawl seed preservation' {
+    It 'does not re-add dead live targets as synthetic crawl seeds' {
+        $tempDir = Join-Path $TestDrive 'katana-seed-filter'
+        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+        $rawOutputPath = Join-Path $tempDir 'katana.jsonl'
+
+        $scopeItem = [pscustomobject]@{
+            Id               = 'scope-001'
+            Index            = 1
+            Type             = 'Wildcard'
+            OriginalValue    = 'https://*.example.com'
+            NormalizedValue  = 'https://*.example.com'
+            Scheme           = 'https'
+            Host             = '*.example.com'
+            Port             = $null
+            RootDomain       = 'example.com'
+            PathPrefix       = '/'
+            StartUrl         = ''
+            IncludeApex      = $false
+            Exclusions       = @()
+            HostRegexString  = '^(?:[a-z0-9-]+\.)+example\.com$'
+            ScopeRegexString = '^https?://(?:[a-z0-9-]+\.)+example\.com(?::\d+)?(?:/.*)?$'
+            Description      = 'Wildcard scope https://*.example.com'
+        }
+
+        $liveTargets = @(
+            [pscustomobject]@{
+                Input            = 'https://app.example.com/'
+                Url              = 'https://app.example.com/'
+                Host             = 'app.example.com'
+                Scheme           = 'https'
+                Port             = $null
+                Path             = '/'
+                StatusCode       = 200
+                Title            = 'App'
+                ContentType      = 'text/html'
+                ContentLength    = 100
+                Technologies     = @('nginx')
+                RedirectLocation = ''
+                WebServer        = 'nginx'
+                MatchedScopeIds  = @('scope-001')
+                MatchedTypes     = @('Wildcard')
+                Source           = 'httpx'
+            },
+            [pscustomobject]@{
+                Input            = 'https://app.example.com/missing'
+                Url              = 'https://app.example.com/missing'
+                Host             = 'app.example.com'
+                Scheme           = 'https'
+                Port             = $null
+                Path             = '/missing'
+                StatusCode       = 404
+                Title            = '404 Not Found'
+                ContentType      = 'text/html'
+                ContentLength    = 50
+                Technologies     = @('nginx')
+                RedirectLocation = ''
+                WebServer        = 'nginx'
+                MatchedScopeIds  = @('scope-001')
+                MatchedTypes     = @('Wildcard')
+                Source           = 'httpx'
+            }
+        )
+
+        $layout = Get-OutputLayout -OutputDir (Join-Path $TestDrive 'output')
+        Initialize-OutputDirectories -Layout $layout
+        $script:ScopeForgeContext = New-ScopeForgeContext -Layout $layout -ProgramName 'katana-seed-filter-test' -Quiet:$true -ExportJsonEnabled:$true -ExportCsvEnabled:$true -ExportHtmlEnabled:$true
+
+        Mock Write-StageProgress {}
+        Mock Write-ReconLog {}
+        Mock Get-ToolHelpText { 'usage' }
+        Mock Invoke-ExternalCommand {
+            param($FilePath, $Arguments, $TimeoutSeconds, $StdOutPath, $StdErrPath, $IgnoreExitCode)
+
+            Set-Content -LiteralPath $StdOutPath -Value @() -Encoding utf8
+            Set-Content -LiteralPath $StdErrPath -Value '' -Encoding utf8
+
+            [pscustomobject]@{
+                ExitCode  = 0
+                StdOut    = ''
+                StdErr    = ''
+                FilePath  = $FilePath
+                Arguments = @($Arguments)
+            }
+        }
+
+        try {
+            $results = @(Invoke-KatanaCrawl -LiveTargets $liveTargets -ScopeItems @($scopeItem) -KatanaPath 'katana.exe' -RawOutputPath $rawOutputPath -TempDirectory $tempDir -Depth 2 -Threads 1 -TimeoutSeconds 10)
+        } finally {
+            $script:ScopeForgeContext = $null
+        }
+
+        if ($results.Count -ne 1) { throw 'Expected only the reachable live target to be preserved as a synthetic crawl seed.' }
+        if ($results[0].Url -ne 'https://app.example.com/') { throw 'Expected the reachable live target URL to remain preserved.' }
+        if ($results[0].Source -ne 'seed') { throw 'Expected the preserved reachable target to stay marked as a seed.' }
+    }
+}
+
 Describe 'ScopeForge httpx diagnostics' {
     BeforeEach {
         $layout = Get-OutputLayout -OutputDir (Join-Path $TestDrive 'output')

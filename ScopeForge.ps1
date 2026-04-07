@@ -3464,6 +3464,8 @@ function Invoke-KatanaCrawl {
     }
 
     foreach ($liveTarget in $LiveTargets) {
+        $seedEligibility = Test-KatanaSeedEligibility -LiveTarget $liveTarget
+        if (-not $seedEligibility.Eligible) { continue }
         $analysis = Get-ReviewUrlAnalysis -Url $liveTarget.Url -StatusCode ([int]$liveTarget.StatusCode)
         if ($analysis.IsNoise) { continue }
         $key = $analysis.ReviewKey
