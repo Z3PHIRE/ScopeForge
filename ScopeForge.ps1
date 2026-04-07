@@ -3693,6 +3693,9 @@ function Merge-ReconResults {
     $deadStatusCodes = @(0, 404, 410)
     $reachableTargets = @($LiveTargets | Where-Object { [int]$_.StatusCode -notin $deadStatusCodes })
     $deadOrUnstableTargets = @($LiveTargets | Where-Object { [int]$_.StatusCode -in $deadStatusCodes })
+    $scoredShortlistCount = $(if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Triage) { @($script:ScopeForgeContext.Triage.Shortlist).Count } else { 0 })
+    $baselineShortlistCount = if ($scoredShortlistCount -eq 0) { [Math]::Min(@($reachableTargets).Count, 5) } else { 0 }
+    $displayedShortlistCount = if ($scoredShortlistCount -gt 0) { $scoredShortlistCount } else { $baselineShortlistCount }
     $reachableTechnologyCounts = @(
         $reachableTargets |
         ForEach-Object { $_.Technologies } |
@@ -3736,7 +3739,9 @@ function Merge-ReconResults {
         FilteredUrlCount                = $(if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Triage) { @($script:ScopeForgeContext.Triage.FilteredFindings).Count } else { $DiscoveredUrls.Count })
         ReviewableUrlCount              = $(if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Triage) { @($script:ScopeForgeContext.Triage.ReviewableFindings).Count } else { $InterestingUrls.Count })
         NoiseRemovedCount               = $(if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Triage) { @($script:ScopeForgeContext.Triage.NoiseFindings).Count } else { 0 })
-        ShortlistCount                  = $(if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Triage) { @($script:ScopeForgeContext.Triage.Shortlist).Count } else { 0 })
+        ShortlistCount                  = $scoredShortlistCount
+        BaselineShortlistCount          = $baselineShortlistCount
+        DisplayedShortlistCount         = $displayedShortlistCount
         StateIgnoredCount               = $(if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Triage) { [int]$script:ScopeForgeContext.Triage.StateSummary.IgnoredCount } else { 0 })
         StateFalsePositiveCount         = $(if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Triage) { [int]$script:ScopeForgeContext.Triage.StateSummary.FalsePositiveCount } else { 0 })
         StateValidatedCount             = $(if ($script:ScopeForgeContext -and $script:ScopeForgeContext.Triage) { [int]$script:ScopeForgeContext.Triage.StateSummary.ValidatedCount } else { 0 })
@@ -3962,6 +3967,21 @@ function Export-TriageMarkdownReport {
     } else {
         @($LiveTargets | Where-Object { [int]$_.StatusCode -in $deadStatusCodes }).Count
     }
+    $summaryScoredShortlistCount = if ($Summary.PSObject.Properties.Name -contains 'ShortlistCount') {
+        [int]$Summary.ShortlistCount
+    } else {
+        0
+    }
+    $summaryBaselineShortlistCount = if ($Summary.PSObject.Properties.Name -contains 'BaselineShortlistCount') {
+        [int]$Summary.BaselineShortlistCount
+    } else {
+        if ($summaryScoredShortlistCount -eq 0) { [Math]::Min($summaryReachableTargetCount, 5) } else { 0 }
+    }
+    $summaryDisplayedShortlistCount = if ($Summary.PSObject.Properties.Name -contains 'DisplayedShortlistCount') {
+        [int]$Summary.DisplayedShortlistCount
+    } else {
+        if ($summaryScoredShortlistCount -gt 0) { $summaryScoredShortlistCount } else { $summaryBaselineShortlistCount }
+    }
     $summaryReachableTopTechnologies = if ($Summary.PSObject.Properties.Name -contains 'ReachableTopTechnologies') {
         ConvertTo-ArrayOrEmpty -Data @($Summary.ReachableTopTechnologies)
     } else {
@@ -4000,6 +4020,11 @@ function Export-TriageMarkdownReport {
     $lines.Add(("- URLs discovered: {0}" -f $Summary.DiscoveredUrlCount)) | Out-Null
     $lines.Add(("- Interesting URLs: {0}" -f $Summary.InterestingUrlCount)) | Out-Null
     $lines.Add(("- Protected interesting URLs: {0}" -f $Summary.ProtectedInterestingCount)) | Out-Null
+    $lines.Add(("- Scored shortlist entries: {0}" -f $summaryScoredShortlistCount)) | Out-Null
+    $lines.Add(("- Displayed shortlist entries: {0}" -f $summaryDisplayedShortlistCount)) | Out-Null
+    if ($summaryBaselineShortlistCount -gt 0) {
+        $lines.Add(("- Baseline shortlist fallback: {0}" -f $summaryBaselineShortlistCount)) | Out-Null
+    }
     $lines.Add('') | Out-Null
 
     $lines.Add('## Reachable Technology Signals') | Out-Null
@@ -4152,6 +4177,21 @@ function Export-ReconReport {
     } else {
         @($LiveTargets | Where-Object { [int]$_.StatusCode -in $deadStatusCodes }).Count
     }
+    $summaryScoredShortlistCount = if ($Summary.PSObject.Properties.Name -contains 'ShortlistCount') {
+        [int]$Summary.ShortlistCount
+    } else {
+        0
+    }
+    $summaryBaselineShortlistCount = if ($Summary.PSObject.Properties.Name -contains 'BaselineShortlistCount') {
+        [int]$Summary.BaselineShortlistCount
+    } else {
+        if ($summaryScoredShortlistCount -eq 0) { [Math]::Min($summaryReachableTargetCount, 5) } else { 0 }
+    }
+    $summaryDisplayedShortlistCount = if ($Summary.PSObject.Properties.Name -contains 'DisplayedShortlistCount') {
+        [int]$Summary.DisplayedShortlistCount
+    } else {
+        if ($summaryScoredShortlistCount -gt 0) { $summaryScoredShortlistCount } else { $summaryBaselineShortlistCount }
+    }
     $summaryReachableTopTechnologies = if ($Summary.PSObject.Properties.Name -contains 'ReachableTopTechnologies') {
         ConvertTo-ArrayOrEmpty -Data @($Summary.ReachableTopTechnologies)
     } else {
@@ -4186,6 +4226,9 @@ function Export-ReconReport {
             [pscustomobject]@{ Metric = 'DeadOrUnstableTargetCount'; Value = $summaryDeadOrUnstableTargetCount },
             [pscustomobject]@{ Metric = 'DiscoveredUrlCount'; Value = $Summary.DiscoveredUrlCount },
             [pscustomobject]@{ Metric = 'InterestingUrlCount'; Value = $Summary.InterestingUrlCount },
+            [pscustomobject]@{ Metric = 'ShortlistCount'; Value = $summaryScoredShortlistCount },
+            [pscustomobject]@{ Metric = 'BaselineShortlistCount'; Value = $summaryBaselineShortlistCount },
+            [pscustomobject]@{ Metric = 'DisplayedShortlistCount'; Value = $summaryDisplayedShortlistCount },
             [pscustomobject]@{ Metric = 'ErrorCount'; Value = $Summary.ErrorCount }
         )
         Export-FlatCsv -Path $Layout.HostsAllCsv -Rows $HostsAll
@@ -5100,6 +5143,8 @@ function Invoke-BugBountyRecon {
             Write-Host ('  URLs discovered  : {0}' -f $summary.DiscoveredUrlCount) -ForegroundColor Gray
             Write-Host ('  URLs filtrees    : {0}' -f $summary.FilteredUrlCount) -ForegroundColor Gray
             Write-Host ('  Reviewable       : {0}' -f $summary.ReviewableUrlCount) -ForegroundColor Gray
+            Write-Host ('  Shortlist scoree : {0}' -f $summary.ShortlistCount) -ForegroundColor Gray
+            Write-Host ('  Shortlist vue    : {0}' -f $summary.DisplayedShortlistCount) -ForegroundColor Gray
             Write-Host ('  Bruit retire     : {0}' -f $summary.NoiseRemovedCount) -ForegroundColor Gray
             Write-Host ('  Interesting URLs : {0}' -f $summary.InterestingUrlCount) -ForegroundColor Gray
             Write-Host ('  Errors           : {0}' -f $summary.ErrorCount) -ForegroundColor Gray

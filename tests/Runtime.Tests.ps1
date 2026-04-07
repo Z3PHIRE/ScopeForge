@@ -875,6 +875,9 @@ Describe 'ScopeForge summary reachability split' {
         if ($summary.LiveTargetCount -ne 3) { throw 'Expected the total HTTP target count to stay unchanged.' }
         if ($summary.ReachableTargetCount -ne 1) { throw 'Expected one reachable target in the summary split.' }
         if ($summary.DeadOrUnstableTargetCount -ne 2) { throw 'Expected two dead or unstable targets in the summary split.' }
+        if ($summary.ShortlistCount -ne 0) { throw 'Expected the scored shortlist count to remain zero without reviewable findings.' }
+        if ($summary.BaselineShortlistCount -ne 1) { throw 'Expected one baseline shortlist entry when no scored shortlist exists.' }
+        if ($summary.DisplayedShortlistCount -ne 1) { throw 'Expected the displayed shortlist count to expose the fallback baseline entry.' }
         if (@($summary.ReachableTopTechnologies | Where-Object { $_.Technology -eq 'Apache HTTP Server' -and $_.Count -eq 1 }).Count -ne 1) { throw 'Expected reachable technologies to count only reachable targets.' }
         if (@($summary.ReachableTopTechnologies | Where-Object { $_.Technology -eq 'YouTube' -and $_.Count -eq 1 }).Count -ne 1) { throw 'Expected reachable technologies to preserve unique reachable stack signals.' }
 
@@ -883,10 +886,18 @@ Describe 'ScopeForge summary reachability split' {
         Initialize-OutputDirectories -Layout $layout
         Export-TriageMarkdownReport -Summary $summary -InterestingUrls @() -InterestingFamilies @() -LiveTargets @() -Exclusions @() -Errors @() -Layout $layout
         $triageMarkdown = Get-Content -LiteralPath $layout.TriageMarkdown -Raw -Encoding utf8
+        Export-ReconReport -Summary $summary -ScopeItems @() -HostsAll @() -HostsLive @() -LiveTargets @() -DiscoveredUrls @() -InterestingUrls @() -Exclusions @() -Errors @() -Layout $layout -ExportCsv
+        $summaryCsv = Get-Content -LiteralPath $layout.SummaryCsv -Raw -Encoding utf8
 
         if ($triageMarkdown -notlike '*- HTTP targets: 3*') { throw 'Expected triage markdown to expose the total HTTP target count.' }
         if ($triageMarkdown -notlike '*- Reachable targets: 1*') { throw 'Expected triage markdown to expose the reachable target count.' }
         if ($triageMarkdown -notlike '*- Dead or unstable targets: 2*') { throw 'Expected triage markdown to expose the dead or unstable target count.' }
+        if ($triageMarkdown -notlike '*- Scored shortlist entries: 0*') { throw 'Expected triage markdown to expose the scored shortlist count.' }
+        if ($triageMarkdown -notlike '*- Displayed shortlist entries: 1*') { throw 'Expected triage markdown to expose the displayed shortlist count.' }
+        if ($triageMarkdown -notlike '*- Baseline shortlist fallback: 1*') { throw 'Expected triage markdown to expose the baseline shortlist count.' }
+        if ($summaryCsv -notlike '*"ShortlistCount","0"*') { throw 'Expected summary CSV to keep the scored shortlist count.' }
+        if ($summaryCsv -notlike '*"BaselineShortlistCount","1"*') { throw 'Expected summary CSV to export the baseline shortlist count.' }
+        if ($summaryCsv -notlike '*"DisplayedShortlistCount","1"*') { throw 'Expected summary CSV to export the displayed shortlist count.' }
         if ($triageMarkdown -notlike '*## Reachable Technology Signals*') { throw 'Expected triage markdown to expose reachable technology signals.' }
         if ($triageMarkdown -notlike '*- Apache HTTP Server: 1*') { throw 'Expected triage markdown to list reachable technology counts only.' }
         if ($triageMarkdown -notlike '*- YouTube: 1*') { throw 'Expected triage markdown to include additional reachable technologies.' }
