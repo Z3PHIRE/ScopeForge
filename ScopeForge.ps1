@@ -3604,6 +3604,20 @@ function Merge-ReconResults {
     $deadStatusCodes = @(0, 404, 410)
     $reachableTargets = @($LiveTargets | Where-Object { [int]$_.StatusCode -notin $deadStatusCodes })
     $deadOrUnstableTargets = @($LiveTargets | Where-Object { [int]$_.StatusCode -in $deadStatusCodes })
+    $reachableTechnologyCounts = @(
+        $reachableTargets |
+        ForEach-Object { $_.Technologies } |
+        Where-Object { $_ } |
+        Group-Object |
+        Sort-Object Count -Descending |
+        Select-Object -First 10 |
+        ForEach-Object {
+            [pscustomobject]@{
+                Technology = $_.Name
+                Count      = $_.Count
+            }
+        }
+    )
 
     [pscustomobject]@{
         ProgramName                     = $ProgramName
@@ -3623,6 +3637,7 @@ function Merge-ReconResults {
         UniqueUserAgent                 = $UniqueUserAgent
         StatusCodeDistribution          = $statusCounts
         TopTechnologies                 = $technologyCounts
+        ReachableTopTechnologies        = $reachableTechnologyCounts
         TopSubdomains                   = $subdomainCounts
         TopInterestingCategories        = $interestingCategoryCounts
         TopInterestingFamilies          = $interestingFamilyCounts
@@ -3858,6 +3873,25 @@ function Export-TriageMarkdownReport {
     } else {
         @($LiveTargets | Where-Object { [int]$_.StatusCode -in $deadStatusCodes }).Count
     }
+    $summaryReachableTopTechnologies = if ($Summary.PSObject.Properties.Name -contains 'ReachableTopTechnologies') {
+        ConvertTo-ArrayOrEmpty -Data @($Summary.ReachableTopTechnologies)
+    } else {
+        @(
+            $LiveTargets |
+            Where-Object { [int]$_.StatusCode -notin $deadStatusCodes } |
+            ForEach-Object { $_.Technologies } |
+            Where-Object { $_ } |
+            Group-Object |
+            Sort-Object Count -Descending |
+            Select-Object -First 10 |
+            ForEach-Object {
+                [pscustomobject]@{
+                    Technology = $_.Name
+                    Count      = $_.Count
+                }
+            }
+        )
+    }
 
     $lines = [System.Collections.Generic.List[string]]::new()
     $lines.Add("# ScopeForge Triage") | Out-Null
@@ -3877,6 +3911,17 @@ function Export-TriageMarkdownReport {
     $lines.Add(("- URLs discovered: {0}" -f $Summary.DiscoveredUrlCount)) | Out-Null
     $lines.Add(("- Interesting URLs: {0}" -f $Summary.InterestingUrlCount)) | Out-Null
     $lines.Add(("- Protected interesting URLs: {0}" -f $Summary.ProtectedInterestingCount)) | Out-Null
+    $lines.Add('') | Out-Null
+
+    $lines.Add('## Reachable Technology Signals') | Out-Null
+    $lines.Add('') | Out-Null
+    if (@($summaryReachableTopTechnologies).Count -eq 0) {
+        $lines.Add('- No reachable technology signals were retained for this run.') | Out-Null
+    } else {
+        foreach ($technology in $summaryReachableTopTechnologies) {
+            $lines.Add(("- {0}: {1}" -f $technology.Technology, $technology.Count)) | Out-Null
+        }
+    }
     $lines.Add('') | Out-Null
 
     if ($Summary.InterestingPriorityDistribution -and $Summary.InterestingPriorityDistribution.Count -gt 0) {
@@ -4017,6 +4062,25 @@ function Export-ReconReport {
         [int]$Summary.DeadOrUnstableTargetCount
     } else {
         @($LiveTargets | Where-Object { [int]$_.StatusCode -in $deadStatusCodes }).Count
+    }
+    $summaryReachableTopTechnologies = if ($Summary.PSObject.Properties.Name -contains 'ReachableTopTechnologies') {
+        ConvertTo-ArrayOrEmpty -Data @($Summary.ReachableTopTechnologies)
+    } else {
+        @(
+            $LiveTargets |
+            Where-Object { [int]$_.StatusCode -notin $deadStatusCodes } |
+            ForEach-Object { $_.Technologies } |
+            Where-Object { $_ } |
+            Group-Object |
+            Sort-Object Count -Descending |
+            Select-Object -First 10 |
+            ForEach-Object {
+                [pscustomobject]@{
+                    Technology = $_.Name
+                    Count      = $_.Count
+                }
+            }
+        )
     }
 
     if ($ExportJson) { Write-JsonFile -Path $Layout.SummaryJson -Data $Summary }
@@ -4307,7 +4371,10 @@ function Export-ReconReport {
     $protectedRows = ($reachableLiveTargets | Where-Object { $_.StatusCode -in 401, 403 } | Select-Object -First 250 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) protected""><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(Get-HtmlUrlCell -Url $_.Url)</td><td>$(ConvertTo-HtmlSafe $_.Title)</td><td>$(ConvertTo-HtmlSafe ($_.Technologies -join ', '))</td></tr>" }) -join [Environment]::NewLine
     $errorRows = ($Errors | Select-Object -First 500 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Phase) $(ConvertTo-HtmlSafe $_.Tool) $(ConvertTo-HtmlSafe $_.Target) $(ConvertTo-HtmlSafe $_.Message)""><td>$(ConvertTo-HtmlSafe $_.Phase)</td><td>$(ConvertTo-HtmlSafe $_.Tool)</td><td>$(ConvertTo-HtmlSafe $_.ErrorCode)</td><td>$(ConvertTo-HtmlSafe $_.Message)</td><td>$(ConvertTo-HtmlSafe $_.Recommendation)</td></tr>" }) -join [Environment]::NewLine
     $statusBars = ($Summary.StatusCodeDistribution | ForEach-Object { "<div class=""mini-row""><span>HTTP $(ConvertTo-HtmlSafe $_.StatusCode)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
-    $technologyBars = ($Summary.TopTechnologies | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Technology)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
+    $technologyBars = ($summaryReachableTopTechnologies | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Technology)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
+    if ([string]::IsNullOrWhiteSpace($technologyBars)) {
+        $technologyBars = '<div class="mini-row"><span>No reachable technologies detected</span><strong>0</strong></div>'
+    }
     $subdomainBars = ($Summary.TopSubdomains | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Host)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
     $interestingBars = ($Summary.TopInterestingCategories | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Category)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine
     $familyBars = ($Summary.TopInterestingFamilies | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Family)</span><strong>$(ConvertTo-HtmlSafe $_.Count)</strong></div>" }) -join [Environment]::NewLine

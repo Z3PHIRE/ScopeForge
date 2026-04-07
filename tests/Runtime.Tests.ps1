@@ -729,14 +729,16 @@ Describe 'ScopeForge bootstrap cache coherence' {
 Describe 'ScopeForge summary reachability split' {
     It 'exports reachable and dead-or-unstable target counts in summaries and triage markdown' {
         $summary = Merge-ReconResults -ScopeItems @([pscustomobject]@{ Id = 'scope-001' }) -HostsAll @([pscustomobject]@{ Host = 'app.example.com' }) -LiveTargets @(
-            [pscustomobject]@{ Host = 'app.example.com'; Url = 'https://app.example.com/'; StatusCode = 200; Technologies = @() },
-            [pscustomobject]@{ Host = 'app.example.com'; Url = 'https://app.example.com/missing'; StatusCode = 404; Technologies = @() },
-            [pscustomobject]@{ Host = 'app.example.com'; Url = 'https://app.example.com/gone'; StatusCode = 410; Technologies = @() }
+            [pscustomobject]@{ Host = 'app.example.com'; Url = 'https://app.example.com/'; StatusCode = 200; Technologies = @('Apache HTTP Server', 'YouTube') },
+            [pscustomobject]@{ Host = 'app.example.com'; Url = 'https://app.example.com/missing'; StatusCode = 404; Technologies = @('Apache HTTP Server') },
+            [pscustomobject]@{ Host = 'app.example.com'; Url = 'https://app.example.com/gone'; StatusCode = 410; Technologies = @('Apache HTTP Server') }
         ) -DiscoveredUrls @() -InterestingUrls @() -Exclusions @() -Errors @() -ProgramName 'summary-split-test' -UniqueUserAgent 'scopeforge-test'
 
         if ($summary.LiveTargetCount -ne 3) { throw 'Expected the total HTTP target count to stay unchanged.' }
         if ($summary.ReachableTargetCount -ne 1) { throw 'Expected one reachable target in the summary split.' }
         if ($summary.DeadOrUnstableTargetCount -ne 2) { throw 'Expected two dead or unstable targets in the summary split.' }
+        if (@($summary.ReachableTopTechnologies | Where-Object { $_.Technology -eq 'Apache HTTP Server' -and $_.Count -eq 1 }).Count -ne 1) { throw 'Expected reachable technologies to count only reachable targets.' }
+        if (@($summary.ReachableTopTechnologies | Where-Object { $_.Technology -eq 'YouTube' -and $_.Count -eq 1 }).Count -ne 1) { throw 'Expected reachable technologies to preserve unique reachable stack signals.' }
 
         $outputDir = Join-Path $TestDrive 'summary-split-output'
         $layout = Get-OutputLayout -OutputDir $outputDir
@@ -747,6 +749,9 @@ Describe 'ScopeForge summary reachability split' {
         if ($triageMarkdown -notlike '*- HTTP targets: 3*') { throw 'Expected triage markdown to expose the total HTTP target count.' }
         if ($triageMarkdown -notlike '*- Reachable targets: 1*') { throw 'Expected triage markdown to expose the reachable target count.' }
         if ($triageMarkdown -notlike '*- Dead or unstable targets: 2*') { throw 'Expected triage markdown to expose the dead or unstable target count.' }
+        if ($triageMarkdown -notlike '*## Reachable Technology Signals*') { throw 'Expected triage markdown to expose reachable technology signals.' }
+        if ($triageMarkdown -notlike '*- Apache HTTP Server: 1*') { throw 'Expected triage markdown to list reachable technology counts only.' }
+        if ($triageMarkdown -notlike '*- YouTube: 1*') { throw 'Expected triage markdown to include additional reachable technologies.' }
     }
 }
 
