@@ -509,6 +509,94 @@ Describe 'ScopeForge triage content signals' {
     }
 }
 
+Describe 'ScopeForge discovered URL context propagation' {
+    It 'propagates exact live-target context to discovered URL exports and reports' {
+        $liveTargets = @(
+            [pscustomobject]@{
+                Url          = 'https://app.example.com/'
+                Host         = 'app.example.com'
+                StatusCode   = 200
+                Title        = 'Example App'
+                ContentType  = 'text/html; charset=utf-8'
+                Technologies = @('nginx', 'HSTS')
+                WebServer    = 'nginx'
+                Source       = 'httpx'
+            }
+        )
+
+        $discoveredUrls = @(
+            [pscustomobject]@{
+                Url         = 'https://app.example.com/'
+                Host        = 'app.example.com'
+                ScopeId     = 'scope-001'
+                ScopeType   = 'Domain'
+                ScopeValue  = 'app.example.com'
+                SeedUrl     = 'https://app.example.com/'
+                Source      = 'katana'
+                StatusCode  = 200
+                ContentType = 'text/html; charset=utf-8'
+            }
+        )
+
+        $enriched = Add-DiscoveredUrlContext -DiscoveredUrls $discoveredUrls -LiveTargets $liveTargets
+        if (@($enriched).Count -ne 1) { throw 'Expected one discovered URL after context propagation.' }
+        if ($enriched[0].Title -ne 'Example App') { throw 'Expected the live target title to be propagated to the discovered URL.' }
+        if ($enriched[0].WebServer -ne 'nginx') { throw 'Expected the live target web server to be propagated to the discovered URL.' }
+        if ((@($enriched[0].Technologies) -join ',') -ne 'nginx,HSTS') { throw 'Expected the live target technologies to be propagated to the discovered URL.' }
+
+        $outputDir = Join-Path $TestDrive 'discovered-context-output'
+        $layout = Get-OutputLayout -OutputDir $outputDir
+        Initialize-OutputDirectories -Layout $layout
+        $script:ScopeForgeContext = New-ScopeForgeContext -Layout $layout -ProgramName 'discovered-context-test' -Quiet:$true -ExportJsonEnabled:$true -ExportCsvEnabled:$true -ExportHtmlEnabled:$true
+        $script:ScopeForgeContext.Triage = [pscustomobject]@{
+            FilteredFindings   = @()
+            NoiseFindings      = @()
+            ReviewableFindings = @()
+            Shortlist          = @()
+        }
+
+        $summary = [pscustomobject]@{
+            ProgramName                     = 'discovered-context-test'
+            GeneratedAtUtc                  = [DateTimeOffset]::UtcNow.ToString('o')
+            ScopeItemCount                  = 1
+            ExcludedItemCount               = 0
+            DiscoveredHostCount             = 1
+            LiveHostCount                   = 1
+            LiveTargetCount                 = 1
+            ReachableTargetCount            = 1
+            DeadOrUnstableTargetCount       = 0
+            DiscoveredUrlCount              = 1
+            InterestingUrlCount             = 0
+            ErrorCount                      = 0
+            ProtectedInterestingCount       = 0
+            UniqueUserAgent                 = 'scopeforge-test'
+            StatusCodeDistribution          = @([pscustomobject]@{ StatusCode = '200'; Count = 1 })
+            TopTechnologies                 = @()
+            ReachableTopTechnologies        = @()
+            TopSubdomains                   = @()
+            TopInterestingCategories        = @()
+            TopInterestingFamilies          = @()
+            InterestingPriorityDistribution = @()
+            ErrorPhaseDistribution          = @()
+            ErrorToolDistribution           = @()
+            TopAuthReviewable               = @()
+            TopApiReviewable                = @()
+            TopProtectedReviewable          = @()
+        }
+
+        try {
+            Export-ReconReport -Summary $summary -ScopeItems @([pscustomobject]@{ Id = 'scope-001'; Type = 'Domain'; NormalizedValue = 'app.example.com'; Exclusions = @() }) -HostsAll @() -HostsLive @() -LiveTargets $liveTargets -DiscoveredUrls $enriched -InterestingUrls @() -Exclusions @() -Errors @() -Layout $layout -ExportHtml
+            $reportHtml = Get-Content -LiteralPath $layout.ReportHtml -Raw -Encoding utf8
+        } finally {
+            $script:ScopeForgeContext = $null
+        }
+
+        if ($reportHtml -notlike '*Discovered URLs*') { throw 'Expected the discovered URLs section to be present.' }
+        if ($reportHtml -notlike '*Example App*') { throw 'Expected the discovered URLs table to expose the propagated title.' }
+        if ($reportHtml -notlike '*text/html; charset=utf-8*') { throw 'Expected the discovered URLs table to expose the propagated content type.' }
+    }
+}
+
 Describe 'ScopeForge crawl seed preservation' {
     It 'does not re-add dead live targets as synthetic crawl seeds' {
         $tempDir = Join-Path $TestDrive 'katana-seed-filter'

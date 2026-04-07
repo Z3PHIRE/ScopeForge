@@ -2153,6 +2153,85 @@ function Invoke-NativeHttpProbeFallback {
     return @($liveTargets)
 }
 
+function Add-DiscoveredUrlContext {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$DiscoveredUrls,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$LiveTargets
+    )
+
+    if (@($DiscoveredUrls).Count -eq 0) { return @() }
+
+    $liveIndex = @{}
+    foreach ($liveTarget in $LiveTargets) {
+        if (-not $liveTarget -or [string]::IsNullOrWhiteSpace([string](Get-ObjectValue -InputObject $liveTarget -Names @('Url', 'url') -Default ''))) { continue }
+        $liveUrl = [string](Get-ObjectValue -InputObject $liveTarget -Names @('Url', 'url') -Default '')
+        $liveContentType = [string](Get-ObjectValue -InputObject $liveTarget -Names @('ContentType', 'content-type', 'content_type') -Default '')
+        $liveStatusCode = [int](Get-ObjectValue -InputObject $liveTarget -Names @('StatusCode', 'status-code', 'status_code') -Default 0)
+        $analysis = Get-ReviewUrlAnalysis -Url $liveUrl -ContentType $liveContentType -StatusCode $liveStatusCode
+        if ($analysis.ReviewKey -and -not $liveIndex.ContainsKey($analysis.ReviewKey)) {
+            $liveIndex[$analysis.ReviewKey] = $liveTarget
+        }
+    }
+
+    $results = [System.Collections.Generic.List[object]]::new()
+    foreach ($entry in $DiscoveredUrls) {
+        if (-not $entry) { continue }
+
+        $entryUrl = [string](Get-ObjectValue -InputObject $entry -Names @('Url', 'url') -Default '')
+        if ([string]::IsNullOrWhiteSpace($entryUrl)) {
+            $results.Add($entry) | Out-Null
+            continue
+        }
+
+        $entryContentType = [string](Get-ObjectValue -InputObject $entry -Names @('ContentType', 'content-type', 'content_type') -Default '')
+        $entryStatusCode = [int](Get-ObjectValue -InputObject $entry -Names @('StatusCode', 'status-code', 'status_code') -Default 0)
+        $analysis = Get-ReviewUrlAnalysis -Url $entryUrl -ContentType $entryContentType -StatusCode $entryStatusCode
+        $liveMatch = if ($analysis.ReviewKey -and $liveIndex.ContainsKey($analysis.ReviewKey)) { $liveIndex[$analysis.ReviewKey] } else { $null }
+
+        $existingTechnologiesRaw = Get-ObjectValue -InputObject $entry -Names @('Technologies', 'tech', 'technologies') -Default @()
+        $existingTechnologies = if ($existingTechnologiesRaw -is [System.Collections.IEnumerable] -and $existingTechnologiesRaw -isnot [string]) {
+            @($existingTechnologiesRaw | ForEach-Object { [string]$_ } | Where-Object { $_ })
+        } elseif ($existingTechnologiesRaw) {
+            @([string]$existingTechnologiesRaw)
+        } else {
+            @()
+        }
+        $matchedTechnologiesRaw = if ($liveMatch) { Get-ObjectValue -InputObject $liveMatch -Names @('Technologies', 'tech', 'technologies') -Default @() } else { @() }
+        $matchedTechnologies = if ($matchedTechnologiesRaw -is [System.Collections.IEnumerable] -and $matchedTechnologiesRaw -isnot [string]) {
+            @($matchedTechnologiesRaw | ForEach-Object { [string]$_ } | Where-Object { $_ })
+        } elseif ($matchedTechnologiesRaw) {
+            @([string]$matchedTechnologiesRaw)
+        } else {
+            @()
+        }
+
+        $record = [ordered]@{}
+        foreach ($property in $entry.PSObject.Properties) {
+            $record[$property.Name] = $property.Value
+        }
+
+        $existingTitle = [string](Get-ObjectValue -InputObject $entry -Names @('Title', 'title') -Default '')
+        $existingWebServer = [string](Get-ObjectValue -InputObject $entry -Names @('WebServer', 'webserver', 'web_server') -Default '')
+        if (-not $record.Contains('Title') -or [string]::IsNullOrWhiteSpace($existingTitle)) {
+            $record['Title'] = if ($liveMatch) { [string](Get-ObjectValue -InputObject $liveMatch -Names @('Title', 'title') -Default '') } else { $existingTitle }
+        }
+        if (-not $record.Contains('ContentType') -or [string]::IsNullOrWhiteSpace($entryContentType)) {
+            $record['ContentType'] = if ($liveMatch) { [string](Get-ObjectValue -InputObject $liveMatch -Names @('ContentType', 'content-type', 'content_type') -Default '') } else { $entryContentType }
+        }
+        if (-not $record.Contains('WebServer') -or [string]::IsNullOrWhiteSpace($existingWebServer)) {
+            $record['WebServer'] = if ($liveMatch) { [string](Get-ObjectValue -InputObject $liveMatch -Names @('WebServer', 'webserver', 'web_server') -Default '') } else { $existingWebServer }
+        }
+        if (-not $record.Contains('Technologies') -or @($existingTechnologies).Count -eq 0) {
+            $record['Technologies'] = if (@($matchedTechnologies).Count -gt 0) { @($matchedTechnologies) } else { @($existingTechnologies) }
+        }
+
+        $results.Add([pscustomobject]$record) | Out-Null
+    }
+
+    return @($results)
+}
+
 function Get-TriageReconData {
     [CmdletBinding()]
     param(
@@ -4394,7 +4473,19 @@ function Export-ReconReport {
 
     $liveRows = ($reachableLiveTargets | Select-Object -First 1000 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe ($_.Technologies -join ' '))""><td>$(ConvertTo-HtmlSafe $_.Host)</td><td>$(Get-HtmlUrlCell -Url $_.Url)</td><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(ConvertTo-HtmlSafe $_.Title)</td><td>$(ConvertTo-HtmlSafe ($_.Technologies -join ', '))</td></tr>" }) -join [Environment]::NewLine
     $deadRows = ($deadOrUnstableTargets | Select-Object -First 1000 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) dead unstable $(ConvertTo-HtmlSafe $_.StatusCode)""><td>$(ConvertTo-HtmlSafe $_.Host)</td><td>$(Get-HtmlUrlCell -Url $_.Url)</td><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(ConvertTo-HtmlSafe $_.Title)</td><td>$(ConvertTo-HtmlSafe ($_.Technologies -join ', '))</td></tr>" }) -join [Environment]::NewLine
-    $urlRows = ($DiscoveredUrls | Select-Object -First 2000 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe $_.ScopeId)""><td>$(ConvertTo-HtmlSafe $_.Host)</td><td>$(Get-HtmlUrlCell -Url $_.Url)</td><td>$(ConvertTo-HtmlSafe $_.ScopeId)</td><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(ConvertTo-HtmlSafe $_.Source)</td></tr>" }) -join [Environment]::NewLine
+    $urlRows = ($DiscoveredUrls | Select-Object -First 2000 | ForEach-Object {
+        $rowTitle = [string](Get-ObjectValue -InputObject $_ -Names @('Title', 'title') -Default '')
+        $rowContentType = [string](Get-ObjectValue -InputObject $_ -Names @('ContentType', 'content-type', 'content_type') -Default '')
+        $rowTechnologiesRaw = Get-ObjectValue -InputObject $_ -Names @('Technologies', 'tech', 'technologies') -Default @()
+        $rowTechnologies = if ($rowTechnologiesRaw -is [System.Collections.IEnumerable] -and $rowTechnologiesRaw -isnot [string]) {
+            @($rowTechnologiesRaw | ForEach-Object { [string]$_ } | Where-Object { $_ })
+        } elseif ($rowTechnologiesRaw) {
+            @([string]$rowTechnologiesRaw)
+        } else {
+            @()
+        }
+        "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe $_.ScopeId) $(ConvertTo-HtmlSafe $rowTitle) $(ConvertTo-HtmlSafe $rowContentType) $(ConvertTo-HtmlSafe ($rowTechnologies -join ' '))""><td>$(ConvertTo-HtmlSafe $_.Host)</td><td>$(Get-HtmlUrlCell -Url $_.Url)</td><td>$(ConvertTo-HtmlSafe $_.ScopeId)</td><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(ConvertTo-HtmlSafe $rowTitle)</td><td>$(ConvertTo-HtmlSafe $rowContentType)</td><td>$(ConvertTo-HtmlSafe $_.Source)</td></tr>"
+    }) -join [Environment]::NewLine
     $interestingRows = ($InterestingUrls | Select-Object -First 250 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) $(ConvertTo-HtmlSafe $_.PrimaryFamily) $(ConvertTo-HtmlSafe $_.Priority) $(ConvertTo-HtmlSafe ($_.Categories -join ' '))""><td><span class=""priority-badge priority-$(ConvertTo-HtmlSafe $_.Priority.ToLowerInvariant())"">$(ConvertTo-HtmlSafe $_.Priority)</span></td><td>$(ConvertTo-HtmlSafe $_.Score)</td><td>$(ConvertTo-HtmlSafe $_.PrimaryFamily)</td><td>$(Get-HtmlUrlCell -Url $_.Url)</td><td>$(ConvertTo-HtmlSafe ($_.Categories -join ', '))</td><td>$(ConvertTo-HtmlSafe ($_.Reasons -join ', '))</td></tr>" }) -join [Environment]::NewLine
     $protectedRows = ($reachableLiveTargets | Where-Object { $_.StatusCode -in 401, 403 } | Select-Object -First 250 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Host) $(ConvertTo-HtmlSafe $_.Url) protected""><td>$(ConvertTo-HtmlSafe $_.StatusCode)</td><td>$(Get-HtmlUrlCell -Url $_.Url)</td><td>$(ConvertTo-HtmlSafe $_.Title)</td><td>$(ConvertTo-HtmlSafe ($_.Technologies -join ', '))</td></tr>" }) -join [Environment]::NewLine
     $errorRows = ($Errors | Select-Object -First 500 | ForEach-Object { "<tr data-search=""$(ConvertTo-HtmlSafe $_.Phase) $(ConvertTo-HtmlSafe $_.Tool) $(ConvertTo-HtmlSafe $_.Target) $(ConvertTo-HtmlSafe $_.Message)""><td>$(ConvertTo-HtmlSafe $_.Phase)</td><td>$(ConvertTo-HtmlSafe $_.Tool)</td><td>$(ConvertTo-HtmlSafe $_.ErrorCode)</td><td>$(ConvertTo-HtmlSafe $_.Message)</td><td>$(ConvertTo-HtmlSafe $_.Recommendation)</td></tr>" }) -join [Environment]::NewLine
@@ -4433,7 +4524,7 @@ function Export-ReconReport {
     $excludedRows = Get-HtmlTableBodyOrEmpty -Rows $excludedRows -ColumnCount 5 -Message 'No exclusions were recorded for this run.'
     $liveRows = Get-HtmlTableBodyOrEmpty -Rows $liveRows -ColumnCount 5 -Message 'No reachable HTTP(S) targets were retained for this run.'
     $deadRows = Get-HtmlTableBodyOrEmpty -Rows $deadRows -ColumnCount 5 -Message 'No dead or unstable HTTP targets were preserved for this run.'
-    $urlRows = Get-HtmlTableBodyOrEmpty -Rows $urlRows -ColumnCount 5 -Message 'No URLs were discovered for this run.'
+    $urlRows = Get-HtmlTableBodyOrEmpty -Rows $urlRows -ColumnCount 7 -Message 'No URLs were discovered for this run.'
     $interestingRows = Get-HtmlTableBodyOrEmpty -Rows $interestingRows -ColumnCount 6 -Message 'No interesting URLs were ranked for this run.'
     $protectedRows = Get-HtmlTableBodyOrEmpty -Rows $protectedRows -ColumnCount 4 -Message 'No 401/403 live targets were captured for this run.'
     $errorRows = Get-HtmlTableBodyOrEmpty -Rows $errorRows -ColumnCount 5 -Message 'No non-fatal errors were captured for this run.'
@@ -4615,7 +4706,7 @@ function Export-ReconReport {
 <details open id="section-families" class="report-section"><summary><span>Interesting Families</span><small>Primary families used to group triage targets for manual review. $interestingFamilyCount group(s).</small></summary><div class="section-body"><div class="table-scroll"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Family</button></th><th><button type="button">Count</button></th><th><button type="button">Max Score</button></th><th><button type="button">Priorities</button></th><th><button type="button">Top Categories</button></th><th><button type="button">Sample URLs</button></th></tr></thead><tbody>$familyRows</tbody></table></div></div></details>
 <details open id="section-protected" class="report-section"><summary><span>Protected Endpoints</span><small>Live endpoints returning 401 or 403. $protectedTargetCount item(s).</small></summary><div class="section-body"><div class="table-scroll"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Status</button></th><th><button type="button">URL</button></th><th><button type="button">Title</button></th><th><button type="button">Technologies</button></th></tr></thead><tbody>$protectedRows</tbody></table></div></div></details>
 <details open id="section-interesting" class="report-section"><summary><span>Interesting Pages</span><small>Heuristically ranked URLs grouped by family and priority. $(@($InterestingUrls).Count) item(s).</small></summary><div class="section-body"><div class="table-scroll"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Priority</button></th><th><button type="button">Score</button></th><th><button type="button">Family</button></th><th><button type="button">URL</button></th><th><button type="button">Categories</button></th><th><button type="button">Reasons</button></th></tr></thead><tbody>$interestingRows</tbody></table></div></div></details>
-<details open id="section-discovered" class="report-section"><summary><span>Discovered URLs</span><small>Unique endpoints collected from katana and seeds. $(@($DiscoveredUrls).Count) item(s).</small></summary><div class="section-body"><div class="table-scroll"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Host</button></th><th><button type="button">URL</button></th><th><button type="button">Scope</button></th><th><button type="button">Status</button></th><th><button type="button">Source</button></th></tr></thead><tbody>$urlRows</tbody></table></div></div></details>
+<details open id="section-discovered" class="report-section"><summary><span>Discovered URLs</span><small>Unique endpoints collected from katana and seeds. $(@($DiscoveredUrls).Count) item(s).</small></summary><div class="section-body"><div class="table-scroll"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Host</button></th><th><button type="button">URL</button></th><th><button type="button">Scope</button></th><th><button type="button">Status</button></th><th><button type="button">Title</button></th><th><button type="button">Content-Type</button></th><th><button type="button">Source</button></th></tr></thead><tbody>$urlRows</tbody></table></div></div></details>
 <details open id="section-errors" class="report-section"><summary><span>Errors</span><small>Non-fatal errors captured during execution. $(@($Errors).Count) item(s).</small></summary><div class="section-body"><div class="table-scroll"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">Phase</button></th><th><button type="button">Tool</button></th><th><button type="button">Code</button></th><th><button type="button">Message</button></th><th><button type="button">Recommendation</button></th></tr></thead><tbody>$errorRows</tbody></table></div></div></details></div>
 <script>const input=document.getElementById('globalSearch');const tables=Array.from(document.querySelectorAll('[data-filter-table=\"true\"]'));const sections=Array.from(document.querySelectorAll('details.report-section'));const cards=Array.from(document.querySelectorAll('[data-search-card=\"true\"]'));function applyFilter(){const query=input.value.trim().toLowerCase();tables.forEach(table=>{let visibleRows=0;table.querySelectorAll('tbody tr').forEach(row=>{const haystack=(row.dataset.search||row.textContent||'').toLowerCase();const visible=!query||haystack.includes(query);row.style.display=visible?'':'none';if(visible){visibleRows++;}});const section=table.closest('details.report-section');if(section&&query&&visibleRows>0){section.open=true;}});cards.forEach(card=>{const haystack=(card.dataset.search||card.textContent||'').toLowerCase();card.style.display=!query||haystack.includes(query)?'':'none';});}function wireSort(table){const headers=Array.from(table.querySelectorAll('thead th button'));headers.forEach((button,index)=>{button.addEventListener('click',()=>{const tbody=table.querySelector('tbody');const rows=Array.from(tbody.querySelectorAll('tr'));const ascending=button.dataset.sortDir!=='asc';headers.forEach(header=>{header.dataset.sortDir='';});button.dataset.sortDir=ascending?'asc':'desc';rows.sort((a,b)=>{const left=(a.children[index]?.innerText||'').trim();const right=(b.children[index]?.innerText||'').trim();const leftNumber=Number(left);const rightNumber=Number(right);const comparison=!Number.isNaN(leftNumber)&&!Number.isNaN(rightNumber)?leftNumber-rightNumber:left.localeCompare(right,undefined,{numeric:true,sensitivity:'base'});return ascending?comparison:-comparison;});rows.forEach(row=>tbody.appendChild(row));});});}document.querySelectorAll('[data-sort-table=\"true\"]').forEach(wireSort);document.querySelectorAll('.copy-btn').forEach(button=>{button.addEventListener('click',async()=>{const value=button.dataset.copy||'';const previous=button.textContent;try{if(navigator.clipboard&&value){await navigator.clipboard.writeText(value);button.textContent='Copied';setTimeout(()=>button.textContent=previous,1200);}}catch(_){button.textContent=previous;}});});document.querySelectorAll('[data-expand-sections=\"true\"]').forEach(button=>button.addEventListener('click',()=>sections.forEach(section=>section.open=true)));document.querySelectorAll('[data-collapse-sections=\"true\"]').forEach(button=>button.addEventListener('click',()=>sections.forEach(section=>section.open=false)));document.querySelectorAll('[data-clear-search=\"true\"]').forEach(button=>button.addEventListener('click',()=>{input.value='';applyFilter();input.focus();}));document.querySelectorAll('.filter-chip').forEach(button=>button.addEventListener('click',()=>{input.value=button.dataset.filterValue||'';applyFilter();input.focus();}));document.querySelectorAll('[data-open-section]').forEach(link=>link.addEventListener('click',()=>{const section=document.getElementById(link.dataset.openSection||'');if(section){section.open=true;}}));input.addEventListener('input',applyFilter);applyFilter();</script></body></html>
 "@
@@ -4953,9 +5044,10 @@ function Invoke-BugBountyRecon {
                 }
             }
 
-            $discoveredUrls = ConvertTo-ArrayOrEmpty -Data $discoveredUrls
-            Write-JsonFile -Path $layout.UrlsDiscoveredJson -Data $discoveredUrls
         }
+        $discoveredUrls = ConvertTo-ArrayOrEmpty -Data $discoveredUrls
+        $discoveredUrls = ConvertTo-ArrayOrEmpty -Data (Add-DiscoveredUrlContext -DiscoveredUrls $discoveredUrls -LiveTargets $liveTargets)
+        Write-JsonFile -Path $layout.UrlsDiscoveredJson -Data $discoveredUrls
         $endpointLines = @($discoveredUrls | Select-Object -ExpandProperty Url -Unique)
         if ($endpointLines.Count -eq 0) {
             $endpointLines = @('')
