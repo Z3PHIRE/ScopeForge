@@ -2285,6 +2285,12 @@ function Get-TriageReconData {
         @{ Category = 'Operations'; Family = 'Operations'; Score = 3; Reason = 'Operational endpoint'; Pattern = '(?i)(status|health|metrics|actuator|prometheus|ready|live|monitoring)' },
         @{ Category = 'Discovery'; Family = 'Discovery'; Score = 2; Reason = 'Discovery helper'; Pattern = '(?i)(robots\.txt|sitemap\.xml|security\.txt|humans\.txt)' }
     )
+    $titlePatterns = @(
+        @{ Category = 'Auth'; Family = 'Auth'; Score = 2; Reason = 'Authentication title signal'; Pattern = '(?i)\b(login|sign in|signin|sign up|signup|register|auth|oauth|sso|password)\b' },
+        @{ Category = 'Admin'; Family = 'Administrative'; Score = 2; Reason = 'Administrative title signal'; Pattern = '(?i)\b(admin|dashboard|console|backoffice|control panel|portal|manage)\b' },
+        @{ Category = 'API'; Family = 'API'; Score = 2; Reason = 'API documentation title signal'; Pattern = '(?i)\b(api|swagger|openapi|graphql|graphiql)\b' },
+        @{ Category = 'Files'; Family = 'Files'; Score = 2; Reason = 'File workflow title signal'; Pattern = '(?i)\b(upload|download|export|import|document|file)\b' }
+    )
 
     $filtered = [System.Collections.Generic.List[object]]::new()
     $reviewable = [System.Collections.Generic.List[object]]::new()
@@ -2357,10 +2363,14 @@ function Get-TriageReconData {
         }
 
         $liveMatch = $liveIndex[$analysis.ReviewKey]
-        if ($liveMatch -and $liveMatch.Title) {
-            if ($liveMatch.Title -match '(?i)(login|sign in|dashboard|portal|swagger|graphql|api)') {
-                $score += 2
-                $reasons.Add('Interesting page title') | Out-Null
+        $titleText = if ($liveMatch -and $liveMatch.Title) { [string]$liveMatch.Title } else { [string](Get-ObjectValue -InputObject $entry -Names @('Title', 'title') -Default '') }
+        foreach ($pattern in $titlePatterns) {
+            if (-not [string]::IsNullOrWhiteSpace($titleText) -and $titleText -match $pattern.Pattern) {
+                $score += [int]$pattern.Score
+                $reasons.Add($pattern.Reason) | Out-Null
+                $categories.Add($pattern.Category) | Out-Null
+                if (-not $familyScores.ContainsKey($pattern.Family)) { $familyScores[$pattern.Family] = 0 }
+                $familyScores[$pattern.Family] += [int]$pattern.Score
             }
         }
 

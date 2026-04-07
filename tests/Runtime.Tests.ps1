@@ -507,6 +507,49 @@ Describe 'ScopeForge triage content signals' {
         if ($finding[0].Reasons -notcontains 'Structured JSON response') { throw 'Expected the structured JSON response reason to be recorded.' }
         if ($finding[0].PrimaryFamily -ne 'API') { throw 'Expected the structured JSON response to map to the API family.' }
     }
+
+    It 'uses title-only signals to classify API documentation pages without path hints' {
+        $triageState = [pscustomobject]@{
+            Path              = Join-Path $TestDrive 'triage-state-title-only.json'
+            Entries           = @{}
+            IgnoreKeys        = New-ScopeForgeStringSet
+            FalsePositiveKeys = New-ScopeForgeStringSet
+            ValidatedKeys     = New-ScopeForgeStringSet
+            SeenKeys          = New-ScopeForgeStringSet
+        }
+
+        $liveTargets = @(
+            [pscustomobject]@{
+                Url          = 'https://app.example.com/'
+                Host         = 'app.example.com'
+                StatusCode   = 200
+                Title        = 'Swagger UI'
+                ContentType  = 'text/html'
+                Technologies = @()
+                WebServer    = 'nginx'
+                Source       = 'httpx'
+            }
+        )
+        $discoveredUrls = @(
+            [pscustomobject]@{
+                Url         = 'https://app.example.com/'
+                Host        = 'app.example.com'
+                ScopeId     = 'scope-001'
+                Source      = 'katana'
+                StatusCode  = 200
+                ContentType = 'text/html'
+            }
+        )
+
+        $triage = Get-TriageReconData -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -TriageState $triageState
+
+        if (@($triage.ReviewableFindings).Count -ne 1) { throw 'Expected the title-only API page to become reviewable.' }
+        $finding = @($triage.ReviewableFindings | Select-Object -First 1)
+        if (-not $finding) { throw 'Expected a reviewable finding for the title-only API page.' }
+        if ($finding[0].Categories -notcontains 'API') { throw 'Expected the title-only API page to be categorized as API.' }
+        if ($finding[0].PrimaryFamily -ne 'API') { throw 'Expected the title-only API page to map to the API family.' }
+        if ($finding[0].Reasons -notcontains 'API documentation title signal') { throw 'Expected the title-only API reason to be recorded.' }
+    }
 }
 
 Describe 'ScopeForge discovered URL context propagation' {
