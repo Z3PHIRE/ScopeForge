@@ -884,9 +884,14 @@ Describe 'ScopeForge HTML report segmentation' {
         )
 
         try {
-            Export-ReconReport -Summary $summary -ScopeItems $scopeItems -HostsAll $hostsAll -HostsLive $hostsLive -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls @() -Exclusions @() -Errors @() -Layout $layout -ExportHtml
+            Export-ReconReport -Summary $summary -ScopeItems $scopeItems -HostsAll $hostsAll -HostsLive $hostsLive -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls @() -Exclusions @() -Errors @() -Layout $layout -ExportHtml -ExportCsv
             $reportHtml = Get-Content -LiteralPath $layout.ReportHtml -Raw -Encoding utf8
             $shortlistMarkdown = Get-Content -LiteralPath $layout.ShortlistMarkdown -Raw -Encoding utf8
+            $displayedShortlistJson = @()
+            if (Test-Path -LiteralPath $layout.DisplayedShortlistJson) {
+                $displayedShortlistJson = @(Get-Content -LiteralPath $layout.DisplayedShortlistJson -Raw -Encoding utf8 | ConvertFrom-Json -Depth 100)
+            }
+            $displayedShortlistCsv = Get-Content -LiteralPath $layout.DisplayedShortlistCsv -Raw -Encoding utf8
         } finally {
             $script:ScopeForgeContext = $null
         }
@@ -904,6 +909,13 @@ Describe 'ScopeForge HTML report segmentation' {
         if ($shortlistMarkdown -notlike '*## Baseline Reachable Targets*') { throw 'Expected shortlist markdown to include baseline reachable targets when no scored shortlist exists.' }
         if (-not $shortlistMarkdown.Contains('### [Baseline/200] https://app.example.com/')) { throw 'Expected shortlist markdown to surface the reachable baseline URL.' }
         if ($shortlistMarkdown -notlike '*- State: seen-before*') { throw 'Expected shortlist markdown to surface the baseline triage state when it is known.' }
+        if ($displayedShortlistJson.Count -ne 1) { throw 'Expected a single displayed shortlist export entry for the fallback baseline target.' }
+        if ($displayedShortlistJson[0].DisplayKind -ne 'Baseline') { throw 'Expected the displayed shortlist export to label the fallback entry as baseline.' }
+        if ($displayedShortlistJson[0].IsScored -ne $false) { throw 'Expected the displayed shortlist export to mark the fallback entry as non-scored.' }
+        if ($displayedShortlistJson[0].Url -ne 'https://app.example.com/') { throw 'Expected the displayed shortlist export to preserve the baseline reachable URL.' }
+        if ($displayedShortlistJson[0].StateStatus -ne 'seen-before') { throw 'Expected the displayed shortlist export to preserve the baseline triage state.' }
+        if ($displayedShortlistCsv -notlike '*Baseline*') { throw 'Expected the displayed shortlist CSV to label the baseline entry.' }
+        if ($displayedShortlistCsv -notlike '*seen-before*') { throw 'Expected the displayed shortlist CSV to preserve the baseline triage state.' }
     }
 }
 

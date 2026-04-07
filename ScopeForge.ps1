@@ -603,6 +603,8 @@ function Get-OutputLayout {
         ReviewableUrlsJson   = Join-Path (Join-Path $root 'normalized') 'reviewable_urls.json'
         ReviewableUrlsCsv    = Join-Path (Join-Path $root 'normalized') 'reviewable_urls.csv'
         ShortlistJson        = Join-Path (Join-Path $root 'normalized') 'shortlist.json'
+        DisplayedShortlistJson = Join-Path (Join-Path $root 'normalized') 'displayed_shortlist.json'
+        DisplayedShortlistCsv = Join-Path (Join-Path $root 'normalized') 'displayed_shortlist.csv'
         InterestingFamiliesJson = Join-Path (Join-Path $root 'normalized') 'interesting_families.json'
         EndpointsUniqueTxt   = Join-Path (Join-Path $root 'normalized') 'endpoints_unique.txt'
         SummaryJson          = Join-Path (Join-Path $root 'reports') 'summary.json'
@@ -4293,6 +4295,7 @@ function Export-ReconReport {
         $triageNoiseFindings = ConvertTo-ArrayOrEmpty -Data @($triageData.NoiseFindings)
         $triageReviewableFindings = ConvertTo-ArrayOrEmpty -Data @($triageData.ReviewableFindings)
         $triageShortlist = ConvertTo-ArrayOrEmpty -Data @($triageData.Shortlist)
+        $displayedShortlist = [System.Collections.Generic.List[object]]::new()
         $triageFilteredIndex = @{}
         foreach ($finding in @($triageFilteredFindings)) {
             if (-not $finding) { continue }
@@ -4338,6 +4341,16 @@ function Export-ReconReport {
             $shortlistLines.Add(('- State: {0}' -f $item.StateStatus)) | Out-Null
             $shortlistLines.Add('') | Out-Null
         }
+        foreach ($item in ($triageShortlist | Select-Object -First 15)) {
+            $displayProjection = [ordered]@{}
+            foreach ($property in $item.PSObject.Properties) {
+                $displayProjection[$property.Name] = $property.Value
+            }
+            $displayProjection['DisplayKind'] = 'Scored'
+            $displayProjection['IsScored'] = $true
+            $displayProjection['DisplayedReason'] = 'Scored shortlist finding retained in the main report.'
+            $displayedShortlist.Add([pscustomobject]$displayProjection) | Out-Null
+        }
         if (@($triageShortlist).Count -eq 0) {
             $baselineReachableTargets = @($LiveTargets | Where-Object { [int]$_.StatusCode -notin $deadStatusCodes } | Select-Object -First 5)
             if ($baselineReachableTargets.Count -gt 0) {
@@ -4369,8 +4382,33 @@ function Export-ReconReport {
                     }
                     $shortlistLines.Add('- Reason: Reachable baseline target retained even though no scored shortlist findings were produced.') | Out-Null
                     $shortlistLines.Add('') | Out-Null
+                    $displayedShortlist.Add([pscustomobject]@{
+                            DisplayKind    = 'Baseline'
+                            IsScored       = $false
+                            Priority       = 'Baseline'
+                            Score          = $null
+                            Url            = [string]$item.Url
+                            ReviewKey      = [string]$baselineAnalysis.ReviewKey
+                            Host           = [string](Get-ObjectValue -InputObject $item -Names @('Host') -Default '')
+                            StatusCode     = [int](Get-ObjectValue -InputObject $item -Names @('StatusCode') -Default 0)
+                            Title          = [string](Get-ObjectValue -InputObject $item -Names @('Title') -Default '')
+                            ContentType    = $itemContentType
+                            WebServer      = $itemWebServer
+                            Technologies   = @((Get-ObjectValue -InputObject $item -Names @('Technologies') -Default @()) | ForEach-Object { [string]$_ })
+                            PrimaryFamily  = 'Reachable'
+                            Categories     = @('Reachable')
+                            Parameters     = @()
+                            Reasons        = @('Reachable baseline target retained even though no scored shortlist findings were produced.')
+                            StateStatus    = $baselineState
+                            Source         = 'baseline-live-target'
+                            DisplayedReason = 'Reachable baseline target retained in the main report because no scored shortlist findings were produced.'
+                        }) | Out-Null
                 }
             }
+        }
+        Write-JsonFile -Path $Layout.DisplayedShortlistJson -Data @($displayedShortlist)
+        if ($ExportCsv) {
+            Export-FlatCsv -Path $Layout.DisplayedShortlistCsv -Rows @($displayedShortlist)
         }
         Set-Content -LiteralPath $Layout.ShortlistMarkdown -Value $shortlistLines -Encoding utf8
     }
