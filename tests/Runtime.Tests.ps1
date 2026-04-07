@@ -1,5 +1,6 @@
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 . (Join-Path $repoRoot 'ScopeForge.ps1')
+. (Join-Path $repoRoot 'Launch-ScopeForgeFromGitHub.ps1')
 
 Describe 'ScopeForge passive discovery runtime safety' {
     It 'builds probe candidates for a domain without composite-format crashes' {
@@ -603,6 +604,125 @@ Describe 'ScopeForge crawl seed preservation' {
         if ($results.Count -ne 1) { throw 'Expected only the reachable live target to be preserved as a synthetic crawl seed.' }
         if ($results[0].Url -ne 'https://app.example.com/') { throw 'Expected the reachable live target URL to remain preserved.' }
         if ($results[0].Source -ne 'seed') { throw 'Expected the preserved reachable target to stay marked as a seed.' }
+    }
+}
+
+Describe 'ScopeForge HTML report segmentation' {
+    It 'separates reachable targets from dead or unstable targets in the HTML report' {
+        $outputDir = Join-Path $TestDrive 'report-segmentation-output'
+        $layout = Get-OutputLayout -OutputDir $outputDir
+        Initialize-OutputDirectories -Layout $layout
+
+        $script:ScopeForgeContext = New-ScopeForgeContext -Layout $layout -ProgramName 'html-report-segmentation-test' -Quiet:$true -ExportJsonEnabled:$true -ExportCsvEnabled:$true -ExportHtmlEnabled:$true
+        $script:ScopeForgeContext.Triage = [pscustomobject]@{
+            FilteredFindings   = @()
+            NoiseFindings      = @()
+            ReviewableFindings = @()
+            Shortlist          = @()
+        }
+
+        $summary = [pscustomobject]@{
+            ProgramName                   = 'html-report-segmentation-test'
+            GeneratedAtUtc                = [DateTimeOffset]::UtcNow.ToString('o')
+            ScopeItemCount                = 1
+            ExcludedItemCount             = 0
+            DiscoveredHostCount           = 1
+            LiveHostCount                 = 1
+            LiveTargetCount               = 2
+            DiscoveredUrlCount            = 1
+            InterestingUrlCount           = 0
+            ErrorCount                    = 0
+            ProtectedInterestingCount     = 0
+            UniqueUserAgent               = 'scopeforge-test'
+            StatusCodeDistribution        = @([pscustomobject]@{ StatusCode = '200'; Count = 1 })
+            TopTechnologies               = @()
+            TopSubdomains                 = @()
+            TopInterestingCategories      = @()
+            TopInterestingFamilies        = @()
+            InterestingPriorityDistribution = @()
+            ErrorPhaseDistribution        = @()
+            ErrorToolDistribution         = @()
+            TopAuthReviewable             = @()
+            TopApiReviewable              = @()
+            TopProtectedReviewable        = @()
+        }
+
+        $scopeItems = @(
+            [pscustomobject]@{
+                Id = 'scope-001'
+                Type = 'Domain'
+                NormalizedValue = 'app.example.com'
+                Exclusions = @()
+            }
+        )
+
+        $hostsAll = @()
+        $hostsLive = @()
+        $liveTargets = @(
+            [pscustomobject]@{
+                Host = 'app.example.com'
+                Url = 'https://app.example.com/'
+                StatusCode = 200
+                Title = 'App'
+                Technologies = @('nginx')
+            },
+            [pscustomobject]@{
+                Host = 'app.example.com'
+                Url = 'https://app.example.com/missing'
+                StatusCode = 404
+                Title = '404 Not Found'
+                Technologies = @('nginx')
+            }
+        )
+        $discoveredUrls = @(
+            [pscustomobject]@{
+                Host = 'app.example.com'
+                Url = 'https://app.example.com/'
+                ScopeId = 'scope-001'
+                Source = 'katana'
+                StatusCode = 200
+            }
+        )
+
+        try {
+            Export-ReconReport -Summary $summary -ScopeItems $scopeItems -HostsAll $hostsAll -HostsLive $hostsLive -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -InterestingUrls @() -Exclusions @() -Errors @() -Layout $layout -ExportHtml
+            $reportHtml = Get-Content -LiteralPath $layout.ReportHtml -Raw -Encoding utf8
+        } finally {
+            $script:ScopeForgeContext = $null
+        }
+
+        if ($reportHtml -notlike '*HTTP Targets*') { throw 'Expected the KPI label to use HTTP Targets.' }
+        if ($reportHtml -notlike '*Reachable <span class="section-count">1</span>*') { throw 'Expected the quick navigation to expose one reachable target.' }
+        if ($reportHtml -notlike '*Dead / Unstable <span class="section-count">1</span>*') { throw 'Expected the quick navigation to expose one dead or unstable target.' }
+        if ($reportHtml -notlike '*Reachable HTTP(S) targets retained after in-scope validation. 1 item(s).*') { throw 'Expected the live section summary to count only reachable targets.' }
+        if ($reportHtml -notlike '*Dead or unstable HTTP targets preserved for evidence and noise separation. 1 item(s).*') { throw 'Expected the dead/unstable section summary to be present.' }
+    }
+}
+
+Describe 'ScopeForge bootstrap cache coherence' {
+    It 'prefers newer local workspace files over a stale temp bootstrap cache' {
+        $bootstrapRoot = Join-Path $TestDrive 'ScopeForge-Bootstrap'
+        $filesToFetch = @('ScopeForge.ps1', 'Launch-ScopeForge.ps1')
+        $null = New-Item -ItemType Directory -Path $bootstrapRoot -Force
+
+        foreach ($relativePath in $filesToFetch) {
+            $targetPath = Join-Path $bootstrapRoot $relativePath
+            $targetDirectory = Split-Path -Parent $targetPath
+            if (-not (Test-Path -LiteralPath $targetDirectory)) {
+                $null = New-Item -ItemType Directory -Path $targetDirectory -Force
+            }
+            Set-Content -LiteralPath $targetPath -Value 'stale bootstrap cache' -Encoding utf8
+            (Get-Item -LiteralPath $targetPath).LastWriteTimeUtc = [DateTime]::UtcNow.AddYears(-10)
+        }
+
+        $localSourceRoot = Get-LocalBootstrapSourceRoot -BootstrapRoot $bootstrapRoot -FilesToFetch $filesToFetch
+        $refreshPlan = Get-LocalBootstrapRefreshPlan -BootstrapRoot $bootstrapRoot -SourceRoot $localSourceRoot -FilesToFetch $filesToFetch
+
+        if (-not $localSourceRoot) { throw 'Expected the local workspace root to be detected when the bootstrap runs from the repository checkout.' }
+        if ($localSourceRoot -ne $repoRoot.Path) { throw 'Expected the detected local bootstrap source root to match the repository root.' }
+        if (-not $refreshPlan.WillRefresh) { throw 'Expected the stale bootstrap cache to be refreshed from the newer local workspace files.' }
+        if ($refreshPlan.NewerFiles -notcontains 'ScopeForge.ps1') { throw 'Expected ScopeForge.ps1 to be flagged as newer in the local workspace.' }
+        if ($refreshPlan.VersionCheckStatus -ne 'Local workspace source detected.') { throw 'Expected the local workspace version check status to be explicit.' }
     }
 }
 

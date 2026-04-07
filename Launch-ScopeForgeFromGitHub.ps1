@@ -51,6 +51,97 @@ function Get-BootstrapFilesToFetch {
     )
 }
 
+function Get-LocalBootstrapSourceRoot {
+    param(
+        [Parameter(Mandatory)][string]$BootstrapRoot,
+        [Parameter(Mandatory)][string[]]$FilesToFetch
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) { return $null }
+
+    try {
+        $resolvedSourceRoot = (Resolve-Path -LiteralPath $PSScriptRoot).Path
+    } catch {
+        return $null
+    }
+
+    $resolvedBootstrapRoot = $null
+    try {
+        if (Test-Path -LiteralPath $BootstrapRoot) {
+            $resolvedBootstrapRoot = (Resolve-Path -LiteralPath $BootstrapRoot).Path
+        }
+    } catch {
+        $resolvedBootstrapRoot = $null
+    }
+
+    if ($resolvedBootstrapRoot -and ($resolvedSourceRoot.TrimEnd('\','/') -eq $resolvedBootstrapRoot.TrimEnd('\','/'))) {
+        return $null
+    }
+
+    foreach ($relativePath in $FilesToFetch) {
+        $candidatePath = Join-Path $resolvedSourceRoot $relativePath
+        if (-not (Test-Path -LiteralPath $candidatePath)) {
+            return $null
+        }
+    }
+
+    return $resolvedSourceRoot
+}
+
+function Get-LocalBootstrapRefreshPlan {
+    param(
+        [Parameter(Mandatory)][string]$BootstrapRoot,
+        [Parameter(Mandatory)][string]$SourceRoot,
+        [Parameter(Mandatory)][string[]]$FilesToFetch
+    )
+
+    $missingFiles = [System.Collections.Generic.List[string]]::new()
+    $newerFiles = [System.Collections.Generic.List[string]]::new()
+    $latestSourceWriteUtc = $null
+
+    foreach ($relativePath in $FilesToFetch) {
+        $sourcePath = Join-Path $SourceRoot $relativePath
+        if (-not (Test-Path -LiteralPath $sourcePath)) { continue }
+
+        $sourceWriteUtc = (Get-Item -LiteralPath $sourcePath).LastWriteTimeUtc
+        if ($null -eq $latestSourceWriteUtc -or $sourceWriteUtc -gt $latestSourceWriteUtc) {
+            $latestSourceWriteUtc = $sourceWriteUtc
+        }
+
+        $targetPath = Join-Path $BootstrapRoot $relativePath
+        if (-not (Test-Path -LiteralPath $targetPath)) {
+            $missingFiles.Add($relativePath) | Out-Null
+            continue
+        }
+
+        $targetWriteUtc = (Get-Item -LiteralPath $targetPath).LastWriteTimeUtc
+        if ($sourceWriteUtc -gt $targetWriteUtc) {
+            $newerFiles.Add($relativePath) | Out-Null
+        }
+    }
+
+    $willRefresh = ($missingFiles.Count -gt 0) -or ($newerFiles.Count -gt 0)
+    $refreshReason = if ($missingFiles.Count -gt 0) {
+        'Local workspace contains bootstrap file(s) missing from the cache: {0}' -f ($missingFiles -join ', ')
+    } elseif ($newerFiles.Count -gt 0) {
+        'Local workspace contains newer bootstrap file(s): {0}' -f ($newerFiles -join ', ')
+    } else {
+        'Bootstrap cache already matches the local workspace files.'
+    }
+
+    return [pscustomobject]@{
+        WillRefresh        = $willRefresh
+        RefreshReason      = $refreshReason
+        RemoteVersionKey   = $null
+        AppliedVersionKey  = $(if ($latestSourceWriteUtc) { $latestSourceWriteUtc.ToString('o') } else { $null })
+        VersionCheckStatus = 'Local workspace source detected.'
+        CheckedAtUtc       = [DateTime]::UtcNow
+        MissingFiles       = @($missingFiles)
+        NewerFiles         = @($newerFiles)
+        SourceRoot         = $SourceRoot
+    }
+}
+
 function Get-BootstrapManifestPath {
     param([Parameter(Mandatory)][string]$BootstrapRoot)
 
@@ -260,9 +351,7 @@ function Get-BootstrapRefreshPlan {
 function Show-BootstrapStatusPanel {
     param(
         [Parameter(Mandatory)][string]$BootstrapRoot,
-        [Parameter(Mandatory)][string]$RepositoryOwner,
-        [Parameter(Mandatory)][string]$RepositoryName,
-        [Parameter(Mandatory)][string]$Branch,
+        [Parameter(Mandatory)][string]$SourceLabel,
         [Parameter(Mandatory)][string]$LauncherPath,
         [Nullable[datetime]]$UpdatedUtc = $null,
         [Parameter(Mandatory)][bool]$WillRefresh,
@@ -285,7 +374,7 @@ function Show-BootstrapStatusPanel {
 
     Write-Host ''
     Write-Host '[Bootstrap]' -ForegroundColor Cyan
-    Write-Host ("  Source            : https://github.com/{0}/{1} ({2})" -f $RepositoryOwner, $RepositoryName, $Branch) -ForegroundColor Gray
+    Write-Host ("  Source            : {0}" -f $SourceLabel) -ForegroundColor Gray
     Write-Host ("  CacheRoot         : {0}" -f $BootstrapRoot) -ForegroundColor Gray
     Write-Host ("  Launcher          : {0}" -f $LauncherPath) -ForegroundColor Gray
     Write-Host ("  Updated           : {0}" -f $(if ($UpdatedUtc) { $UpdatedUtc.ToString('u') } else { 'not downloaded yet' })) -ForegroundColor Gray
@@ -384,10 +473,17 @@ function Invoke-ScopeForgeBootstrap {
     $baseRaw = "https://raw.githubusercontent.com/$RepositoryOwner/$RepositoryName/$Branch"
     $launcherPath = Join-Path $BootstrapRoot 'Launch-ScopeForge.ps1'
     $cacheUpdatedUtc = Get-BootstrapCacheLastWriteTimeUtc -BootstrapRoot $BootstrapRoot -FilesToFetch $filesToFetch
-    $refreshPlan = Get-BootstrapRefreshPlan -BootstrapRoot $BootstrapRoot -RepositoryOwner $RepositoryOwner -RepositoryName $RepositoryName -Branch $Branch -FilesToFetch $filesToFetch -ForceRefresh:([bool]$ForceRefresh) -AutoRefreshHours $AutoRefreshHours
+    $localSourceRoot = Get-LocalBootstrapSourceRoot -BootstrapRoot $BootstrapRoot -FilesToFetch $filesToFetch
+    $usingLocalWorkspace = -not [string]::IsNullOrWhiteSpace($localSourceRoot)
+    $refreshPlan = if ($usingLocalWorkspace) {
+        Get-LocalBootstrapRefreshPlan -BootstrapRoot $BootstrapRoot -SourceRoot $localSourceRoot -FilesToFetch $filesToFetch
+    } else {
+        Get-BootstrapRefreshPlan -BootstrapRoot $BootstrapRoot -RepositoryOwner $RepositoryOwner -RepositoryName $RepositoryName -Branch $Branch -FilesToFetch $filesToFetch -ForceRefresh:([bool]$ForceRefresh) -AutoRefreshHours $AutoRefreshHours
+    }
     $refreshNow = [bool]$refreshPlan.WillRefresh
 
-    Show-BootstrapStatusPanel -BootstrapRoot $BootstrapRoot -RepositoryOwner $RepositoryOwner -RepositoryName $RepositoryName -Branch $Branch -LauncherPath $launcherPath -UpdatedUtc $cacheUpdatedUtc -WillRefresh:$refreshNow -ForcedRefresh:([bool]$ForceRefresh) -RefreshReason $refreshPlan.RefreshReason -RemoteVersionKey $refreshPlan.RemoteVersionKey -AppliedVersionKey $refreshPlan.AppliedVersionKey -VersionCheckStatus $refreshPlan.VersionCheckStatus -CheckedAtUtc $refreshPlan.CheckedAtUtc -AutoRefreshHours $AutoRefreshHours
+    $sourceLabel = if ($usingLocalWorkspace) { $localSourceRoot } else { "https://github.com/$RepositoryOwner/$RepositoryName ($Branch)" }
+    Show-BootstrapStatusPanel -BootstrapRoot $BootstrapRoot -SourceLabel $sourceLabel -LauncherPath $launcherPath -UpdatedUtc $cacheUpdatedUtc -WillRefresh:$refreshNow -ForcedRefresh:([bool]$ForceRefresh) -RefreshReason $refreshPlan.RefreshReason -RemoteVersionKey $refreshPlan.RemoteVersionKey -AppliedVersionKey $refreshPlan.AppliedVersionKey -VersionCheckStatus $refreshPlan.VersionCheckStatus -CheckedAtUtc $refreshPlan.CheckedAtUtc -AutoRefreshHours $AutoRefreshHours
 
     foreach ($relativePath in $filesToFetch) {
         $targetPath = Join-Path $BootstrapRoot $relativePath
@@ -398,6 +494,16 @@ function Invoke-ScopeForgeBootstrap {
 
         if ((-not $refreshNow) -and (Test-Path -LiteralPath $targetPath)) {
             Write-BootstrapVerbose -Message ("Using cached file: {0}" -f $relativePath)
+            continue
+        }
+
+        if ($usingLocalWorkspace) {
+            $sourcePath = Join-Path $localSourceRoot $relativePath
+            $actionLabel = if (Test-Path -LiteralPath $targetPath) { 'Updating' } else { 'Copying' }
+            Write-Host ("{0} {1}" -f $actionLabel, $relativePath) -ForegroundColor Cyan
+            Write-BootstrapVerbose -Message ("Source: {0}" -f $sourcePath)
+            Copy-Item -LiteralPath $sourcePath -Destination $targetPath -Force
+            Write-BootstrapVerbose -Message ("Saved to: {0}" -f $targetPath) -Color 'DarkCyan'
             continue
         }
 
@@ -425,7 +531,9 @@ function Invoke-ScopeForgeBootstrap {
     }
 
     $refreshTimestampUtc = if ($refreshNow) { [DateTime]::UtcNow } elseif ($cacheUpdatedUtc) { $cacheUpdatedUtc } else { [DateTime]::UtcNow }
-    $appliedVersionKey = if ($refreshPlan.RemoteVersionKey) {
+    $appliedVersionKey = if ($usingLocalWorkspace) {
+        $refreshPlan.AppliedVersionKey
+    } elseif ($refreshPlan.RemoteVersionKey) {
         $refreshPlan.RemoteVersionKey
     } elseif ($refreshNow) {
         $null
@@ -435,7 +543,7 @@ function Invoke-ScopeForgeBootstrap {
     $bootstrapManifestPath = Write-BootstrapManifest -BootstrapRoot $BootstrapRoot -RepositoryOwner $RepositoryOwner -RepositoryName $RepositoryName -Branch $Branch -FilesToFetch $filesToFetch -LastRefreshUtc $refreshTimestampUtc -LastCheckedUtc $refreshPlan.CheckedAtUtc -AppliedVersionKey $appliedVersionKey -RemoteVersionKey $refreshPlan.RemoteVersionKey -VersionCheckStatus $refreshPlan.VersionCheckStatus -RefreshReason $refreshPlan.RefreshReason
 
     $env:SCOPEFORGE_BOOTSTRAP_ROOT = $BootstrapRoot
-    $env:SCOPEFORGE_BOOTSTRAP_SOURCE = $baseRaw
+    $env:SCOPEFORGE_BOOTSTRAP_SOURCE = $(if ($usingLocalWorkspace) { $localSourceRoot } else { $baseRaw })
     $env:SCOPEFORGE_BOOTSTRAP_UPDATED_AT = $refreshTimestampUtc.ToString('o')
     $env:SCOPEFORGE_BOOTSTRAP_REFRESH_REASON = $refreshPlan.RefreshReason
     $env:SCOPEFORGE_BOOTSTRAP_MANIFEST = $bootstrapManifestPath
