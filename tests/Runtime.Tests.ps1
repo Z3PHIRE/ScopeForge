@@ -258,17 +258,7 @@ Describe 'ScopeForge passive discovery runtime safety' {
             )
         }
         Mock Get-InterestingReconFindings { @() }
-        Mock Get-PassiveLeadFindings {
-            @(
-                [pscustomobject]@{
-                    Url      = 'https://accounts.khealth.com/'
-                    Host     = 'accounts.khealth.com'
-                    Category = 'PassiveLead'
-                    Family   = 'Passive'
-                    Score    = 0
-                }
-            )
-        }
+        Mock Get-PassiveLeadFindings { $null }
         Mock Get-UnifiedFindings { @() }
         Mock Write-JsonFile {}
         Mock Set-Content {}

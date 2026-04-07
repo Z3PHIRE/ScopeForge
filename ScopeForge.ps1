@@ -4776,7 +4776,7 @@ function Invoke-BugBountyRecon {
         $hostsLive = ConvertTo-ArrayOrEmpty -Data $hostsLive
         $discoveredUrls = ConvertTo-ArrayOrEmpty -Data $discoveredUrls
         $interestingUrls = ConvertTo-ArrayOrEmpty -Data $interestingUrls
-        $passiveLeads = Get-PassiveLeadFindings -HostsAll $hostsAll
+        $passiveLeads = ConvertTo-ArrayOrEmpty -Data (Get-PassiveLeadFindings -HostsAll $hostsAll)
         $filteredUrls = ConvertTo-ArrayOrEmpty -Data @($triageData.FilteredFindings)
         $noiseUrls = ConvertTo-ArrayOrEmpty -Data @($triageData.NoiseFindings)
         $shortlist = ConvertTo-ArrayOrEmpty -Data @($triageData.Shortlist)
