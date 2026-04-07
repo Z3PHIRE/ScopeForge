@@ -550,6 +550,67 @@ Describe 'ScopeForge triage content signals' {
         if ($finding[0].PrimaryFamily -ne 'API') { throw 'Expected the title-only API page to map to the API family.' }
         if ($finding[0].Reasons -notcontains 'API documentation title signal') { throw 'Expected the title-only API reason to be recorded.' }
     }
+
+    It 'uses explicit query parameter signals to classify generic OAuth-style entry points and preserve parameter names in reports' {
+        $triageState = [pscustomobject]@{
+            Path              = Join-Path $TestDrive 'triage-state-parameter-signals.json'
+            Entries           = @{}
+            IgnoreKeys        = New-ScopeForgeStringSet
+            FalsePositiveKeys = New-ScopeForgeStringSet
+            ValidatedKeys     = New-ScopeForgeStringSet
+            SeenKeys          = New-ScopeForgeStringSet
+        }
+
+        $liveTargets = @()
+        $discoveredUrls = @(
+            [pscustomobject]@{
+                Url         = 'https://app.example.com/flow?client_id=webapp&response_type=code&scope=openid'
+                Host        = 'app.example.com'
+                ScopeId     = 'scope-001'
+                Source      = 'seed'
+                StatusCode  = 200
+                ContentType = 'text/html'
+            }
+        )
+
+        $triage = Get-TriageReconData -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -TriageState $triageState
+
+        if (@($triage.ReviewableFindings).Count -ne 1) { throw 'Expected the generic OAuth-style entry point to become reviewable from query parameter signals.' }
+        if (@($triage.Shortlist).Count -ne 1) { throw 'Expected the parameter-signaled entry point to enter the shortlist when it is the only reviewable finding.' }
+
+        $finding = @($triage.ReviewableFindings | Select-Object -First 1)
+        if (-not $finding) { throw 'Expected a reviewable finding for the parameter-signaled entry point.' }
+        if ($finding[0].Categories -notcontains 'Auth') { throw 'Expected the parameter-signaled entry point to be categorized as Auth.' }
+        if ($finding[0].PrimaryFamily -ne 'Auth') { throw 'Expected the parameter-signaled entry point to map to the Auth family.' }
+        if ($finding[0].Reasons -notlike '*Authentication parameter signal: client_id, response_type, scope*') { throw 'Expected the authentication parameter signal reason to be recorded with matched names.' }
+        if ((@($finding[0].Parameters) -join ',') -ne 'client_id,response_type,scope') { throw 'Expected normalized parameter names to be preserved on the finding.' }
+
+        $layout = Get-OutputLayout -OutputDir (Join-Path $TestDrive 'parameter-signal-report-output')
+        Initialize-OutputDirectories -Layout $layout
+        $summary = [pscustomobject]@{
+            GeneratedAtUtc               = '2026-04-07T12:00:00Z'
+            ProgramName                  = 'parameter-signal-test'
+            ScopeItemCount               = 1
+            ExcludedItemCount            = 0
+            DiscoveredHostCount          = 1
+            LiveHostCount                = 0
+            LiveTargetCount              = 0
+            ReachableTargetCount         = 0
+            DeadOrUnstableTargetCount    = 0
+            DiscoveredUrlCount           = 1
+            InterestingUrlCount          = 1
+            ProtectedInterestingCount    = 0
+            ShortlistCount               = 1
+            BaselineShortlistCount       = 0
+            DisplayedShortlistCount      = 1
+            ReachableTopTechnologies     = @()
+            InterestingPriorityDistribution = @()
+        }
+
+        Export-TriageMarkdownReport -Summary $summary -InterestingUrls @($finding) -InterestingFamilies @() -LiveTargets @() -Exclusions @() -Errors @() -Layout $layout
+        $triageMarkdown = Get-Content -LiteralPath $layout.TriageMarkdown -Raw -Encoding utf8
+        if ($triageMarkdown -notlike '*- Parameters: client_id, response_type, scope*') { throw 'Expected triage markdown to expose matched parameter names.' }
+    }
 }
 
 Describe 'ScopeForge discovered URL context propagation' {

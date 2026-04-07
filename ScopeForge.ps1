@@ -1796,6 +1796,7 @@ function Get-ReviewUrlAnalysis {
             IsNoise            = $false
             NoiseTags          = @()
             HasVolatileParams  = $false
+            Parameters         = @()
         }
     }
 
@@ -1866,6 +1867,7 @@ function Get-ReviewUrlAnalysis {
         IsNoise           = ($noiseTags.Count -gt 0)
         NoiseTags         = @($noiseTags | Select-Object -Unique)
         HasVolatileParams = $hasVolatileParams
+        Parameters        = @($keptPairs | ForEach-Object { [string]$_.Name } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
     }
 }
 
@@ -2291,6 +2293,12 @@ function Get-TriageReconData {
         @{ Category = 'API'; Family = 'API'; Score = 2; Reason = 'API documentation title signal'; Pattern = '(?i)\b(api|swagger|openapi|graphql|graphiql)\b' },
         @{ Category = 'Files'; Family = 'Files'; Score = 2; Reason = 'File workflow title signal'; Pattern = '(?i)\b(upload|download|export|import|document|file)\b' }
     )
+    $parameterPatterns = @(
+        @{ Category = 'Auth'; Family = 'Auth'; Score = 1; Label = 'Authentication parameter signal'; Pattern = '(?i)^(client_id|response_type|scope|grant_type|code_challenge|code_verifier|state)$' },
+        @{ Category = 'Redirect'; Family = 'Redirect'; Score = 1; Label = 'Redirect parameter signal'; Pattern = '(?i)^(redirect(?:_uri)?|return(?:_url|url)?|continue|next|callback|target)$' },
+        @{ Category = 'API'; Family = 'API'; Score = 1; Label = 'API parameter signal'; Pattern = '(?i)^(operationname|variables|query|format|fields|api[_-]?version)$' },
+        @{ Category = 'Files'; Family = 'Files'; Score = 1; Label = 'File parameter signal'; Pattern = '(?i)^(filename|attachment)$' }
+    )
 
     $filtered = [System.Collections.Generic.List[object]]::new()
     $reviewable = [System.Collections.Generic.List[object]]::new()
@@ -2373,6 +2381,17 @@ function Get-TriageReconData {
                 $familyScores[$pattern.Family] += [int]$pattern.Score
             }
         }
+        $parameterNames = @($analysis.Parameters | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+        foreach ($pattern in $parameterPatterns) {
+            $matchedParameters = @($parameterNames | Where-Object { $_ -match $pattern.Pattern })
+            if ($matchedParameters.Count -gt 0) {
+                $score += [int]$pattern.Score
+                $reasons.Add(("{0}: {1}" -f $pattern.Label, ($matchedParameters -join ', '))) | Out-Null
+                $categories.Add($pattern.Category) | Out-Null
+                if (-not $familyScores.ContainsKey($pattern.Family)) { $familyScores[$pattern.Family] = 0 }
+                $familyScores[$pattern.Family] += [int]$pattern.Score
+            }
+        }
 
         $priority = switch ($score) {
             { $_ -ge 9 } { 'Critical'; break }
@@ -2419,6 +2438,7 @@ function Get-TriageReconData {
             Title         = if ($liveMatch) { $liveMatch.Title } else { '' }
             ContentType   = [string]$contentType
             Technologies  = if ($liveMatch) { $liveMatch.Technologies } else { @() }
+            Parameters    = @($parameterNames)
             PathAndQuery  = $analysis.PathAndQuery
             NoiseTags     = @($analysis.NoiseTags)
             StateStatus   = $stateStatus
@@ -4084,6 +4104,9 @@ function Export-TriageMarkdownReport {
             if ($item.ContentType) {
                 $lines.Add(("- Content-Type: {0}" -f $item.ContentType)) | Out-Null
             }
+            if ($item.Parameters -and $item.Parameters.Count -gt 0) {
+                $lines.Add(("- Parameters: {0}" -f (($item.Parameters | ForEach-Object { [string]$_ }) -join ', '))) | Out-Null
+            }
             $lines.Add(("- Family: {0}" -f $item.PrimaryFamily)) | Out-Null
             $lines.Add(("- Categories: {0}" -f (($item.Categories | ForEach-Object { [string]$_ }) -join ', '))) | Out-Null
             $lines.Add(("- Reasons: {0}" -f (($item.Reasons | ForEach-Object { [string]$_ }) -join ', '))) | Out-Null
@@ -4265,6 +4288,9 @@ function Export-ReconReport {
             $shortlistLines.Add(('## [{0}/{1}] {2}' -f $item.Priority, $item.Score, $item.Url)) | Out-Null
             if ($item.ContentType) {
                 $shortlistLines.Add(('- Content-Type: {0}' -f $item.ContentType)) | Out-Null
+            }
+            if ($item.Parameters -and $item.Parameters.Count -gt 0) {
+                $shortlistLines.Add(('- Parameters: {0}' -f (($item.Parameters | ForEach-Object { [string]$_ }) -join ', '))) | Out-Null
             }
             $shortlistLines.Add(('- Family: {0}' -f $item.PrimaryFamily)) | Out-Null
             $shortlistLines.Add(('- Categories: {0}' -f ($item.Categories -join ', '))) | Out-Null
