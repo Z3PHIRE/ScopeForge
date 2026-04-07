@@ -3601,6 +3601,10 @@ function Merge-ReconResults {
         }
     )
 
+    $deadStatusCodes = @(0, 404, 410)
+    $reachableTargets = @($LiveTargets | Where-Object { [int]$_.StatusCode -notin $deadStatusCodes })
+    $deadOrUnstableTargets = @($LiveTargets | Where-Object { [int]$_.StatusCode -in $deadStatusCodes })
+
     [pscustomobject]@{
         ProgramName                     = $ProgramName
         GeneratedAtUtc                  = [DateTime]::UtcNow.ToString('o')
@@ -3610,6 +3614,8 @@ function Merge-ReconResults {
         DiscoveredHostCount             = @($HostsAll | Select-Object -ExpandProperty Host -Unique).Count
         LiveHostCount                   = @($LiveTargets | Select-Object -ExpandProperty Host -Unique).Count
         LiveTargetCount                 = $LiveTargets.Count
+        ReachableTargetCount            = $reachableTargets.Count
+        DeadOrUnstableTargetCount       = $deadOrUnstableTargets.Count
         DiscoveredUrlCount              = $DiscoveredUrls.Count
         InterestingUrlCount             = $InterestingUrls.Count
         ErrorCount                      = $Errors.Count
@@ -3841,6 +3847,18 @@ function Export-TriageMarkdownReport {
         [Parameter(Mandatory)][pscustomobject]$Layout
     )
 
+    $deadStatusCodes = @(0, 404, 410)
+    $summaryReachableTargetCount = if ($Summary.PSObject.Properties.Name -contains 'ReachableTargetCount') {
+        [int]$Summary.ReachableTargetCount
+    } else {
+        @($LiveTargets | Where-Object { [int]$_.StatusCode -notin $deadStatusCodes }).Count
+    }
+    $summaryDeadOrUnstableTargetCount = if ($Summary.PSObject.Properties.Name -contains 'DeadOrUnstableTargetCount') {
+        [int]$Summary.DeadOrUnstableTargetCount
+    } else {
+        @($LiveTargets | Where-Object { [int]$_.StatusCode -in $deadStatusCodes }).Count
+    }
+
     $lines = [System.Collections.Generic.List[string]]::new()
     $lines.Add("# ScopeForge Triage") | Out-Null
     $lines.Add('') | Out-Null
@@ -3853,7 +3871,9 @@ function Export-TriageMarkdownReport {
     $lines.Add(("- Excluded assets: {0}" -f $Summary.ExcludedItemCount)) | Out-Null
     $lines.Add(("- Hosts discovered: {0}" -f $Summary.DiscoveredHostCount)) | Out-Null
     $lines.Add(("- Live hosts: {0}" -f $Summary.LiveHostCount)) | Out-Null
-    $lines.Add(("- Live targets: {0}" -f $Summary.LiveTargetCount)) | Out-Null
+    $lines.Add(("- HTTP targets: {0}" -f $Summary.LiveTargetCount)) | Out-Null
+    $lines.Add(("- Reachable targets: {0}" -f $summaryReachableTargetCount)) | Out-Null
+    $lines.Add(("- Dead or unstable targets: {0}" -f $summaryDeadOrUnstableTargetCount)) | Out-Null
     $lines.Add(("- URLs discovered: {0}" -f $Summary.DiscoveredUrlCount)) | Out-Null
     $lines.Add(("- Interesting URLs: {0}" -f $Summary.InterestingUrlCount)) | Out-Null
     $lines.Add(("- Protected interesting URLs: {0}" -f $Summary.ProtectedInterestingCount)) | Out-Null
@@ -3987,6 +4007,18 @@ function Export-ReconReport {
         [switch]$ExportHtml
     )
 
+    $deadStatusCodes = @(0, 404, 410)
+    $summaryReachableTargetCount = if ($Summary.PSObject.Properties.Name -contains 'ReachableTargetCount') {
+        [int]$Summary.ReachableTargetCount
+    } else {
+        @($LiveTargets | Where-Object { [int]$_.StatusCode -notin $deadStatusCodes }).Count
+    }
+    $summaryDeadOrUnstableTargetCount = if ($Summary.PSObject.Properties.Name -contains 'DeadOrUnstableTargetCount') {
+        [int]$Summary.DeadOrUnstableTargetCount
+    } else {
+        @($LiveTargets | Where-Object { [int]$_.StatusCode -in $deadStatusCodes }).Count
+    }
+
     if ($ExportJson) { Write-JsonFile -Path $Layout.SummaryJson -Data $Summary }
     if ($ExportCsv) {
         Export-FlatCsv -Path $Layout.SummaryCsv -Rows @(
@@ -3997,6 +4029,8 @@ function Export-ReconReport {
             [pscustomobject]@{ Metric = 'DiscoveredHostCount'; Value = $Summary.DiscoveredHostCount },
             [pscustomobject]@{ Metric = 'LiveHostCount'; Value = $Summary.LiveHostCount },
             [pscustomobject]@{ Metric = 'LiveTargetCount'; Value = $Summary.LiveTargetCount },
+            [pscustomobject]@{ Metric = 'ReachableTargetCount'; Value = $summaryReachableTargetCount },
+            [pscustomobject]@{ Metric = 'DeadOrUnstableTargetCount'; Value = $summaryDeadOrUnstableTargetCount },
             [pscustomobject]@{ Metric = 'DiscoveredUrlCount'; Value = $Summary.DiscoveredUrlCount },
             [pscustomobject]@{ Metric = 'InterestingUrlCount'; Value = $Summary.InterestingUrlCount },
             [pscustomobject]@{ Metric = 'ErrorCount'; Value = $Summary.ErrorCount }
@@ -4844,7 +4878,9 @@ function Invoke-BugBountyRecon {
             Write-Host ('  Excluded assets  : {0}' -f $summary.ExcludedItemCount) -ForegroundColor Gray
             Write-Host ('  Hosts discovered : {0}' -f $summary.DiscoveredHostCount) -ForegroundColor Gray
             Write-Host ('  Live hosts       : {0}' -f $summary.LiveHostCount) -ForegroundColor Gray
-            Write-Host ('  Live targets     : {0}' -f $summary.LiveTargetCount) -ForegroundColor Gray
+            Write-Host ('  HTTP targets     : {0}' -f $summary.LiveTargetCount) -ForegroundColor Gray
+            Write-Host ('  Reachable        : {0}' -f $summary.ReachableTargetCount) -ForegroundColor Gray
+            Write-Host ('  Dead/unstable    : {0}' -f $summary.DeadOrUnstableTargetCount) -ForegroundColor Gray
             Write-Host ('  URLs discovered  : {0}' -f $summary.DiscoveredUrlCount) -ForegroundColor Gray
             Write-Host ('  URLs filtrees    : {0}' -f $summary.FilteredUrlCount) -ForegroundColor Gray
             Write-Host ('  Reviewable       : {0}' -f $summary.ReviewableUrlCount) -ForegroundColor Gray
