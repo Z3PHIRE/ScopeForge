@@ -2269,6 +2269,14 @@ function Get-TriageReconData {
             $reasons.Add('Method-aware endpoint') | Out-Null
         }
 
+        if ([string]$contentType -match '(?i)\b(?:application|text)/(?:problem\+)?json\b') {
+            $score += 2
+            $reasons.Add('Structured JSON response') | Out-Null
+            $categories.Add('API') | Out-Null
+            if (-not $familyScores.ContainsKey('API')) { $familyScores['API'] = 0 }
+            $familyScores['API'] += 2
+        }
+
         $liveMatch = $liveIndex[$analysis.ReviewKey]
         if ($liveMatch -and $liveMatch.Title) {
             if ($liveMatch.Title -match '(?i)(login|sign in|dashboard|portal|swagger|graphql|api)') {
@@ -2320,6 +2328,7 @@ function Get-TriageReconData {
             ScopeId       = $entry.ScopeId
             Source        = $entry.Source
             Title         = if ($liveMatch) { $liveMatch.Title } else { '' }
+            ContentType   = [string]$contentType
             Technologies  = if ($liveMatch) { $liveMatch.Technologies } else { @() }
             PathAndQuery  = $analysis.PathAndQuery
             NoiseTags     = @($analysis.NoiseTags)
@@ -3891,6 +3900,9 @@ function Export-TriageMarkdownReport {
             $lines.Add(("### [{0}/{1}] {2}" -f $item.Priority, $item.Score, $item.Url)) | Out-Null
             $lines.Add(("- Host: {0}" -f $item.Host)) | Out-Null
             $lines.Add(("- Status: {0}" -f $item.StatusCode)) | Out-Null
+            if ($item.ContentType) {
+                $lines.Add(("- Content-Type: {0}" -f $item.ContentType)) | Out-Null
+            }
             $lines.Add(("- Family: {0}" -f $item.PrimaryFamily)) | Out-Null
             $lines.Add(("- Categories: {0}" -f (($item.Categories | ForEach-Object { [string]$_ }) -join ', '))) | Out-Null
             $lines.Add(("- Reasons: {0}" -f (($item.Reasons | ForEach-Object { [string]$_ }) -join ', '))) | Out-Null
@@ -4019,6 +4031,9 @@ function Export-ReconReport {
         $shortlistLines.Add('') | Out-Null
         foreach ($item in ($triageShortlist | Select-Object -First 20)) {
             $shortlistLines.Add(('## [{0}/{1}] {2}' -f $item.Priority, $item.Score, $item.Url)) | Out-Null
+            if ($item.ContentType) {
+                $shortlistLines.Add(('- Content-Type: {0}' -f $item.ContentType)) | Out-Null
+            }
             $shortlistLines.Add(('- Family: {0}' -f $item.PrimaryFamily)) | Out-Null
             $shortlistLines.Add(('- Categories: {0}' -f ($item.Categories -join ', '))) | Out-Null
             $shortlistLines.Add(('- Reasons: {0}' -f ($item.Reasons -join ', '))) | Out-Null

@@ -472,6 +472,42 @@ Describe 'ScopeForge triage reachability guardrails' {
     }
 }
 
+Describe 'ScopeForge triage content signals' {
+    It 'promotes structured JSON responses into reviewable API findings even without an explicit api path' {
+        $triageState = [pscustomobject]@{
+            Path              = Join-Path $TestDrive 'triage-state.json'
+            IgnoreKeys        = New-ScopeForgeStringSet
+            FalsePositiveKeys = New-ScopeForgeStringSet
+            ValidatedKeys     = New-ScopeForgeStringSet
+            SeenKeys          = New-ScopeForgeStringSet
+        }
+
+        $liveTargets = @()
+        $discoveredUrls = @(
+            [pscustomobject]@{
+                Url         = 'https://app.example.com/compteur/compteur.php?format=json&source=js'
+                Host        = 'app.example.com'
+                ScopeId     = 'scope-001'
+                Source      = 'katana'
+                StatusCode  = 200
+                ContentType = 'application/json; charset=utf-8'
+            }
+        )
+
+        $triage = Get-TriageReconData -LiveTargets $liveTargets -DiscoveredUrls $discoveredUrls -TriageState $triageState
+
+        if (@($triage.ReviewableFindings).Count -ne 1) { throw 'Expected the structured JSON response to become reviewable.' }
+        if (@($triage.Shortlist).Count -ne 1) { throw 'Expected the structured JSON response to enter the shortlist when it is the only reviewable finding.' }
+
+        $finding = @($triage.ReviewableFindings | Select-Object -First 1)
+        if (-not $finding) { throw 'Expected a reviewable finding to exist.' }
+        if ($finding[0].ContentType -ne 'application/json; charset=utf-8') { throw 'Expected the original JSON content type to be preserved on the finding.' }
+        if ($finding[0].Categories -notcontains 'API') { throw 'Expected the structured JSON response to be categorized as API.' }
+        if ($finding[0].Reasons -notcontains 'Structured JSON response') { throw 'Expected the structured JSON response reason to be recorded.' }
+        if ($finding[0].PrimaryFamily -ne 'API') { throw 'Expected the structured JSON response to map to the API family.' }
+    }
+}
+
 Describe 'ScopeForge httpx diagnostics' {
     BeforeEach {
         $layout = Get-OutputLayout -OutputDir (Join-Path $TestDrive 'output')
