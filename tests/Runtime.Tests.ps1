@@ -1200,4 +1200,68 @@ Describe 'ScopeForge httpx diagnostics' {
             throw ("Expected the batch log to reflect the recovered stdout line. Actual log: {0}" -f $batchLog)
         }
     }
+
+    It 'retries gau once with a higher timeout after an initial timeout' {
+        $rawOutputPath = Join-Path $TestDrive 'gau-raw.txt'
+        $script:gauTimeoutAttempts = @()
+        $script:gauWarnings = @()
+        $script:gauErrorRecords = @()
+
+        Mock Write-ReconLog {
+            param($Level, $Message)
+            if ($Level -eq 'WARN') {
+                $script:gauWarnings += [string]$Message
+            }
+        }
+
+        Mock Add-ErrorRecord {
+            param($Phase, $Target, $Message, $Details, $Tool, $ExitCode, $ErrorCode)
+            $script:gauErrorRecords += [pscustomobject]@{
+                Phase     = $Phase
+                Target    = $Target
+                Message   = $Message
+                Tool      = $Tool
+                ExitCode  = $ExitCode
+                ErrorCode = $ErrorCode
+            }
+        }
+
+        Mock Invoke-ExternalCommand {
+            param($FilePath, $Arguments, $TimeoutSeconds, $StdOutPath, $StdErrPath, $IgnoreExitCode)
+
+            $script:gauTimeoutAttempts += [int]$TimeoutSeconds
+            if ($script:gauTimeoutAttempts.Count -eq 1) {
+                throw 'Command timed out after 120 seconds: gau.exe'
+            }
+
+            Set-Content -LiteralPath $StdOutPath -Value @(
+                'https://example.com/login'
+                'https://example.com/api/docs'
+                'not-a-url'
+            ) -Encoding utf8
+            Set-Content -LiteralPath $StdErrPath -Value '' -Encoding utf8
+
+            [pscustomobject]@{
+                ExitCode  = 0
+                StdOut    = ''
+                StdErr    = ''
+                FilePath  = $FilePath
+                Arguments = @($Arguments)
+            }
+        }
+
+        $urls = @(Get-HistoricalUrls -Target 'example.com' -GauPath 'gau.exe' -RawOutputPath $rawOutputPath -TimeoutSeconds 30)
+        $rawOutput = Get-Content -LiteralPath $rawOutputPath -Raw -Encoding utf8
+
+        if ($script:gauTimeoutAttempts.Count -ne 2) { throw 'Expected gau to retry exactly once after a timeout.' }
+        if ($script:gauTimeoutAttempts[0] -ne 120) { throw 'Expected the initial gau timeout to stay bounded at 120 seconds.' }
+        if ($script:gauTimeoutAttempts[1] -ne 240) { throw 'Expected the retry gau timeout to increase to 240 seconds.' }
+        if ($script:gauWarnings -notlike '*Nouvelle tentative avec timeout=240s.*') { throw 'Expected a retry warning that surfaces the increased gau timeout.' }
+        if ($script:gauErrorRecords.Count -ne 0) { throw 'Expected a successful gau retry to avoid recording a historical discovery error.' }
+        if ($urls.Count -ne 2) { throw 'Expected the successful gau retry to retain the two valid historical URLs.' }
+        if ($urls -notcontains 'https://example.com/login') { throw 'Expected the successful gau retry to keep the first historical URL.' }
+        if ($urls -notcontains 'https://example.com/api/docs') { throw 'Expected the successful gau retry to keep the second historical URL.' }
+        if ($rawOutput -notlike '*https://example.com/login*') { throw 'Expected the raw gau output to preserve the retried stdout.' }
+        if ($rawOutput -notlike '*https://example.com/api/docs*') { throw 'Expected the raw gau output to preserve all successful retried URLs.' }
+    }
 }

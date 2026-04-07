@@ -2792,25 +2792,46 @@ function Get-HistoricalUrls {
         if ($IncludeSubdomains) { $arguments += '--subs' }
         $arguments += $Target
 
-        try {
-            $result = Invoke-ExternalCommand `
-                -FilePath $GauPath `
-                -Arguments $arguments `
-                -TimeoutSeconds ([Math]::Max($TimeoutSeconds * 4, 120)) `
-                -StdOutPath $stdoutFile `
-                -StdErrPath $stderrFile `
-                -IgnoreExitCode
-        } catch {
-            Add-ErrorRecord `
-                -Phase 'HistoricalDiscovery' `
-                -Target $Target `
-                -Message $_.Exception.Message `
-                -Tool 'gau' `
-                -ErrorCode $(if ($_.Exception.Message -like 'Command timed out*') { 'ToolTimeout' } else { 'RuntimeError' })
+        $attemptTimeouts = @(
+            [Math]::Max($TimeoutSeconds * 4, 120),
+            [Math]::Max($TimeoutSeconds * 8, 240)
+        )
 
-            Write-ReconLog -Level WARN -Message "gau a echoue pour $Target, poursuite sans URLs historiques gau."
-            return @()
+        $result = $null
+        $completed = $false
+
+        for ($attempt = 0; $attempt -lt $attemptTimeouts.Count; $attempt++) {
+            $currentTimeout = [int]$attemptTimeouts[$attempt]
+            try {
+                $result = Invoke-ExternalCommand `
+                    -FilePath $GauPath `
+                    -Arguments $arguments `
+                    -TimeoutSeconds $currentTimeout `
+                    -StdOutPath $stdoutFile `
+                    -StdErrPath $stderrFile `
+                    -IgnoreExitCode
+                $completed = $true
+                break
+            } catch {
+                $isTimeout = ($_.Exception.Message -like 'Command timed out*')
+                if ($isTimeout -and $attempt -lt ($attemptTimeouts.Count - 1)) {
+                    Write-ReconLog -Level WARN -Message ("gau a depasse le delai pour {0}. Nouvelle tentative avec timeout={1}s." -f $Target, $attemptTimeouts[$attempt + 1])
+                    continue
+                }
+
+                Add-ErrorRecord `
+                    -Phase 'HistoricalDiscovery' `
+                    -Target $Target `
+                    -Message $_.Exception.Message `
+                    -Tool 'gau' `
+                    -ErrorCode $(if ($isTimeout) { 'ToolTimeout' } else { 'RuntimeError' })
+
+                Write-ReconLog -Level WARN -Message "gau a echoue pour $Target, poursuite sans URLs historiques gau."
+                return @()
+            }
         }
+
+        if (-not $completed) { return @() }
 
         $rawLines = @(
             if (Test-Path -LiteralPath $stdoutFile) {
