@@ -898,6 +898,24 @@ Describe 'ScopeForge HTML report segmentation' {
     }
 }
 
+Describe 'ScopeForge suggested review areas' {
+    It 'prefers baseline reachable guidance over the generic fallback when no scored findings exist but reachable targets remain' {
+        $suggestions = @(Get-SuggestedReviewAreas -InterestingUrls @() -LiveTargets @(
+                [pscustomobject]@{
+                    Host         = 'app.example.com'
+                    Url          = 'https://app.example.com/'
+                    StatusCode   = 200
+                    Title        = 'Example App'
+                    ContentType  = 'text/html'
+                    Technologies = @('nginx')
+                }
+            ) -Errors @())
+
+        if (@($suggestions | Where-Object { $_.Area -eq 'Baseline reachable targets' }).Count -ne 1) { throw 'Expected a dedicated baseline reachable suggestion when no scored findings exist.' }
+        if (@($suggestions | Where-Object { $_.Area -eq 'General manual review' }).Count -ne 0) { throw 'Expected the generic fallback to stay hidden when a baseline reachable suggestion exists.' }
+    }
+}
+
 Describe 'ScopeForge bootstrap cache coherence' {
     It 'prefers newer local workspace files over a stale temp bootstrap cache' {
         $bootstrapRoot = Join-Path $TestDrive 'ScopeForge-Bootstrap'

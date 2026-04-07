@@ -3935,6 +3935,9 @@ function Get-SuggestedReviewAreas {
         }
     }
 
+    $deadStatusCodes = @(0, 404, 410)
+    $reachableTargets = @($LiveTargets | Where-Object { [int](Get-ObjectValue -InputObject $_ -Names @('StatusCode') -Default 0) -notin $deadStatusCodes })
+
     if ($InterestingUrls | Where-Object { $_.Categories -contains 'Auth' -or $_.Categories -contains 'Protected' -or $_.PrimaryFamily -eq 'Access' }) {
         Add-Suggestion -Key 'access' -Area 'Auth and session flows' -Reason 'Login, callback, SSO, or protected routes were surfaced.'
     }
@@ -3952,6 +3955,9 @@ function Get-SuggestedReviewAreas {
     }
     if ($LiveTargets | Where-Object { $_.StatusCode -in 401, 403 }) {
         Add-Suggestion -Key 'protected' -Area 'Protected endpoints' -Reason '401/403 live endpoints are present for access-control triage.'
+    }
+    if (@($InterestingUrls).Count -eq 0 -and $reachableTargets.Count -gt 0) {
+        Add-Suggestion -Key 'baseline-reachable' -Area 'Baseline reachable targets' -Reason 'No scored findings were produced; review the retained reachable targets, titles, content-types, and technologies first.'
     }
     if ($Errors.Count -gt 0) {
         Add-Suggestion -Key 'errors' -Area 'Retry noisy tools' -Reason 'Non-fatal runtime errors were captured; review logs before broadening the run.'
