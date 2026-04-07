@@ -3067,6 +3067,27 @@ function Invoke-HttpProbe {
                 }
             }
 
+            $stdoutCaptured = if (Test-Path -LiteralPath $stdoutFile) { Get-Content -LiteralPath $stdoutFile -Raw -Encoding utf8 } else { '' }
+            if ($result.ExitCode -eq 0 -and [string]::IsNullOrWhiteSpace([string]$stdoutCaptured)) {
+                Write-ReconLog -Level WARN -Message ("httpx batch {0}/{1} returned empty stdout via redirected capture. Retrying with direct stdio capture." -f $batchIndex, $batchCount)
+                try {
+                    $retryResult = Invoke-ExternalCommandArgumentSafe -FilePath $HttpxPath -Arguments $arguments -TimeoutSeconds $batchTimeoutSeconds -IgnoreExitCode
+                    Set-Content -LiteralPath $stdoutFile -Value ([string]$retryResult.StdOut) -Encoding utf8
+                    Set-Content -LiteralPath $stderrFile -Value ([string]$retryResult.StdErr) -Encoding utf8
+                    $result = [pscustomobject]@{
+                        ExitCode   = $retryResult.ExitCode
+                        StdOut     = $retryResult.StdOut
+                        StdErr     = $retryResult.StdErr
+                        StdOutPath = $stdoutFile
+                        StdErrPath = $stderrFile
+                        FilePath   = $retryResult.FilePath
+                        Arguments  = $retryResult.Arguments
+                    }
+                } catch {
+                    Write-ReconLog -Level WARN -Message ("httpx batch {0}/{1} direct stdio retry failed. Continuing with the original empty capture." -f $batchIndex, $batchCount)
+                }
+            }
+
             if (Test-Path -LiteralPath $stdoutFile) {
                 $stdoutRaw = Get-Content -LiteralPath $stdoutFile -Raw -Encoding utf8
                 if (-not [string]::IsNullOrWhiteSpace($stdoutRaw)) {

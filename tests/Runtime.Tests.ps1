@@ -612,4 +612,72 @@ Describe 'ScopeForge httpx diagnostics' {
         if ($snapshotInput -notlike '*https://app.example.com/*') { throw 'Expected the empty-batch input snapshot to preserve the original URL.' }
         if ($snapshotMeta.InputCount -ne 1 -or $snapshotMeta.FirstInputUrl -ne 'https://app.example.com/') { throw 'Expected the empty-batch context snapshot to preserve the first input URL and input count.' }
     }
+
+    It 'retries httpx batch capture with direct stdio when redirected stdout is empty' {
+        $scopeItem = [pscustomobject]@{
+            Id               = 'scope-001'
+            Index            = 1
+            Type             = 'URL'
+            OriginalValue    = 'https://app.example.com/'
+            NormalizedValue  = 'https://app.example.com/'
+            Scheme           = 'https'
+            Host             = 'app.example.com'
+            Port             = $null
+            RootDomain       = 'app.example.com'
+            PathPrefix       = '/'
+            StartUrl         = 'https://app.example.com/'
+            IncludeApex      = $false
+            Exclusions       = @()
+            HostRegexString  = '^app\.example\.com$'
+            ScopeRegexString = ''
+            Description      = 'URL seed https://app.example.com/'
+        }
+
+        Mock Invoke-ExternalCommand {
+            param($FilePath, $Arguments, $TimeoutSeconds, $StdOutPath, $StdErrPath, $IgnoreExitCode)
+
+            Set-Content -LiteralPath $StdOutPath -Value '' -Encoding utf8
+            Set-Content -LiteralPath $StdErrPath -Value '' -Encoding utf8
+
+            [pscustomobject]@{
+                ExitCode  = 0
+                StdOut    = ''
+                StdErr    = ''
+                FilePath  = $FilePath
+                Arguments = @($Arguments)
+            }
+        }
+
+        Mock Invoke-ExternalCommandArgumentSafe {
+            $jsonLine = ([pscustomobject]@{
+                    input         = 'https://app.example.com/'
+                    url           = 'https://app.example.com/api/profile'
+                    title         = 'Profile API'
+                    status_code   = 200
+                    content_type  = 'application/json'
+                    content_length = 123
+                    webserver     = 'nginx'
+                    tech          = @('nginx', 'React')
+                } | ConvertTo-Json -Compress)
+
+            [pscustomobject]@{
+                ExitCode  = 0
+                StdOut    = $jsonLine
+                StdErr    = ''
+                FilePath  = 'httpx.exe'
+                Arguments = @()
+            }
+        }
+
+        $liveTargets = @(Invoke-HttpProbe -InputUrls @('https://app.example.com/') -ScopeItems @($scopeItem) -HttpxPath 'httpx.exe' -RawOutputPath $script:ScopeForgeContext.Layout.HttpxRaw -Threads 1 -TimeoutSeconds 10)
+        $batchLog = Get-Content -LiteralPath $script:ScopeForgeContext.Layout.HttpxBatchLog -Raw -Encoding utf8
+
+        if ($liveTargets.Count -ne 1) { throw 'Expected the direct stdio retry to recover one retained live target.' }
+        if ($liveTargets[0].Url -ne 'https://app.example.com/api/profile') { throw 'Expected the recovered target URL to come from the direct stdio retry.' }
+        if ($liveTargets[0].Title -ne 'Profile API') { throw 'Expected the recovered target title to be preserved.' }
+        if ($liveTargets[0].Technologies.Count -ne 2) { throw 'Expected the recovered technologies to be preserved.' }
+        if ($batchLog -notlike '*BATCH|index=1/1|input=1|stdout_lines=1|exit=0*') {
+            throw ("Expected the batch log to reflect the recovered stdout line. Actual log: {0}" -f $batchLog)
+        }
+    }
 }
