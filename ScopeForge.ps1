@@ -4272,6 +4272,19 @@ function Export-ReconReport {
         $triageNoiseFindings = ConvertTo-ArrayOrEmpty -Data @($triageData.NoiseFindings)
         $triageReviewableFindings = ConvertTo-ArrayOrEmpty -Data @($triageData.ReviewableFindings)
         $triageShortlist = ConvertTo-ArrayOrEmpty -Data @($triageData.Shortlist)
+        $triageFilteredIndex = @{}
+        foreach ($finding in @($triageFilteredFindings)) {
+            if (-not $finding) { continue }
+            $findingReviewKey = [string](Get-ObjectValue -InputObject $finding -Names @('ReviewKey') -Default '')
+            if ([string]::IsNullOrWhiteSpace($findingReviewKey) -and -not [string]::IsNullOrWhiteSpace([string](Get-ObjectValue -InputObject $finding -Names @('Url') -Default ''))) {
+                $findingAnalysis = Get-ReviewUrlAnalysis -Url ([string](Get-ObjectValue -InputObject $finding -Names @('Url') -Default ''))
+                $findingReviewKey = [string]$findingAnalysis.ReviewKey
+            }
+            if ([string]::IsNullOrWhiteSpace($findingReviewKey)) { continue }
+            if (-not $triageFilteredIndex.ContainsKey($findingReviewKey)) {
+                $triageFilteredIndex[$findingReviewKey] = $finding
+            }
+        }
 
         Write-JsonFile -Path $Layout.FilteredUrlsJson -Data $triageFilteredFindings
         Write-JsonFile -Path $Layout.NoiseUrlsJson -Data $triageNoiseFindings
@@ -4314,6 +4327,9 @@ function Export-ReconReport {
                 foreach ($item in $baselineReachableTargets) {
                     $itemContentType = [string](Get-ObjectValue -InputObject $item -Names @('ContentType', 'content-type', 'content_type') -Default '')
                     $itemWebServer = [string](Get-ObjectValue -InputObject $item -Names @('WebServer', 'webserver', 'web_server') -Default '')
+                    $baselineAnalysis = Get-ReviewUrlAnalysis -Url ([string]$item.Url) -ContentType $itemContentType -StatusCode ([int]$item.StatusCode)
+                    $baselineFinding = if ($triageFilteredIndex.ContainsKey([string]$baselineAnalysis.ReviewKey)) { $triageFilteredIndex[[string]$baselineAnalysis.ReviewKey] } else { $null }
+                    $baselineState = if ($baselineFinding) { [string](Get-ObjectValue -InputObject $baselineFinding -Names @('StateStatus') -Default '') } else { '' }
                     $shortlistLines.Add(('### [Baseline/{0}] {1}' -f $item.StatusCode, $item.Url)) | Out-Null
                     if ($item.Title) {
                         $shortlistLines.Add(('- Title: {0}' -f $item.Title)) | Out-Null
@@ -4326,6 +4342,9 @@ function Export-ReconReport {
                     }
                     if ($item.Technologies -and $item.Technologies.Count -gt 0) {
                         $shortlistLines.Add(('- Technologies: {0}' -f (($item.Technologies | ForEach-Object { [string]$_ }) -join ', '))) | Out-Null
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($baselineState)) {
+                        $shortlistLines.Add(('- State: {0}' -f $baselineState)) | Out-Null
                     }
                     $shortlistLines.Add('- Reason: Reachable baseline target retained even though no scored shortlist findings were produced.') | Out-Null
                     $shortlistLines.Add('') | Out-Null
@@ -4691,12 +4710,13 @@ function Export-ReconReport {
             $priorityClass = Get-PriorityClass -Priority ([string]$item.Priority)
             $tenantLabel = Get-OAuthTenantLabel -Finding $item
             $tenantChip = if ($tenantLabel) { "<span class=""chip tenant-chip mono"">$(ConvertTo-HtmlSafe $tenantLabel)</span>" } else { '' }
+            $stateChip = if ($item.StateStatus -and [string]$item.StateStatus -ne 'new') { "<span class=""chip muted-chip"">State: $(ConvertTo-HtmlSafe ([string]$item.StateStatus))</span>" } else { '' }
             $categoryChips = if (@($item.Categories).Count -gt 0) {
                 (@($item.Categories) | ForEach-Object { "<span class=""chip"">$(ConvertTo-HtmlSafe ([string]$_))</span>" }) -join ' '
             } else {
                 '<span class="chip muted-chip">General</span>'
             }
-            "<article class=""shortlist-card"" data-search-card=""true"" data-search=""$(ConvertTo-HtmlSafe ($item.Priority + ' ' + $item.Score + ' ' + $item.Url + ' ' + $item.PrimaryFamily + ' ' + ($item.Categories -join ' ') + ' ' + ($item.Reasons -join ' ')))""><div class=""shortlist-topline""><span class=""priority-badge $priorityClass"">$(ConvertTo-HtmlSafe ([string]$item.Priority))</span><span class=""score-pill mono"">Score $($item.Score)</span><span class=""family-pill mono"">$(ConvertTo-HtmlSafe ([string]$item.PrimaryFamily))</span>$(Get-StatusBadgeHtml -StatusCode $item.StatusCode)$tenantChip</div>$(Get-HtmlUrlCell -Url ([string]$item.Url))<div class=""chip-row"">$categoryChips</div><div class=""reason-copy"">$(ConvertTo-HtmlSafe ((@($item.Reasons) | ForEach-Object { [string]$_ }) -join '; '))</div></article>"
+            "<article class=""shortlist-card"" data-search-card=""true"" data-search=""$(ConvertTo-HtmlSafe ($item.Priority + ' ' + $item.Score + ' ' + $item.Url + ' ' + $item.PrimaryFamily + ' ' + ($item.Categories -join ' ') + ' ' + ($item.Reasons -join ' ') + ' ' + [string]$item.StateStatus))""><div class=""shortlist-topline""><span class=""priority-badge $priorityClass"">$(ConvertTo-HtmlSafe ([string]$item.Priority))</span><span class=""score-pill mono"">Score $($item.Score)</span><span class=""family-pill mono"">$(ConvertTo-HtmlSafe ([string]$item.PrimaryFamily))</span>$(Get-StatusBadgeHtml -StatusCode $item.StatusCode)$tenantChip</div>$(Get-HtmlUrlCell -Url ([string]$item.Url))<div class=""chip-row"">$categoryChips $stateChip</div><div class=""reason-copy"">$(ConvertTo-HtmlSafe ((@($item.Reasons) | ForEach-Object { [string]$_ }) -join '; '))</div></article>"
         }
     ) -join [Environment]::NewLine
     if ([string]::IsNullOrWhiteSpace($shortlistCardsHtml) -and @($shortlistFallbackTargets).Count -gt 0) {
@@ -4706,12 +4726,17 @@ function Export-ReconReport {
                 $detailParts = [System.Collections.Generic.List[string]]::new()
                 $itemContentType = [string](Get-ObjectValue -InputObject $item -Names @('ContentType', 'content-type', 'content_type') -Default '')
                 $itemWebServer = [string](Get-ObjectValue -InputObject $item -Names @('WebServer', 'webserver', 'web_server') -Default '')
+                $baselineAnalysis = Get-ReviewUrlAnalysis -Url ([string]$item.Url) -ContentType $itemContentType -StatusCode ([int]$item.StatusCode)
+                $baselineFinding = if ($triageFilteredIndex.ContainsKey([string]$baselineAnalysis.ReviewKey)) { $triageFilteredIndex[[string]$baselineAnalysis.ReviewKey] } else { $null }
+                $baselineState = if ($baselineFinding) { [string](Get-ObjectValue -InputObject $baselineFinding -Names @('StateStatus') -Default '') } else { '' }
                 if ($item.Title) { $detailParts.Add(("Title: {0}" -f [string]$item.Title)) | Out-Null }
                 if ($itemContentType) { $detailParts.Add(("Content-Type: {0}" -f $itemContentType)) | Out-Null }
                 if ($itemWebServer) { $detailParts.Add(("Web server: {0}" -f $itemWebServer)) | Out-Null }
                 if ($item.Technologies -and $item.Technologies.Count -gt 0) { $detailParts.Add(("Technologies: {0}" -f ((@($item.Technologies) | ForEach-Object { [string]$_ }) -join ', '))) | Out-Null }
+                if (-not [string]::IsNullOrWhiteSpace($baselineState)) { $detailParts.Add(("State: {0}" -f $baselineState)) | Out-Null }
                 $detailText = if ($detailParts.Count -gt 0) { $detailParts -join ' | ' } else { 'Reachable baseline target retained for manual review.' }
-                "<article class=""shortlist-card"" data-search-card=""true"" data-search=""$(ConvertTo-HtmlSafe ('baseline reachable ' + $item.StatusCode + ' ' + $item.Url + ' ' + $item.Title + ' ' + ($item.Technologies -join ' ')))""><div class=""shortlist-topline""><span class=""priority-badge priority-low"">Baseline</span><span class=""score-pill mono"">HTTP $($item.StatusCode)</span><span class=""family-pill mono"">Reachable</span>$(Get-StatusBadgeHtml -StatusCode $item.StatusCode)</div>$(Get-HtmlUrlCell -Url ([string]$item.Url))<div class=""chip-row""><span class=""chip muted-chip"">Retained live target</span></div><div class=""reason-copy"">$(ConvertTo-HtmlSafe $detailText)</div></article>"
+                $stateChip = if (-not [string]::IsNullOrWhiteSpace($baselineState) -and $baselineState -ne 'new') { "<span class=""chip muted-chip"">State: $(ConvertTo-HtmlSafe $baselineState)</span>" } else { '' }
+                "<article class=""shortlist-card"" data-search-card=""true"" data-search=""$(ConvertTo-HtmlSafe ('baseline reachable ' + $item.StatusCode + ' ' + $item.Url + ' ' + $item.Title + ' ' + ($item.Technologies -join ' ') + ' ' + $baselineState))""><div class=""shortlist-topline""><span class=""priority-badge priority-low"">Baseline</span><span class=""score-pill mono"">HTTP $($item.StatusCode)</span><span class=""family-pill mono"">Reachable</span>$(Get-StatusBadgeHtml -StatusCode $item.StatusCode)</div>$(Get-HtmlUrlCell -Url ([string]$item.Url))<div class=""chip-row""><span class=""chip muted-chip"">Retained live target</span>$stateChip</div><div class=""reason-copy"">$(ConvertTo-HtmlSafe $detailText)</div></article>"
             }
         ) -join [Environment]::NewLine
     }
