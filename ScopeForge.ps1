@@ -609,6 +609,8 @@ function Get-OutputLayout {
         SuggestedAreasCsv    = Join-Path (Join-Path $root 'normalized') 'suggested_areas.csv'
         ActionQueueJson      = Join-Path (Join-Path $root 'normalized') 'action_queue.json'
         ActionQueueCsv       = Join-Path (Join-Path $root 'normalized') 'action_queue.csv'
+        ContentSignalsJson   = Join-Path (Join-Path $root 'normalized') 'content_signals.json'
+        ContentSignalsCsv    = Join-Path (Join-Path $root 'normalized') 'content_signals.csv'
         InterestingFamiliesJson = Join-Path (Join-Path $root 'normalized') 'interesting_families.json'
         EndpointsUniqueTxt   = Join-Path (Join-Path $root 'normalized') 'endpoints_unique.txt'
         SummaryJson          = Join-Path (Join-Path $root 'reports') 'summary.json'
@@ -4300,6 +4302,8 @@ function Export-ReconReport {
     }
 
     $displayedShortlistForExport = @()
+    $triageFilteredFindings = @()
+    $triageReviewableFindings = @()
     $triageData = if ($script:ScopeForgeContext) { $script:ScopeForgeContext.Triage } else { $null }
     if ($triageData) {
         $triageFilteredFindings = ConvertTo-ArrayOrEmpty -Data @($triageData.FilteredFindings)
@@ -4486,6 +4490,148 @@ function Export-ReconReport {
     Write-JsonFile -Path $Layout.ActionQueueJson -Data @($actionQueue)
     if ($ExportCsv) {
         Export-FlatCsv -Path $Layout.ActionQueueCsv -Rows @($actionQueue)
+    }
+
+    $contentSignals = [System.Collections.Generic.List[object]]::new()
+    $contentSignalSeen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $displayedShortlistIndex = @{}
+    foreach ($item in @($displayedShortlistForExport)) {
+        $reviewKey = [string](Get-ObjectValue -InputObject $item -Names @('ReviewKey') -Default '')
+        if ([string]::IsNullOrWhiteSpace($reviewKey) -and -not [string]::IsNullOrWhiteSpace([string](Get-ObjectValue -InputObject $item -Names @('Url') -Default ''))) {
+            $reviewKey = [string](Get-ReviewUrlAnalysis -Url ([string](Get-ObjectValue -InputObject $item -Names @('Url') -Default '')) -StatusCode ([int](Get-ObjectValue -InputObject $item -Names @('StatusCode') -Default 0))).ReviewKey
+        }
+        if ([string]::IsNullOrWhiteSpace($reviewKey)) { continue }
+        if (-not $displayedShortlistIndex.ContainsKey($reviewKey)) {
+            $displayedShortlistIndex[$reviewKey] = $item
+        }
+    }
+    $liveTargetIndex = @{}
+    foreach ($liveTarget in @($LiveTargets)) {
+        if (-not $liveTarget -or [string]::IsNullOrWhiteSpace([string](Get-ObjectValue -InputObject $liveTarget -Names @('Url') -Default ''))) { continue }
+        $liveReviewKey = [string](Get-ReviewUrlAnalysis -Url ([string](Get-ObjectValue -InputObject $liveTarget -Names @('Url') -Default '')) -StatusCode ([int](Get-ObjectValue -InputObject $liveTarget -Names @('StatusCode') -Default 0))).ReviewKey
+        if ([string]::IsNullOrWhiteSpace($liveReviewKey)) { continue }
+        if (-not $liveTargetIndex.ContainsKey($liveReviewKey)) {
+            $liveTargetIndex[$liveReviewKey] = $liveTarget
+        }
+    }
+
+    $contentSignalCandidates = [System.Collections.Generic.List[object]]::new()
+    foreach ($item in @($displayedShortlistForExport)) {
+        $contentSignalCandidates.Add($item) | Out-Null
+    }
+    foreach ($item in @($triageReviewableFindings)) {
+        $contentSignalCandidates.Add($item) | Out-Null
+    }
+    foreach ($item in @($triageFilteredFindings | Where-Object { [int](Get-ObjectValue -InputObject $_ -Names @('StatusCode') -Default 0) -notin $deadStatusCodes })) {
+        $contentSignalCandidates.Add($item) | Out-Null
+    }
+
+    foreach ($item in @($contentSignalCandidates)) {
+        $reviewKey = [string](Get-ObjectValue -InputObject $item -Names @('ReviewKey') -Default '')
+        if ([string]::IsNullOrWhiteSpace($reviewKey) -and -not [string]::IsNullOrWhiteSpace([string](Get-ObjectValue -InputObject $item -Names @('Url') -Default ''))) {
+            $reviewKey = [string](Get-ReviewUrlAnalysis -Url ([string](Get-ObjectValue -InputObject $item -Names @('Url') -Default '')) -StatusCode ([int](Get-ObjectValue -InputObject $item -Names @('StatusCode') -Default 0))).ReviewKey
+        }
+        if ([string]::IsNullOrWhiteSpace($reviewKey)) { continue }
+        if (-not $contentSignalSeen.Add($reviewKey)) { continue }
+
+        $displayedEntry = if ($displayedShortlistIndex.ContainsKey($reviewKey)) { $displayedShortlistIndex[$reviewKey] } else { $null }
+        $liveMatch = if ($liveTargetIndex.ContainsKey($reviewKey)) { $liveTargetIndex[$reviewKey] } else { $null }
+        $url = [string](Get-ObjectValue -InputObject $item -Names @('Url') -Default '')
+        $statusCode = [int](Get-ObjectValue -InputObject $item -Names @('StatusCode') -Default 0)
+        $title = [string](Get-ObjectValue -InputObject $item -Names @('Title') -Default '')
+        if ([string]::IsNullOrWhiteSpace($title) -and $liveMatch) {
+            $title = [string](Get-ObjectValue -InputObject $liveMatch -Names @('Title') -Default '')
+        }
+        $contentType = [string](Get-ObjectValue -InputObject $item -Names @('ContentType') -Default '')
+        if ([string]::IsNullOrWhiteSpace($contentType) -and $liveMatch) {
+            $contentType = [string](Get-ObjectValue -InputObject $liveMatch -Names @('ContentType', 'content-type', 'content_type') -Default '')
+        }
+        $webServer = [string](Get-ObjectValue -InputObject $item -Names @('WebServer', 'webserver', 'web_server') -Default '')
+        if ([string]::IsNullOrWhiteSpace($webServer) -and $liveMatch) {
+            $webServer = [string](Get-ObjectValue -InputObject $liveMatch -Names @('WebServer', 'webserver', 'web_server') -Default '')
+        }
+        $techRaw = Get-ObjectValue -InputObject $item -Names @('Technologies', 'tech', 'technologies') -Default @()
+        $technologies = if ($techRaw -is [System.Collections.IEnumerable] -and $techRaw -isnot [string]) {
+            @($techRaw | ForEach-Object { [string]$_ } | Where-Object { $_ } | Sort-Object -Unique)
+        } elseif ($techRaw) {
+            @([string]$techRaw)
+        } elseif ($liveMatch) {
+            @((Get-ObjectValue -InputObject $liveMatch -Names @('Technologies', 'tech', 'technologies') -Default @()) | ForEach-Object { [string]$_ } | Where-Object { $_ } | Sort-Object -Unique)
+        } else {
+            @()
+        }
+        $parameters = @((Get-ObjectValue -InputObject $item -Names @('Parameters') -Default @()) | ForEach-Object { [string]$_ } | Where-Object { $_ } | Sort-Object -Unique)
+        $categories = @((Get-ObjectValue -InputObject $item -Names @('Categories') -Default @()) | ForEach-Object { [string]$_ } | Where-Object { $_ } | Sort-Object -Unique)
+        $reasons = @((Get-ObjectValue -InputObject $item -Names @('Reasons') -Default @()) | ForEach-Object { [string]$_ } | Where-Object { $_ } | Select-Object -Unique)
+        $stateStatus = [string](Get-ObjectValue -InputObject $item -Names @('StateStatus') -Default '')
+        if ([string]::IsNullOrWhiteSpace($stateStatus) -and $displayedEntry) {
+            $stateStatus = [string](Get-ObjectValue -InputObject $displayedEntry -Names @('StateStatus') -Default '')
+        }
+
+        $signalTags = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        if ($displayedEntry) {
+            $null = $signalTags.Add('displayed-shortlist')
+            if ([string](Get-ObjectValue -InputObject $displayedEntry -Names @('DisplayKind') -Default '') -eq 'Baseline') {
+                $null = $signalTags.Add('baseline-shortlist')
+            }
+        }
+        if ($statusCode -notin $deadStatusCodes) { $null = $signalTags.Add('reachable') }
+        if ($statusCode -in 401, 403) { $null = $signalTags.Add('protected') }
+        if (-not [string]::IsNullOrWhiteSpace($title)) { $null = $signalTags.Add('title-present') }
+        if (-not [string]::IsNullOrWhiteSpace($contentType)) { $null = $signalTags.Add('content-type-known') }
+        if ([string]$contentType -match '(?i)\b(?:application|text)/(?:problem\+)?json\b') { $null = $signalTags.Add('json-response') }
+        if (-not [string]::IsNullOrWhiteSpace($webServer)) { $null = $signalTags.Add('known-web-server') }
+        if (@($technologies).Count -gt 0) { $null = $signalTags.Add('technology-stack') }
+        if (@($parameters).Count -gt 0) { $null = $signalTags.Add('query-parameters') }
+        if (@($categories).Count -gt 0) { $null = $signalTags.Add('triage-categories') }
+        if (@($reasons).Count -gt 0) { $null = $signalTags.Add('triage-reasons') }
+        if (-not [string]::IsNullOrWhiteSpace($stateStatus) -and $stateStatus -ne 'new') { $null = $signalTags.Add('triage-state-known') }
+
+        $signalStrength = if ($signalTags.Contains('displayed-shortlist') -or $signalTags.Contains('protected') -or $signalTags.Contains('json-response') -or $signalTags.Contains('query-parameters') -or $signalTags.Contains('triage-categories')) {
+            'High'
+        } elseif ($signalTags.Count -ge 3) {
+            'Medium'
+        } else {
+            'Low'
+        }
+
+        $suggestedAction = if ($displayedEntry -and [string](Get-ObjectValue -InputObject $displayedEntry -Names @('DisplayKind') -Default '') -eq 'Baseline') {
+            'Open the retained reachable target first and validate title, content-type, technologies, and existing triage state.'
+        } elseif ($displayedEntry) {
+            'Start with this displayed shortlist target and validate the surfaced reasons first.'
+        } elseif ($statusCode -in 401, 403) {
+            'Review the protected endpoint and verify access-control behavior before broadening the run.'
+        } elseif ([string]$contentType -match '(?i)\b(?:application|text)/(?:problem\+)?json\b') {
+            'Inspect the JSON surface remotely and confirm whether it exposes API, schema, or application state.'
+        } else {
+            'Review this retained passive signal remotely before broadening the run.'
+        }
+
+        $contentSignals.Add([pscustomobject]@{
+                Url             = $url
+                ReviewKey       = $reviewKey
+                Host            = [string](Get-ObjectValue -InputObject $item -Names @('Host') -Default '')
+                StatusCode      = $statusCode
+                StateStatus     = $stateStatus
+                Source          = [string](Get-ObjectValue -InputObject $item -Names @('Source') -Default '')
+                DisplayKind     = $(if ($displayedEntry) { [string](Get-ObjectValue -InputObject $displayedEntry -Names @('DisplayKind') -Default '') } else { '' })
+                SignalStrength  = $signalStrength
+                SignalCount     = $signalTags.Count
+                SignalTags      = @($signalTags | Sort-Object)
+                PrimaryFamily   = [string](Get-ObjectValue -InputObject $item -Names @('PrimaryFamily') -Default '')
+                Categories      = @($categories)
+                Reasons         = @($reasons)
+                Title           = $title
+                ContentType     = $contentType
+                WebServer       = $webServer
+                Technologies    = @($technologies)
+                Parameters      = @($parameters)
+                SuggestedAction = $suggestedAction
+            }) | Out-Null
+    }
+    Write-JsonFile -Path $Layout.ContentSignalsJson -Data @($contentSignals)
+    if ($ExportCsv) {
+        Export-FlatCsv -Path $Layout.ContentSignalsCsv -Rows @($contentSignals)
     }
 
     $interestingFamilies = Get-InterestingFamilySummary -InterestingUrls $InterestingUrls

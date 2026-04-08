@@ -902,6 +902,11 @@ Describe 'ScopeForge HTML report segmentation' {
                 $actionQueueJson = @(Get-Content -LiteralPath $layout.ActionQueueJson -Raw -Encoding utf8 | ConvertFrom-Json -Depth 100)
             }
             $actionQueueCsv = Get-Content -LiteralPath $layout.ActionQueueCsv -Raw -Encoding utf8
+            $contentSignalsJson = @()
+            if (Test-Path -LiteralPath $layout.ContentSignalsJson) {
+                $contentSignalsJson = @(Get-Content -LiteralPath $layout.ContentSignalsJson -Raw -Encoding utf8 | ConvertFrom-Json -Depth 100)
+            }
+            $contentSignalsCsv = Get-Content -LiteralPath $layout.ContentSignalsCsv -Raw -Encoding utf8
         } finally {
             $script:ScopeForgeContext = $null
         }
@@ -935,6 +940,14 @@ Describe 'ScopeForge HTML report segmentation' {
         if ($actionQueueJson[1].EntryType -ne 'Suggestion' -or $actionQueueJson[1].Label -ne 'Baseline reachable targets') { throw 'Expected the second action queue entry to preserve the baseline suggested area.' }
         if ($actionQueueCsv -notlike '*Baseline reachable target*') { throw 'Expected the action queue CSV to preserve the baseline target entry.' }
         if ($actionQueueCsv -notlike '*Baseline reachable targets*') { throw 'Expected the action queue CSV to preserve the suggested area entry.' }
+        if ($contentSignalsJson.Count -ne 1) { throw 'Expected one structured content signal export entry for the retained reachable target.' }
+        if ($contentSignalsJson[0].SignalStrength -ne 'High') { throw 'Expected the retained reachable baseline signal to be classified as high-value for remote triage.' }
+        if ($contentSignalsJson[0].DisplayKind -ne 'Baseline') { throw 'Expected the content signal export to preserve the displayed baseline kind.' }
+        if (@($contentSignalsJson[0].SignalTags) -notcontains 'displayed-shortlist') { throw 'Expected the content signal export to preserve the displayed-shortlist tag.' }
+        if (@($contentSignalsJson[0].SignalTags) -notcontains 'technology-stack') { throw 'Expected the content signal export to preserve the technology-stack tag.' }
+        if (@($contentSignalsJson[0].SignalTags) -notcontains 'triage-state-known') { throw 'Expected the content signal export to preserve the triage-state-known tag.' }
+        if ($contentSignalsCsv -notlike '*displayed-shortlist*') { throw 'Expected the content signal CSV to preserve the displayed-shortlist signal tag.' }
+        if ($contentSignalsCsv -notlike '*technology-stack*') { throw 'Expected the content signal CSV to preserve the technology-stack signal tag.' }
     }
 }
 
