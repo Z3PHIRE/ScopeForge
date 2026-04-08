@@ -892,6 +892,11 @@ Describe 'ScopeForge HTML report segmentation' {
                 $displayedShortlistJson = @(Get-Content -LiteralPath $layout.DisplayedShortlistJson -Raw -Encoding utf8 | ConvertFrom-Json -Depth 100)
             }
             $displayedShortlistCsv = Get-Content -LiteralPath $layout.DisplayedShortlistCsv -Raw -Encoding utf8
+            $suggestedAreasJson = @()
+            if (Test-Path -LiteralPath $layout.SuggestedAreasJson) {
+                $suggestedAreasJson = @(Get-Content -LiteralPath $layout.SuggestedAreasJson -Raw -Encoding utf8 | ConvertFrom-Json -Depth 100)
+            }
+            $suggestedAreasCsv = Get-Content -LiteralPath $layout.SuggestedAreasCsv -Raw -Encoding utf8
         } finally {
             $script:ScopeForgeContext = $null
         }
@@ -916,6 +921,9 @@ Describe 'ScopeForge HTML report segmentation' {
         if ($displayedShortlistJson[0].StateStatus -ne 'seen-before') { throw 'Expected the displayed shortlist export to preserve the baseline triage state.' }
         if ($displayedShortlistCsv -notlike '*Baseline*') { throw 'Expected the displayed shortlist CSV to label the baseline entry.' }
         if ($displayedShortlistCsv -notlike '*seen-before*') { throw 'Expected the displayed shortlist CSV to preserve the baseline triage state.' }
+        if ($suggestedAreasJson.Count -ne 1) { throw 'Expected a single structured suggested review area export entry.' }
+        if ($suggestedAreasJson[0].Area -ne 'Baseline reachable targets') { throw 'Expected the structured suggested review area export to preserve the baseline reachable guidance.' }
+        if ($suggestedAreasCsv -notlike '*Baseline reachable targets*') { throw 'Expected the structured suggested review area CSV to preserve the baseline reachable guidance.' }
     }
 }
 

@@ -605,6 +605,8 @@ function Get-OutputLayout {
         ShortlistJson        = Join-Path (Join-Path $root 'normalized') 'shortlist.json'
         DisplayedShortlistJson = Join-Path (Join-Path $root 'normalized') 'displayed_shortlist.json'
         DisplayedShortlistCsv = Join-Path (Join-Path $root 'normalized') 'displayed_shortlist.csv'
+        SuggestedAreasJson   = Join-Path (Join-Path $root 'normalized') 'suggested_areas.json'
+        SuggestedAreasCsv    = Join-Path (Join-Path $root 'normalized') 'suggested_areas.csv'
         InterestingFamiliesJson = Join-Path (Join-Path $root 'normalized') 'interesting_families.json'
         EndpointsUniqueTxt   = Join-Path (Join-Path $root 'normalized') 'endpoints_unique.txt'
         SummaryJson          = Join-Path (Join-Path $root 'reports') 'summary.json'
@@ -4289,6 +4291,12 @@ function Export-ReconReport {
         Export-FlatCsv -Path $Layout.InterestingUrlsCsv -Rows $InterestingUrls
     }
 
+    $suggestedAreas = @(Get-SuggestedReviewAreas -InterestingUrls $InterestingUrls -LiveTargets $LiveTargets -Errors $Errors)
+    Write-JsonFile -Path $Layout.SuggestedAreasJson -Data $suggestedAreas
+    if ($ExportCsv) {
+        Export-FlatCsv -Path $Layout.SuggestedAreasCsv -Rows $suggestedAreas
+    }
+
     $triageData = if ($script:ScopeForgeContext) { $script:ScopeForgeContext.Triage } else { $null }
     if ($triageData) {
         $triageFilteredFindings = ConvertTo-ArrayOrEmpty -Data @($triageData.FilteredFindings)
@@ -4672,7 +4680,7 @@ function Export-ReconReport {
     if ([string]::IsNullOrWhiteSpace($exclusionBars)) {
         $exclusionBars = '<div class="mini-row"><span>No exclusions recorded</span><strong>0</strong></div>'
     }
-    $suggestedAreaRows = ((Get-SuggestedReviewAreas -InterestingUrls $InterestingUrls -LiveTargets $LiveTargets -Errors $Errors) | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Area)</span><strong>$(ConvertTo-HtmlSafe $_.Reason)</strong></div>" }) -join [Environment]::NewLine
+    $suggestedAreaRows = ($suggestedAreas | ForEach-Object { "<div class=""mini-row""><span>$(ConvertTo-HtmlSafe $_.Area)</span><strong>$(ConvertTo-HtmlSafe $_.Reason)</strong></div>" }) -join [Environment]::NewLine
     $familyRows = ($interestingFamilies | Select-Object -First 100 | ForEach-Object {
         $priorityText = if ($_.Priorities) { ($_.Priorities | ForEach-Object { "{0}:{1}" -f $_.Priority, $_.Count }) -join ', ' } else { '' }
         $topUrlText = if ($_.TopUrls) {
@@ -4821,7 +4829,7 @@ function Export-ReconReport {
     $toolRows = Get-HtmlTableBodyOrEmpty -Rows $toolRows -ColumnCount 4 -Message 'No tool snapshot was persisted for this run.'
 
     $nextActionChecklistHtml = @(
-        foreach ($suggestion in (Get-SuggestedReviewAreas -InterestingUrls $InterestingUrls -LiveTargets $LiveTargets -Errors $Errors | Select-Object -First 6)) {
+        foreach ($suggestion in ($suggestedAreas | Select-Object -First 6)) {
             "<label class=""action-item""><input type=""checkbox"" /><span class=""action-copy""><span class=""action-title"">$(ConvertTo-HtmlSafe ([string]$suggestion.Area))</span><span class=""action-reason"">$(ConvertTo-HtmlSafe ([string]$suggestion.Reason))</span></span></label>"
         }
     ) -join [Environment]::NewLine
