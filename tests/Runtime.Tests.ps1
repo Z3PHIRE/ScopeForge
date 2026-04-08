@@ -908,6 +908,8 @@ Describe 'ScopeForge HTML report segmentation' {
             }
             $contentSignalsCsv = Get-Content -LiteralPath $layout.ContentSignalsCsv -Raw -Encoding utf8
             $remoteTriageBundle = Get-Content -LiteralPath $layout.RemoteTriageBundleJson -Raw -Encoding utf8 | ConvertFrom-Json -Depth 100
+            $runHealthJson = Get-Content -LiteralPath $layout.RunHealthJson -Raw -Encoding utf8 | ConvertFrom-Json -Depth 100
+            $runHealthCsv = Get-Content -LiteralPath $layout.RunHealthCsv -Raw -Encoding utf8
         } finally {
             $script:ScopeForgeContext = $null
         }
@@ -949,13 +951,24 @@ Describe 'ScopeForge HTML report segmentation' {
         if (@($contentSignalsJson[0].SignalTags) -notcontains 'triage-state-known') { throw 'Expected the content signal export to preserve the triage-state-known tag.' }
         if ($contentSignalsCsv -notlike '*displayed-shortlist*') { throw 'Expected the content signal CSV to preserve the displayed-shortlist signal tag.' }
         if ($contentSignalsCsv -notlike '*technology-stack*') { throw 'Expected the content signal CSV to preserve the technology-stack signal tag.' }
+        if ($runHealthJson.OverallStatus -ne 'Limited') { throw 'Expected the run health export to classify the baseline-only case as limited rather than degraded.' }
+        if (@($runHealthJson.Checks | Where-Object { $_.Check -eq 'TriageCoverage' -and $_.Status -eq 'Limited' }).Count -ne 1) { throw 'Expected the run health export to preserve the limited triage coverage check for the baseline-only case.' }
+        if ($runHealthCsv -notlike '*TriageCoverage*') { throw 'Expected the run health CSV to preserve the triage coverage check.' }
+        if ($runHealthCsv -notlike '*RemoteSupportArtifacts*') { throw 'Expected the run health CSV to preserve the remote support artifact check.' }
         if ($remoteTriageBundle.Summary.DisplayedShortlistCount -ne 1) { throw 'Expected the remote triage bundle to preserve the displayed shortlist count.' }
+        if ($remoteTriageBundle.PrimaryAction.Label -ne 'Baseline reachable target') { throw 'Expected the remote triage bundle to expose the primary baseline action directly.' }
+        if (@($remoteTriageBundle.ActionQueue).Count -ne 2) { throw 'Expected the remote triage bundle to expose the direct action queue view for remote consumers.' }
+        if (@($remoteTriageBundle.HighValueContentSignals).Count -ne 1) { throw 'Expected the remote triage bundle to expose the direct high-value content signals view.' }
+        if (@($remoteTriageBundle.ReachableTargets).Count -ne 1) { throw 'Expected the remote triage bundle to expose the direct reachable target snapshot.' }
+        if (@($remoteTriageBundle.RuntimeErrors).Count -ne 0) { throw 'Expected the remote triage bundle to expose an empty direct runtime error list in the clean baseline scenario.' }
+        if ($remoteTriageBundle.RunHealth.OverallStatus -ne 'Limited') { throw 'Expected the remote triage bundle to embed the run health status directly.' }
         if ($remoteTriageBundle.RemoteQueue.PrimaryAction.Label -ne 'Baseline reachable target') { throw 'Expected the remote triage bundle to preserve the primary baseline action.' }
         if (@($remoteTriageBundle.RemoteQueue.ActionQueue).Count -ne 2) { throw 'Expected the remote triage bundle to preserve the remote action queue entries.' }
         if (@($remoteTriageBundle.Signals.HighValue).Count -ne 1) { throw 'Expected the remote triage bundle to preserve the high-value content signals.' }
         if ($remoteTriageBundle.Signals.HighValue[0].DisplayKind -ne 'Baseline') { throw 'Expected the remote triage bundle to preserve the baseline content signal kind.' }
         if (@($remoteTriageBundle.Targets.Reachable).Count -ne 1) { throw 'Expected the remote triage bundle to preserve the reachable target snapshot.' }
         if ($remoteTriageBundle.Paths.ActionQueueJson -ne $layout.ActionQueueJson) { throw 'Expected the remote triage bundle to expose the action queue path for remote support.' }
+        if ($remoteTriageBundle.Paths.RunHealthJson -ne $layout.RunHealthJson) { throw 'Expected the remote triage bundle to expose the run health path for remote support.' }
     }
 }
 

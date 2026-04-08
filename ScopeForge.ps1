@@ -617,6 +617,8 @@ function Get-OutputLayout {
         SummaryCsv           = Join-Path (Join-Path $root 'reports') 'summary.csv'
         ReportHtml           = Join-Path (Join-Path $root 'reports') 'report.html'
         RemoteTriageBundleJson = Join-Path (Join-Path $root 'reports') 'remote_triage_bundle.json'
+        RunHealthJson        = Join-Path (Join-Path $root 'reports') 'run_health.json'
+        RunHealthCsv         = Join-Path (Join-Path $root 'reports') 'run_health.csv'
         RunManifestJson      = Join-Path (Join-Path $root 'reports') 'run-manifest.json'
         FrozenScopeJson      = Join-Path (Join-Path $root 'reports') 'scope-frozen.json'
         FrozenSettingsJson   = Join-Path (Join-Path $root 'reports') 'run-settings-frozen.json'
@@ -4704,6 +4706,113 @@ function Export-ReconReport {
             }
         }
     )
+    $runHealthChecks = [System.Collections.Generic.List[object]]::new()
+    function Add-RunHealthCheck {
+        param(
+            [Parameter(Mandatory)][string]$Check,
+            [Parameter(Mandatory)][string]$Status,
+            [Parameter(Mandatory)][string]$SummaryText,
+            [Parameter(Mandatory)][string]$Evidence,
+            [Parameter(Mandatory)][string]$RecommendedAction
+        )
+
+        $runHealthChecks.Add([pscustomobject]@{
+                Check             = $Check
+                Status            = $Status
+                Summary           = $SummaryText
+                Evidence          = $Evidence
+                RecommendedAction = $RecommendedAction
+            }) | Out-Null
+    }
+
+    if (@($remoteBundleErrors).Count -gt 0) {
+        Add-RunHealthCheck -Check 'RuntimeErrors' -Status 'Degraded' -SummaryText ("{0} runtime issue(s) were retained for this run." -f @($remoteBundleErrors).Count) -Evidence ("First error: {0}/{1}/{2}" -f [string](Get-ObjectValue -InputObject $remoteBundleErrors[0] -Names @('Phase') -Default ''), [string](Get-ObjectValue -InputObject $remoteBundleErrors[0] -Names @('Tool') -Default ''), [string](Get-ObjectValue -InputObject $remoteBundleErrors[0] -Names @('ErrorCode') -Default '')) -RecommendedAction ([string](Get-ObjectValue -InputObject $remoteBundleErrors[0] -Names @('Recommendation') -Default 'Inspect errors.log and tools.log before rerunning.'))
+    } else {
+        Add-RunHealthCheck -Check 'RuntimeErrors' -Status 'Healthy' -SummaryText 'No runtime errors were retained for this run.' -Evidence 'errors.log is empty or contains no retained runtime issues.' -RecommendedAction 'No remediation is required for runtime stability.'
+    }
+
+    $runHealthReachabilityAction = if ($remoteBundlePrimaryAction) {
+        [string](Get-ObjectValue -InputObject $remoteBundlePrimaryAction -Names @('SuggestedAction') -Default 'Open the first reachable target.')
+    } else {
+        'Open the first reachable target and confirm the retained HTTP context.'
+    }
+    if ($summaryReachableTargetCount -gt 0) {
+        Add-RunHealthCheck -Check 'Reachability' -Status 'Healthy' -SummaryText ("{0} reachable HTTP target(s) were retained." -f $summaryReachableTargetCount) -Evidence ("Reachable={0}; DeadOrUnstable={1}" -f $summaryReachableTargetCount, $summaryDeadOrUnstableTargetCount) -RecommendedAction $runHealthReachabilityAction
+    } else {
+        Add-RunHealthCheck -Check 'Reachability' -Status 'Degraded' -SummaryText 'No reachable HTTP targets were retained.' -Evidence ("Reachable={0}; DeadOrUnstable={1}" -f $summaryReachableTargetCount, $summaryDeadOrUnstableTargetCount) -RecommendedAction 'Recheck the scope, scheme handling, and timeouts before trusting downstream artifacts.'
+    }
+
+    $runHealthReviewableCount = if ($Summary.PSObject.Properties.Name -contains 'ReviewableUrlCount') { [int]$Summary.ReviewableUrlCount } else { 0 }
+    $runHealthDisplayedAction = if ($remoteBundlePrimaryAction) {
+        [string](Get-ObjectValue -InputObject $remoteBundlePrimaryAction -Names @('SuggestedAction') -Default 'Open the displayed baseline target first.')
+    } else {
+        'Open the displayed fallback target first and validate the retained passive signals.'
+    }
+    if ($summaryScoredShortlistCount -gt 0) {
+        Add-RunHealthCheck -Check 'TriageCoverage' -Status 'Healthy' -SummaryText ("{0} scored shortlist finding(s) are ready for review." -f $summaryScoredShortlistCount) -Evidence ("ScoredShortlist={0}; Reviewable={1}" -f $summaryScoredShortlistCount, $runHealthReviewableCount) -RecommendedAction 'Start with the scored shortlist entries first.'
+    } elseif ($summaryDisplayedShortlistCount -gt 0) {
+        Add-RunHealthCheck -Check 'TriageCoverage' -Status 'Limited' -SummaryText ("No scored shortlist findings were produced, but {0} displayed fallback target(s) remain reviewable." -f $summaryDisplayedShortlistCount) -Evidence ("DisplayedShortlist={0}; Reviewable={1}" -f $summaryDisplayedShortlistCount, $runHealthReviewableCount) -RecommendedAction $runHealthDisplayedAction
+    } else {
+        Add-RunHealthCheck -Check 'TriageCoverage' -Status 'Degraded' -SummaryText 'No scored shortlist or displayed fallback targets are available.' -Evidence ("ScoredShortlist={0}; DisplayedShortlist={1}" -f $summaryScoredShortlistCount, $summaryDisplayedShortlistCount) -RecommendedAction 'Inspect the report manually and consider rerunning with a richer preset or broader in-scope seed set.'
+    }
+
+    if (@($actionQueue).Count -gt 0 -and @($contentSignals).Count -gt 0 -and @($suggestedAreas).Count -gt 0) {
+        Add-RunHealthCheck -Check 'RemoteSupportArtifacts' -Status 'Healthy' -SummaryText 'Remote triage artifacts are ready and internally consistent.' -Evidence ("ActionQueue={0}; ContentSignals={1}; SuggestedAreas={2}" -f @($actionQueue).Count, @($contentSignals).Count, @($suggestedAreas).Count) -RecommendedAction 'Use remote_triage_bundle.json as the primary remote support entrypoint.'
+    } else {
+        Add-RunHealthCheck -Check 'RemoteSupportArtifacts' -Status 'Limited' -SummaryText 'Some remote triage artifacts are missing or sparse.' -Evidence ("ActionQueue={0}; ContentSignals={1}; SuggestedAreas={2}" -f @($actionQueue).Count, @($contentSignals).Count, @($suggestedAreas).Count) -RecommendedAction 'Regenerate the reports before relying on remote-only triage.'
+    }
+
+    if ($summaryDeadOrUnstableTargetCount -gt [Math]::Max(($summaryReachableTargetCount * 3), 5)) {
+        Add-RunHealthCheck -Check 'NoisePressure' -Status 'Limited' -SummaryText ("Dead or unstable targets dominate the retained HTTP set ({0} vs {1} reachable)." -f $summaryDeadOrUnstableTargetCount, $summaryReachableTargetCount) -Evidence ("DeadOrUnstable={0}; Reachable={1}" -f $summaryDeadOrUnstableTargetCount, $summaryReachableTargetCount) -RecommendedAction 'Keep the review focused on reachable targets and compare future runs for drift before widening the scope.'
+    } else {
+        Add-RunHealthCheck -Check 'NoisePressure' -Status 'Healthy' -SummaryText 'Dead or unstable targets remain bounded relative to the reachable set.' -Evidence ("DeadOrUnstable={0}; Reachable={1}" -f $summaryDeadOrUnstableTargetCount, $summaryReachableTargetCount) -RecommendedAction 'No remediation is required for noise pressure.'
+    }
+
+    $runHealthOverallStatus = if (@($runHealthChecks | Where-Object { $_.Status -eq 'Degraded' }).Count -gt 0) {
+        'Degraded'
+    } elseif (@($runHealthChecks | Where-Object { $_.Status -eq 'Limited' }).Count -gt 0) {
+        'Limited'
+    } else {
+        'Healthy'
+    }
+    $runHealthOverallSummary = switch ($runHealthOverallStatus) {
+        'Healthy' { 'The run completed cleanly with actionable remote triage artifacts.' }
+        'Limited' { 'The run completed cleanly, but findings coverage or noise pressure still limits fully automated triage.' }
+        default { 'The run requires follow-up before its remote triage artifacts can be trusted.' }
+    }
+    $runHealthRecommendedNextStep = if ($runHealthOverallStatus -eq 'Degraded' -and @($remoteBundleErrors).Count -gt 0) {
+        [string](Get-ObjectValue -InputObject $remoteBundleErrors[0] -Names @('Recommendation') -Default 'Inspect errors.log and tools.log before rerunning.')
+    } elseif ($remoteBundlePrimaryAction) {
+        [string](Get-ObjectValue -InputObject $remoteBundlePrimaryAction -Names @('SuggestedAction') -Default 'Open the first actionable target in the remote queue.')
+    } elseif (@($suggestedAreas).Count -gt 0) {
+        'Start with the first suggested review area in suggested_areas.json.'
+    } else {
+        'Inspect the HTML report and the remote triage bundle together before rerunning.'
+    }
+    $runHealthReport = [pscustomobject]@{
+        OverallStatus       = $runHealthOverallStatus
+        Summary             = $runHealthOverallSummary
+        RecommendedNextStep = $runHealthRecommendedNextStep
+        Checks              = @($runHealthChecks)
+    }
+    Write-JsonFile -Path $Layout.RunHealthJson -Data $runHealthReport
+    if ($ExportCsv) {
+        $runHealthCsvRows = @(
+            $runHealthChecks |
+            ForEach-Object {
+                [pscustomobject]@{
+                    OverallStatus       = $runHealthOverallStatus
+                    Check               = [string](Get-ObjectValue -InputObject $_ -Names @('Check') -Default '')
+                    Status              = [string](Get-ObjectValue -InputObject $_ -Names @('Status') -Default '')
+                    Summary             = [string](Get-ObjectValue -InputObject $_ -Names @('Summary') -Default '')
+                    Evidence            = [string](Get-ObjectValue -InputObject $_ -Names @('Evidence') -Default '')
+                    RecommendedAction   = [string](Get-ObjectValue -InputObject $_ -Names @('RecommendedAction') -Default '')
+                    RecommendedNextStep = $runHealthRecommendedNextStep
+                }
+            }
+        )
+        Export-FlatCsv -Path $Layout.RunHealthCsv -Rows $runHealthCsvRows
+    }
     $remoteTriageBundle = [pscustomobject]@{
         GeneratedAtUtc = $Summary.GeneratedAtUtc
         ProgramName    = $Summary.ProgramName
@@ -4722,11 +4831,23 @@ function Export-ReconReport {
             ErrorCount                = $Summary.ErrorCount
             SeenBeforeCount           = $(if ($Summary.PSObject.Properties.Name -contains 'SeenBeforeCount') { [int]$Summary.SeenBeforeCount } else { 0 })
         }
+        PrimaryAction  = $remoteBundlePrimaryAction
+        ActionQueue    = @($actionQueue | Select-Object -First 10)
+        SuggestedAreas = @($suggestedAreas | Select-Object -First 10)
+        DisplayedShortlist = @($displayedShortlistForExport | Select-Object -First 10)
+        HighValueContentSignals = @($remoteBundleHighSignals)
+        ReachableTargets = @($remoteBundleReachableTargets)
+        ProtectedTargets = @($remoteBundleProtectedTargets)
+        DeadOrUnstableTargets = @($remoteBundleDeadTargets)
+        RuntimeErrors  = @($remoteBundleErrors)
+        RunHealth      = $runHealthReport
         Paths          = [pscustomobject]@{
             ReportHtml            = $Layout.ReportHtml
             TriageMarkdown        = $Layout.TriageMarkdown
             ShortlistMarkdown     = $Layout.ShortlistMarkdown
             SummaryJson           = $Layout.SummaryJson
+            RunHealthJson         = $Layout.RunHealthJson
+            RunHealthCsv          = $Layout.RunHealthCsv
             ActionQueueJson       = $Layout.ActionQueueJson
             ContentSignalsJson    = $Layout.ContentSignalsJson
             DisplayedShortlistJson = $Layout.DisplayedShortlistJson
@@ -5608,6 +5729,7 @@ function Invoke-BugBountyRecon {
             Write-Host ('  Donnees norm.    : {0}' -f $layout.Normalized) -ForegroundColor Gray
             Write-Host ('  Rapport HTML     : {0}' -f $layout.ReportHtml) -ForegroundColor Gray
             Write-Host ('  Bundle remote    : {0}' -f $layout.RemoteTriageBundleJson) -ForegroundColor Gray
+            Write-Host ('  Sante run        : {0}' -f $layout.RunHealthJson) -ForegroundColor Gray
             Write-Host ('  Triage MD        : {0}' -f $layout.TriageMarkdown) -ForegroundColor Gray
             Write-Host ('  Shortlist MD     : {0}' -f $layout.ShortlistMarkdown) -ForegroundColor Gray
             Write-Host ('  Etat triage      : {0}' -f $script:ScopeForgeContext.TriageState.Path) -ForegroundColor Gray
