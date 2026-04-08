@@ -616,6 +616,7 @@ function Get-OutputLayout {
         SummaryJson          = Join-Path (Join-Path $root 'reports') 'summary.json'
         SummaryCsv           = Join-Path (Join-Path $root 'reports') 'summary.csv'
         ReportHtml           = Join-Path (Join-Path $root 'reports') 'report.html'
+        RemoteTriageBundleJson = Join-Path (Join-Path $root 'reports') 'remote_triage_bundle.json'
         RunManifestJson      = Join-Path (Join-Path $root 'reports') 'run-manifest.json'
         FrozenScopeJson      = Join-Path (Join-Path $root 'reports') 'scope-frozen.json'
         FrozenSettingsJson   = Join-Path (Join-Path $root 'reports') 'run-settings-frozen.json'
@@ -4640,6 +4641,119 @@ function Export-ReconReport {
     Write-JsonFile -Path $Layout.InterestingFamiliesJson -Data $interestingFamilies
     Export-TriageMarkdownReport -Summary $Summary -InterestingUrls $InterestingUrls -InterestingFamilies $interestingFamilies -LiveTargets $LiveTargets -Exclusions $Exclusions -Errors $Errors -Layout $Layout
 
+    $remoteBundlePrimaryAction = if (@($actionQueue).Count -gt 0) { $actionQueue[0] } else { $null }
+    $remoteBundleHighSignals = @(
+        $contentSignals |
+        Sort-Object -Property @{ Expression = { switch ([string]$_.SignalStrength) { 'High' { 0 } 'Medium' { 1 } default { 2 } } } }, @{ Expression = 'SignalCount'; Descending = $true }, Url |
+        Select-Object -First 15
+    )
+    $remoteBundleReachableTargets = @(
+        $LiveTargets |
+        Where-Object { [int](Get-ObjectValue -InputObject $_ -Names @('StatusCode') -Default 0) -notin $deadStatusCodes } |
+        Select-Object -First 10 |
+        ForEach-Object {
+            [pscustomobject]@{
+                Url          = [string](Get-ObjectValue -InputObject $_ -Names @('Url') -Default '')
+                Host         = [string](Get-ObjectValue -InputObject $_ -Names @('Host') -Default '')
+                StatusCode   = [int](Get-ObjectValue -InputObject $_ -Names @('StatusCode') -Default 0)
+                Title        = [string](Get-ObjectValue -InputObject $_ -Names @('Title') -Default '')
+                ContentType  = [string](Get-ObjectValue -InputObject $_ -Names @('ContentType', 'content-type', 'content_type') -Default '')
+                WebServer    = [string](Get-ObjectValue -InputObject $_ -Names @('WebServer', 'webserver', 'web_server') -Default '')
+                Technologies = @((Get-ObjectValue -InputObject $_ -Names @('Technologies', 'tech', 'technologies') -Default @()) | ForEach-Object { [string]$_ } | Where-Object { $_ } | Sort-Object -Unique)
+            }
+        }
+    )
+    $remoteBundleProtectedTargets = @(
+        $LiveTargets |
+        Where-Object { [int](Get-ObjectValue -InputObject $_ -Names @('StatusCode') -Default 0) -in 401, 403 } |
+        Select-Object -First 10 |
+        ForEach-Object {
+            [pscustomobject]@{
+                Url          = [string](Get-ObjectValue -InputObject $_ -Names @('Url') -Default '')
+                Host         = [string](Get-ObjectValue -InputObject $_ -Names @('Host') -Default '')
+                StatusCode   = [int](Get-ObjectValue -InputObject $_ -Names @('StatusCode') -Default 0)
+                Title        = [string](Get-ObjectValue -InputObject $_ -Names @('Title') -Default '')
+                ContentType  = [string](Get-ObjectValue -InputObject $_ -Names @('ContentType', 'content-type', 'content_type') -Default '')
+                Technologies = @((Get-ObjectValue -InputObject $_ -Names @('Technologies', 'tech', 'technologies') -Default @()) | ForEach-Object { [string]$_ } | Where-Object { $_ } | Sort-Object -Unique)
+            }
+        }
+    )
+    $remoteBundleDeadTargets = @(
+        $LiveTargets |
+        Where-Object { [int](Get-ObjectValue -InputObject $_ -Names @('StatusCode') -Default 0) -in $deadStatusCodes } |
+        Select-Object -First 10 |
+        ForEach-Object {
+            [pscustomobject]@{
+                Url        = [string](Get-ObjectValue -InputObject $_ -Names @('Url') -Default '')
+                Host       = [string](Get-ObjectValue -InputObject $_ -Names @('Host') -Default '')
+                StatusCode = [int](Get-ObjectValue -InputObject $_ -Names @('StatusCode') -Default 0)
+                Title      = [string](Get-ObjectValue -InputObject $_ -Names @('Title') -Default '')
+            }
+        }
+    )
+    $remoteBundleErrors = @(
+        $Errors |
+        Select-Object -First 20 |
+        ForEach-Object {
+            [pscustomobject]@{
+                Phase          = [string](Get-ObjectValue -InputObject $_ -Names @('Phase') -Default '')
+                Tool           = [string](Get-ObjectValue -InputObject $_ -Names @('Tool') -Default '')
+                ErrorCode      = [string](Get-ObjectValue -InputObject $_ -Names @('ErrorCode') -Default '')
+                Message        = [string](Get-ObjectValue -InputObject $_ -Names @('Message') -Default '')
+                Recommendation = Get-ErrorRecommendation -ErrorCode ([string](Get-ObjectValue -InputObject $_ -Names @('ErrorCode') -Default '')) -Tool ([string](Get-ObjectValue -InputObject $_ -Names @('Tool') -Default ''))
+            }
+        }
+    )
+    $remoteTriageBundle = [pscustomobject]@{
+        GeneratedAtUtc = $Summary.GeneratedAtUtc
+        ProgramName    = $Summary.ProgramName
+        OutputRoot     = $Layout.Root
+        Summary        = [pscustomobject]@{
+            ScopeItemCount            = $Summary.ScopeItemCount
+            DiscoveredHostCount       = $Summary.DiscoveredHostCount
+            LiveHostCount             = $Summary.LiveHostCount
+            LiveTargetCount           = $Summary.LiveTargetCount
+            ReachableTargetCount      = $summaryReachableTargetCount
+            DeadOrUnstableTargetCount = $summaryDeadOrUnstableTargetCount
+            InterestingUrlCount       = $Summary.InterestingUrlCount
+            ReviewableUrlCount        = $(if ($Summary.PSObject.Properties.Name -contains 'ReviewableUrlCount') { [int]$Summary.ReviewableUrlCount } else { 0 })
+            ShortlistCount            = $summaryScoredShortlistCount
+            DisplayedShortlistCount   = $summaryDisplayedShortlistCount
+            ErrorCount                = $Summary.ErrorCount
+            SeenBeforeCount           = $(if ($Summary.PSObject.Properties.Name -contains 'SeenBeforeCount') { [int]$Summary.SeenBeforeCount } else { 0 })
+        }
+        Paths          = [pscustomobject]@{
+            ReportHtml            = $Layout.ReportHtml
+            TriageMarkdown        = $Layout.TriageMarkdown
+            ShortlistMarkdown     = $Layout.ShortlistMarkdown
+            SummaryJson           = $Layout.SummaryJson
+            ActionQueueJson       = $Layout.ActionQueueJson
+            ContentSignalsJson    = $Layout.ContentSignalsJson
+            DisplayedShortlistJson = $Layout.DisplayedShortlistJson
+            SuggestedAreasJson    = $Layout.SuggestedAreasJson
+            MainLog               = $Layout.MainLog
+            ErrorsLog             = $Layout.ErrorsLog
+        }
+        RemoteQueue    = [pscustomobject]@{
+            PrimaryAction      = $remoteBundlePrimaryAction
+            ActionQueue        = @($actionQueue | Select-Object -First 10)
+            SuggestedAreas     = @($suggestedAreas | Select-Object -First 10)
+            DisplayedShortlist = @($displayedShortlistForExport | Select-Object -First 10)
+        }
+        Signals        = [pscustomobject]@{
+            HighValue                 = @($remoteBundleHighSignals)
+            ReachableTopTechnologies  = @($summaryReachableTopTechnologies)
+            InterestingFamilies       = @($interestingFamilies | Select-Object -First 10)
+        }
+        Targets        = [pscustomobject]@{
+            Reachable       = @($remoteBundleReachableTargets)
+            Protected       = @($remoteBundleProtectedTargets)
+            DeadOrUnstable  = @($remoteBundleDeadTargets)
+        }
+        Errors         = @($remoteBundleErrors)
+    }
+    Write-JsonFile -Path $Layout.RemoteTriageBundleJson -Data $remoteTriageBundle
+
     if (-not $ExportHtml) { return }
 
     function Get-HtmlTableBodyOrEmpty {
@@ -5493,6 +5607,7 @@ function Invoke-BugBountyRecon {
             Write-Host ('  Donnees brutes   : {0}' -f $layout.Raw) -ForegroundColor Gray
             Write-Host ('  Donnees norm.    : {0}' -f $layout.Normalized) -ForegroundColor Gray
             Write-Host ('  Rapport HTML     : {0}' -f $layout.ReportHtml) -ForegroundColor Gray
+            Write-Host ('  Bundle remote    : {0}' -f $layout.RemoteTriageBundleJson) -ForegroundColor Gray
             Write-Host ('  Triage MD        : {0}' -f $layout.TriageMarkdown) -ForegroundColor Gray
             Write-Host ('  Shortlist MD     : {0}' -f $layout.ShortlistMarkdown) -ForegroundColor Gray
             Write-Host ('  Etat triage      : {0}' -f $script:ScopeForgeContext.TriageState.Path) -ForegroundColor Gray

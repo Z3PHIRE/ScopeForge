@@ -907,6 +907,7 @@ Describe 'ScopeForge HTML report segmentation' {
                 $contentSignalsJson = @(Get-Content -LiteralPath $layout.ContentSignalsJson -Raw -Encoding utf8 | ConvertFrom-Json -Depth 100)
             }
             $contentSignalsCsv = Get-Content -LiteralPath $layout.ContentSignalsCsv -Raw -Encoding utf8
+            $remoteTriageBundle = Get-Content -LiteralPath $layout.RemoteTriageBundleJson -Raw -Encoding utf8 | ConvertFrom-Json -Depth 100
         } finally {
             $script:ScopeForgeContext = $null
         }
@@ -948,6 +949,13 @@ Describe 'ScopeForge HTML report segmentation' {
         if (@($contentSignalsJson[0].SignalTags) -notcontains 'triage-state-known') { throw 'Expected the content signal export to preserve the triage-state-known tag.' }
         if ($contentSignalsCsv -notlike '*displayed-shortlist*') { throw 'Expected the content signal CSV to preserve the displayed-shortlist signal tag.' }
         if ($contentSignalsCsv -notlike '*technology-stack*') { throw 'Expected the content signal CSV to preserve the technology-stack signal tag.' }
+        if ($remoteTriageBundle.Summary.DisplayedShortlistCount -ne 1) { throw 'Expected the remote triage bundle to preserve the displayed shortlist count.' }
+        if ($remoteTriageBundle.RemoteQueue.PrimaryAction.Label -ne 'Baseline reachable target') { throw 'Expected the remote triage bundle to preserve the primary baseline action.' }
+        if (@($remoteTriageBundle.RemoteQueue.ActionQueue).Count -ne 2) { throw 'Expected the remote triage bundle to preserve the remote action queue entries.' }
+        if (@($remoteTriageBundle.Signals.HighValue).Count -ne 1) { throw 'Expected the remote triage bundle to preserve the high-value content signals.' }
+        if ($remoteTriageBundle.Signals.HighValue[0].DisplayKind -ne 'Baseline') { throw 'Expected the remote triage bundle to preserve the baseline content signal kind.' }
+        if (@($remoteTriageBundle.Targets.Reachable).Count -ne 1) { throw 'Expected the remote triage bundle to preserve the reachable target snapshot.' }
+        if ($remoteTriageBundle.Paths.ActionQueueJson -ne $layout.ActionQueueJson) { throw 'Expected the remote triage bundle to expose the action queue path for remote support.' }
     }
 }
 
