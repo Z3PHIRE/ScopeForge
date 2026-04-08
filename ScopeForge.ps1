@@ -607,6 +607,8 @@ function Get-OutputLayout {
         DisplayedShortlistCsv = Join-Path (Join-Path $root 'normalized') 'displayed_shortlist.csv'
         SuggestedAreasJson   = Join-Path (Join-Path $root 'normalized') 'suggested_areas.json'
         SuggestedAreasCsv    = Join-Path (Join-Path $root 'normalized') 'suggested_areas.csv'
+        ActionQueueJson      = Join-Path (Join-Path $root 'normalized') 'action_queue.json'
+        ActionQueueCsv       = Join-Path (Join-Path $root 'normalized') 'action_queue.csv'
         InterestingFamiliesJson = Join-Path (Join-Path $root 'normalized') 'interesting_families.json'
         EndpointsUniqueTxt   = Join-Path (Join-Path $root 'normalized') 'endpoints_unique.txt'
         SummaryJson          = Join-Path (Join-Path $root 'reports') 'summary.json'
@@ -4297,6 +4299,7 @@ function Export-ReconReport {
         Export-FlatCsv -Path $Layout.SuggestedAreasCsv -Rows $suggestedAreas
     }
 
+    $displayedShortlistForExport = @()
     $triageData = if ($script:ScopeForgeContext) { $script:ScopeForgeContext.Triage } else { $null }
     if ($triageData) {
         $triageFilteredFindings = ConvertTo-ArrayOrEmpty -Data @($triageData.FilteredFindings)
@@ -4418,7 +4421,71 @@ function Export-ReconReport {
         if ($ExportCsv) {
             Export-FlatCsv -Path $Layout.DisplayedShortlistCsv -Rows @($displayedShortlist)
         }
+        $displayedShortlistForExport = @($displayedShortlist)
         Set-Content -LiteralPath $Layout.ShortlistMarkdown -Value $shortlistLines -Encoding utf8
+    }
+
+    $actionQueue = [System.Collections.Generic.List[object]]::new()
+    $actionRank = 1
+    foreach ($item in @($displayedShortlistForExport)) {
+        $displayKind = [string](Get-ObjectValue -InputObject $item -Names @('DisplayKind') -Default '')
+        $targetReason = [string](Get-ObjectValue -InputObject $item -Names @('DisplayedReason') -Default '')
+        if ([string]::IsNullOrWhiteSpace($targetReason)) {
+            $targetReason = ((Get-ObjectValue -InputObject $item -Names @('Reasons') -Default @()) | ForEach-Object { [string]$_ }) -join '; '
+        }
+        if ([string]::IsNullOrWhiteSpace($targetReason)) {
+            $targetReason = 'Review this target first.'
+        }
+        $actionQueue.Add([pscustomobject]@{
+                Rank            = $actionRank
+                EntryType       = 'Target'
+                Label           = $(if ($displayKind -eq 'Baseline') { 'Baseline reachable target' } else { 'Displayed shortlist target' })
+                Url             = [string](Get-ObjectValue -InputObject $item -Names @('Url') -Default '')
+                StatusCode      = [int](Get-ObjectValue -InputObject $item -Names @('StatusCode') -Default 0)
+                StateStatus     = [string](Get-ObjectValue -InputObject $item -Names @('StateStatus') -Default '')
+                Priority        = [string](Get-ObjectValue -InputObject $item -Names @('Priority') -Default '')
+                DisplayKind     = $displayKind
+                Source          = [string](Get-ObjectValue -InputObject $item -Names @('Source') -Default 'displayed-shortlist')
+                Reason          = $targetReason
+                SuggestedAction = $(if ($displayKind -eq 'Baseline') { 'Open the retained reachable target first and verify title, content-type, technologies, and stored triage state.' } else { 'Start with this displayed shortlist target and validate the surfaced reasons first.' })
+            }) | Out-Null
+        $actionRank++
+    }
+    foreach ($suggestion in @($suggestedAreas)) {
+        $actionQueue.Add([pscustomobject]@{
+                Rank            = $actionRank
+                EntryType       = 'Suggestion'
+                Label           = [string](Get-ObjectValue -InputObject $suggestion -Names @('Area') -Default '')
+                Url             = ''
+                StatusCode      = $null
+                StateStatus     = ''
+                Priority        = ''
+                DisplayKind     = ''
+                Source          = 'suggested-area'
+                Reason          = [string](Get-ObjectValue -InputObject $suggestion -Names @('Reason') -Default '')
+                SuggestedAction = 'Use this as the next review lane when triaging the run remotely.'
+            }) | Out-Null
+        $actionRank++
+    }
+    foreach ($error in @($Errors)) {
+        $actionQueue.Add([pscustomobject]@{
+                Rank            = $actionRank
+                EntryType       = 'Error'
+                Label           = $(if ([string](Get-ObjectValue -InputObject $error -Names @('Tool') -Default '')) { "Runtime error: $([string](Get-ObjectValue -InputObject $error -Names @('Tool') -Default ''))" } else { 'Runtime error' })
+                Url             = ''
+                StatusCode      = $null
+                StateStatus     = ''
+                Priority        = ''
+                DisplayKind     = ''
+                Source          = 'runtime-error'
+                Reason          = [string](Get-ObjectValue -InputObject $error -Names @('Message') -Default '')
+                SuggestedAction = Get-ErrorRecommendation -ErrorCode ([string](Get-ObjectValue -InputObject $error -Names @('ErrorCode') -Default '')) -Tool ([string](Get-ObjectValue -InputObject $error -Names @('Tool') -Default ''))
+            }) | Out-Null
+        $actionRank++
+    }
+    Write-JsonFile -Path $Layout.ActionQueueJson -Data @($actionQueue)
+    if ($ExportCsv) {
+        Export-FlatCsv -Path $Layout.ActionQueueCsv -Rows @($actionQueue)
     }
 
     $interestingFamilies = Get-InterestingFamilySummary -InterestingUrls $InterestingUrls

@@ -897,6 +897,11 @@ Describe 'ScopeForge HTML report segmentation' {
                 $suggestedAreasJson = @(Get-Content -LiteralPath $layout.SuggestedAreasJson -Raw -Encoding utf8 | ConvertFrom-Json -Depth 100)
             }
             $suggestedAreasCsv = Get-Content -LiteralPath $layout.SuggestedAreasCsv -Raw -Encoding utf8
+            $actionQueueJson = @()
+            if (Test-Path -LiteralPath $layout.ActionQueueJson) {
+                $actionQueueJson = @(Get-Content -LiteralPath $layout.ActionQueueJson -Raw -Encoding utf8 | ConvertFrom-Json -Depth 100)
+            }
+            $actionQueueCsv = Get-Content -LiteralPath $layout.ActionQueueCsv -Raw -Encoding utf8
         } finally {
             $script:ScopeForgeContext = $null
         }
@@ -924,6 +929,12 @@ Describe 'ScopeForge HTML report segmentation' {
         if ($suggestedAreasJson.Count -ne 1) { throw 'Expected a single structured suggested review area export entry.' }
         if ($suggestedAreasJson[0].Area -ne 'Baseline reachable targets') { throw 'Expected the structured suggested review area export to preserve the baseline reachable guidance.' }
         if ($suggestedAreasCsv -notlike '*Baseline reachable targets*') { throw 'Expected the structured suggested review area CSV to preserve the baseline reachable guidance.' }
+        if ($actionQueueJson.Count -ne 2) { throw 'Expected the structured action queue to include the baseline target and the matching suggested area.' }
+        if ($actionQueueJson[0].EntryType -ne 'Target' -or $actionQueueJson[0].DisplayKind -ne 'Baseline') { throw 'Expected the first action queue entry to be the displayed baseline target.' }
+        if ($actionQueueJson[0].StateStatus -ne 'seen-before') { throw 'Expected the action queue to preserve the displayed target triage state.' }
+        if ($actionQueueJson[1].EntryType -ne 'Suggestion' -or $actionQueueJson[1].Label -ne 'Baseline reachable targets') { throw 'Expected the second action queue entry to preserve the baseline suggested area.' }
+        if ($actionQueueCsv -notlike '*Baseline reachable target*') { throw 'Expected the action queue CSV to preserve the baseline target entry.' }
+        if ($actionQueueCsv -notlike '*Baseline reachable targets*') { throw 'Expected the action queue CSV to preserve the suggested area entry.' }
     }
 }
 
