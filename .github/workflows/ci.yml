@@ -5,7 +5,7 @@ on:
   pull_request:
 
 jobs:
-  pwsh:
+  parse:
     runs-on: windows-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -42,10 +42,37 @@ jobs:
             }
           }
 
+  pester:
+    needs: parse
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: bootstrap
+            file: .\tests\Bootstrap.Tests.ps1
+          - name: launcher
+            file: .\tests\Launcher.Tests.ps1
+          - name: reports
+            file: .\tests\Reports.Tests.ps1
+          - name: rerun
+            file: .\tests\Rerun.Tests.ps1
+          - name: runtime
+            file: .\tests\Runtime.Tests.ps1
+          - name: toolbootstrap
+            file: .\tests\ToolBootstrap.Tests.ps1
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Run Pester
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $WarningPreference = 'SilentlyContinue'
 
           # Install Pester 5.x for modern syntax support
           $installedPester = Get-Module -ListAvailable -Name Pester |
@@ -59,11 +86,11 @@ jobs:
           Import-Module Pester -MinimumVersion 5.0 -Force
 
           $config = New-PesterConfiguration
-          $config.Run.Path = '.\tests'
+          $config.Run.Path = '${{ matrix.file }}'
           $config.Run.PassThru = $true
-          $config.Output.Verbosity = 'Detailed'
+          $config.Output.Verbosity = 'Normal'
           $config.TestResult.Enabled = $true
-          $config.TestResult.OutputPath = '.\artifacts\pester\nunit.xml'
+          $config.TestResult.OutputPath = '.\artifacts\pester\${{ matrix.name }}.xml'
           $config.TestResult.OutputFormat = 'NUnitXml'
 
           if (-not (Test-Path -LiteralPath '.\artifacts\pester')) {
@@ -90,6 +117,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pester-results
-          path: .\artifacts\pester\nunit.xml
+          name: pester-results-${{ matrix.name }}
+          path: .\artifacts\pester\${{ matrix.name }}.xml
           if-no-files-found: ignore

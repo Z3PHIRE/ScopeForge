@@ -5233,7 +5233,10 @@ function Build-DocumentRunConfig {
                 New-LauncherConfigError -Field 'programName' -Value $programNameValue -Problem 'Doit etre renseigné.' -Example '"programName": "authorized-bugbounty"'
             }
 
-            $outputDirValue = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'outputDir' -Default (Get-LauncherDefaultOutputDir))
+            $outputDirValue = [string](Get-LauncherDocumentProperty -InputObject $settings -Name 'outputDir' -Default '')
+            if ([string]::IsNullOrWhiteSpace($outputDirValue)) {
+                $outputDirValue = Get-LauncherDefaultOutputDir
+            }
             if ([string]::IsNullOrWhiteSpace($outputDirValue)) {
                 New-LauncherConfigError -Field 'outputDir' -Value $outputDirValue -Problem 'Doit etre renseigné.' -Example '"outputDir": "./output"'
             }
