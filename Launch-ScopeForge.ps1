@@ -3167,6 +3167,97 @@ function Get-LauncherPlannedLogRoot {
     return (Join-Path (Join-Path ([System.IO.Path]::GetFullPath([string]$RunConfig.LauncherSessionRoot)) 'logs') $runId)
 }
 
+function Get-LauncherToolValidation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$RunConfig,
+        [AllowNull()][string]$ResolvedOutputDir = ''
+    )
+
+    $noInstall = ConvertTo-LauncherBoolean -Value $(if ($RunConfig.ContainsKey('NoInstall')) { $RunConfig['NoInstall'] } else { $false }) -Name 'NoInstall' -Default $false
+    $defaultResult = [pscustomobject]@{
+        Checked              = $false
+        IsReady              = $true
+        MissingRequiredTools = @()
+        MissingOptionalTools = @()
+        ToolsBin             = ''
+        Problem              = ''
+    }
+    if (-not $noInstall) {
+        return $defaultResult
+    }
+
+    if (-not (Get-Command -Name Get-OutputLayout -ErrorAction SilentlyContinue) -or -not (Get-Command -Name Resolve-ToolPath -ErrorAction SilentlyContinue)) {
+        return [pscustomobject]@{
+            Checked              = $true
+            IsReady              = $false
+            MissingRequiredTools = @()
+            MissingOptionalTools = @()
+            ToolsBin             = ''
+            Problem              = 'Les helpers de resolution des outils ScopeForge ne sont pas charges.'
+        }
+    }
+
+    $effectiveOutputDir = if (-not [string]::IsNullOrWhiteSpace($ResolvedOutputDir)) {
+        $ResolvedOutputDir
+    } elseif ($RunConfig.ContainsKey('OutputDir') -and -not [string]::IsNullOrWhiteSpace([string]$RunConfig.OutputDir)) {
+        [string]$RunConfig.OutputDir
+    } else {
+        '.\output'
+    }
+
+    try {
+        $layout = Get-OutputLayout -OutputDir $effectiveOutputDir
+    } catch {
+        return [pscustomobject]@{
+            Checked              = $true
+            IsReady              = $false
+            MissingRequiredTools = @()
+            MissingOptionalTools = @()
+            ToolsBin             = ''
+            Problem              = ("Impossible de preparer la resolution des outils: {0}" -f $_.Exception.Message)
+        }
+    }
+
+    $enableGau = ConvertTo-LauncherBoolean -Value $(if ($RunConfig.ContainsKey('EnableGau')) { $RunConfig['EnableGau'] } else { $true }) -Name 'EnableGau' -Default $true
+    $enableWaybackUrls = ConvertTo-LauncherBoolean -Value $(if ($RunConfig.ContainsKey('EnableWaybackUrls')) { $RunConfig['EnableWaybackUrls'] } else { $true }) -Name 'EnableWaybackUrls' -Default $true
+    $enableHakrawler = ConvertTo-LauncherBoolean -Value $(if ($RunConfig.ContainsKey('EnableHakrawler')) { $RunConfig['EnableHakrawler'] } else { $true }) -Name 'EnableHakrawler' -Default $true
+
+    $toolManifest = @(
+        [pscustomobject]@{ Name = 'subfinder'; Required = $true; Enabled = $true },
+        [pscustomobject]@{ Name = 'httpx'; Required = $true; Enabled = $true },
+        [pscustomobject]@{ Name = 'katana'; Required = $true; Enabled = $true },
+        [pscustomobject]@{ Name = 'gau'; Required = $false; Enabled = $enableGau },
+        [pscustomobject]@{ Name = 'waybackurls'; Required = $false; Enabled = $enableWaybackUrls },
+        [pscustomobject]@{ Name = 'hakrawler'; Required = $false; Enabled = $enableHakrawler }
+    )
+
+    $missingRequiredTools = [System.Collections.Generic.List[string]]::new()
+    $missingOptionalTools = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($tool in $toolManifest) {
+        if (-not $tool.Enabled) { continue }
+
+        $toolPath = Resolve-ToolPath -Name $tool.Name -ToolsBin $layout.ToolsBin
+        if ($toolPath) { continue }
+
+        if ($tool.Required) {
+            $missingRequiredTools.Add([string]$tool.Name) | Out-Null
+        } else {
+            $missingOptionalTools.Add([string]$tool.Name) | Out-Null
+        }
+    }
+
+    return [pscustomobject]@{
+        Checked              = $true
+        IsReady              = ($missingRequiredTools.Count -eq 0)
+        MissingRequiredTools = @($missingRequiredTools)
+        MissingOptionalTools = @($missingOptionalTools)
+        ToolsBin             = [string]$layout.ToolsBin
+        Problem              = ''
+    }
+}
+
 function Get-LauncherLaunchValidation {
     param([Parameter(Mandatory)][hashtable]$RunConfig)
 
@@ -3201,6 +3292,25 @@ function Get-LauncherLaunchValidation {
                 Problem  = $(if ($outputState.IsProtected) { $outputState.Problem } else { $outputState.Problem })
                 Recovery = 'Choisis un dossier de sortie sous la session active ou dans un emplacement utilisateur ecrivable.'
             }) | Out-Null
+    }
+
+    $toolState = Get-LauncherToolValidation -RunConfig $RunConfig -ResolvedOutputDir $(if ($outputState.ResolvedPath) { [string]$outputState.ResolvedPath } else { '' })
+    if ($toolState.Checked) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$toolState.Problem)) {
+            $issues.Add([pscustomobject]@{
+                    Label    = 'Tools'
+                    Value    = $(if ($toolState.ToolsBin) { $toolState.ToolsBin } else { 'resolution-outils' })
+                    Problem  = [string]$toolState.Problem
+                    Recovery = 'Relance le launcher depuis la copie locale complete, ou recharge ScopeForge.ps1 si les helpers ne sont plus disponibles.'
+                }) | Out-Null
+        } elseif ($toolState.MissingRequiredTools.Count -gt 0) {
+            $issues.Add([pscustomobject]@{
+                    Label    = 'Tools'
+                    Value    = ($toolState.MissingRequiredTools -join ', ')
+                    Problem  = ("Le bootstrap outils est desactive (noInstall=true), mais les outils requis suivants sont introuvables: {0}." -f ($toolState.MissingRequiredTools -join ', '))
+                    Recovery = 'Installe les outils requis dans le PATH, ou remets "noInstall": false pour autoriser le bootstrap automatique.'
+                }) | Out-Null
+        }
     }
 
     $settingsPath = if ($RunConfig.ContainsKey('LauncherSessionRoot') -and -not [string]::IsNullOrWhiteSpace([string]$RunConfig.LauncherSessionRoot)) {
@@ -3247,6 +3357,7 @@ function Get-LauncherLaunchValidation {
     return [pscustomobject]@{
         ScopeState      = $scopeState
         OutputState     = $outputState
+        ToolState       = $toolState
         SettingsPath    = $settingsPath
         SettingsRequired = [bool]$settingsRequired
         Issues          = @($issues)
@@ -3263,6 +3374,18 @@ function Show-LauncherLaunchValidationPanel {
     Write-LauncherKeyValue -Key 'Output resolu' -Value $(if ($Validation.OutputState.ResolvedPath) { $Validation.OutputState.ResolvedPath } else { '-' })
     if ($Validation.OutputState.IsRelative) {
         Write-LauncherKeyValue -Key 'Ancre output' -Value $(if ($Validation.OutputState.AnchorRoot) { $Validation.OutputState.AnchorRoot } else { '-' }) -Color 'DarkGray'
+    }
+    if ($Validation.PSObject.Properties['ToolState'] -and $Validation.ToolState -and $Validation.ToolState.Checked) {
+        $toolDetails = if (-not [string]::IsNullOrWhiteSpace([string]$Validation.ToolState.Problem)) {
+            [string]$Validation.ToolState.Problem
+        } elseif ($Validation.ToolState.MissingRequiredTools.Count -gt 0) {
+            ("manquants: {0}" -f ($Validation.ToolState.MissingRequiredTools -join ', '))
+        } elseif ($Validation.ToolState.MissingOptionalTools.Count -gt 0) {
+            ("optionnels indisponibles: {0}" -f ($Validation.ToolState.MissingOptionalTools -join ', '))
+        } else {
+            'outils requis resolus'
+        }
+        Write-LauncherStatusLine -Label 'Tools' -Status $(if ($Validation.ToolState.IsReady) { 'OK' } else { 'BLOQUE' }) -Details $toolDetails
     }
     if ($Validation.SettingsRequired) {
         Write-LauncherStatusLine -Label 'Settings' -Status $(if ($Validation.SettingsPath -and (Test-Path -LiteralPath $Validation.SettingsPath)) { 'OK' } else { 'INTROUVABLE' }) -Details $(if ($Validation.SettingsPath) { Get-LauncherCompactPathDisplay -Path $Validation.SettingsPath } else { '-' })

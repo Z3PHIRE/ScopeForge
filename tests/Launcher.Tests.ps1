@@ -1427,5 +1427,107 @@ Describe 'ScopeForge launcher boolean handling' {
             }
         }
 
+        It 'blocks launch when noInstall is true and a required tool is missing' {
+            $scopePath = Join-Path $script:fileWorkspace.Active 'tool-validation-scope.json'
+            Set-Content -LiteralPath $scopePath -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+
+            Mock Resolve-ToolPath {
+                param([string]$Name, [string]$ToolsBin)
+
+                switch ($Name) {
+                    'subfinder' { return $null }
+                    'httpx' { return 'C:\Tools\httpx.exe' }
+                    'katana' { return 'C:\Tools\katana.exe' }
+                    default { return $null }
+                }
+            }
+
+            $runConfig = @{
+                ScopeFile          = $scopePath
+                OutputDir          = (Join-Path $TestDrive 'output-tool-validation')
+                NoInstall          = $true
+                EnableGau          = $false
+                EnableWaybackUrls  = $false
+                EnableHakrawler    = $false
+            }
+
+            $validation = Get-LauncherLaunchValidation -RunConfig $runConfig
+            if ($validation.IsReady) { throw 'Expected launch validation to fail when a required tool is missing and noInstall=true.' }
+            if (-not $validation.ToolState.Checked) { throw 'Expected tool validation to run when noInstall=true.' }
+            if (@($validation.ToolState.MissingRequiredTools).Count -ne 1) { throw 'Expected exactly one missing required tool.' }
+            if ($validation.ToolState.MissingRequiredTools[0] -ne 'subfinder') { throw 'Expected subfinder to be reported as missing.' }
+
+            $toolIssue = $validation.Issues | Where-Object { $_.Label -eq 'Tools' } | Select-Object -First 1
+            if (-not $toolIssue) { throw 'Expected launch validation to add a Tools issue for missing required tools.' }
+            if ($toolIssue.Problem -notlike '*subfinder*') { throw 'Expected the Tools issue to mention subfinder explicitly.' }
+        }
+
+        It 'does not block missing tools when noInstall is false' {
+            $scopePath = Join-Path $script:fileWorkspace.Active 'tool-validation-bootstrappable-scope.json'
+            Set-Content -LiteralPath $scopePath -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+
+            Mock Resolve-ToolPath { $null }
+
+            $validation = Get-LauncherLaunchValidation -RunConfig @{
+                ScopeFile = $scopePath
+                OutputDir = (Join-Path $TestDrive 'output-tool-bootstrap')
+                NoInstall = $false
+            }
+
+            if (-not $validation.IsReady) { throw 'Expected the launcher to stay ready when missing tools can still be bootstrapped.' }
+            if ($validation.ToolState.Checked) { throw 'Expected tool validation to stay disabled when noInstall=false.' }
+        }
+
+        It 'shows a tools status line in the final validation panel' {
+            $script:validationStatusLines = @()
+            Mock Write-LauncherSection { }
+            Mock Write-LauncherStatusLine {
+                param($Label, $Status, $Details)
+
+                $script:validationStatusLines += [pscustomobject]@{
+                    Label   = [string]$Label
+                    Status  = [string]$Status
+                    Details = [string]$Details
+                }
+            }
+            Mock Write-LauncherKeyValue { }
+            Mock Write-Host { }
+
+            Show-LauncherLaunchValidationPanel -Validation ([pscustomobject]@{
+                    ScopeState       = [pscustomobject]@{ ScopePath = 'C:\Temp\scope.json'; Exists = $true }
+                    OutputState      = [pscustomobject]@{
+                        IsValid      = $true
+                        IsProtected  = $false
+                        ResolvedPath = 'C:\Temp\output'
+                        RequestedPath = 'C:\Temp\output'
+                        IsRelative   = $false
+                        AnchorRoot   = ''
+                    }
+                    ToolState        = [pscustomobject]@{
+                        Checked              = $true
+                        IsReady              = $false
+                        MissingRequiredTools = @('subfinder')
+                        MissingOptionalTools = @()
+                        Problem              = ''
+                    }
+                    SettingsPath     = $null
+                    SettingsRequired = $false
+                    Issues           = @(
+                        [pscustomobject]@{
+                            Label    = 'Tools'
+                            Value    = 'subfinder'
+                            Problem  = 'Missing required tool.'
+                            Recovery = 'Install subfinder or disable noInstall.'
+                        }
+                    )
+                    IsReady          = $false
+                })
+
+            $toolStatus = $script:validationStatusLines | Where-Object { $_.Label -eq 'Tools' } | Select-Object -First 1
+            if (-not $toolStatus) { throw 'Expected the final validation panel to render a Tools status line.' }
+            if ($toolStatus.Status -ne 'BLOQUE') { throw 'Expected the Tools status line to be blocked when required tools are missing.' }
+            if ($toolStatus.Details -notlike '*subfinder*') { throw 'Expected the Tools status line to mention the missing required tool.' }
+        }
+
     }
 }
