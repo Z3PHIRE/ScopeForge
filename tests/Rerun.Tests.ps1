@@ -1,8 +1,10 @@
-$repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
-. (Join-Path $repoRoot 'Launch-ScopeForge.ps1')
-. (Join-Path $repoRoot 'ScopeForge.ps1')
-
 Describe 'ScopeForge rerun manifests' {
+    BeforeAll {
+        $script:repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+        . (Join-Path $script:repoRoot 'Launch-ScopeForge.ps1')
+        . (Join-Path $script:repoRoot 'ScopeForge.ps1')
+    }
+
     BeforeEach {
         $script:testCatalogRoot = Join-Path $TestDrive '_catalog'
         $null = New-Item -ItemType Directory -Path $script:testCatalogRoot -Force

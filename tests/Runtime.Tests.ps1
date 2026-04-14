@@ -1,8 +1,10 @@
-$repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
-. (Join-Path $repoRoot 'ScopeForge.ps1')
-. (Join-Path $repoRoot 'Launch-ScopeForgeFromGitHub.ps1')
-
 Describe 'ScopeForge passive discovery runtime safety' {
+    BeforeAll {
+        $script:repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+        . (Join-Path $script:repoRoot 'ScopeForge.ps1')
+        . (Join-Path $script:repoRoot 'Launch-ScopeForgeFromGitHub.ps1')
+    }
+
     It 'builds probe candidates for a domain without composite-format crashes' {
         $scopeItem = [pscustomobject]@{
             Type = 'Domain'
@@ -416,6 +418,12 @@ Describe 'ScopeForge passive discovery runtime safety' {
 }
 
 Describe 'ScopeForge triage reachability guardrails' {
+    BeforeAll {
+        $script:repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+        . (Join-Path $script:repoRoot 'ScopeForge.ps1')
+        . (Join-Path $script:repoRoot 'Launch-ScopeForgeFromGitHub.ps1')
+    }
+
     It 'keeps dead or unstable interesting paths out of reviewable and shortlist while preserving them in filtered outputs' {
         $triageState = [pscustomobject]@{
             Path              = Join-Path $TestDrive 'triage-state.json'
@@ -474,6 +482,12 @@ Describe 'ScopeForge triage reachability guardrails' {
 }
 
 Describe 'ScopeForge triage content signals' {
+    BeforeAll {
+        $script:repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+        . (Join-Path $script:repoRoot 'ScopeForge.ps1')
+        . (Join-Path $script:repoRoot 'Launch-ScopeForgeFromGitHub.ps1')
+    }
+
     It 'promotes structured JSON responses into reviewable API findings even without an explicit api path' {
         $triageState = [pscustomobject]@{
             Path              = Join-Path $TestDrive 'triage-state.json'
@@ -614,6 +628,12 @@ Describe 'ScopeForge triage content signals' {
 }
 
 Describe 'ScopeForge discovered URL context propagation' {
+    BeforeAll {
+        $script:repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+        . (Join-Path $script:repoRoot 'ScopeForge.ps1')
+        . (Join-Path $script:repoRoot 'Launch-ScopeForgeFromGitHub.ps1')
+    }
+
     It 'propagates exact live-target context to discovered URL exports and reports' {
         $liveTargets = @(
             [pscustomobject]@{
@@ -702,6 +722,12 @@ Describe 'ScopeForge discovered URL context propagation' {
 }
 
 Describe 'ScopeForge crawl seed preservation' {
+    BeforeAll {
+        $script:repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+        . (Join-Path $script:repoRoot 'ScopeForge.ps1')
+        . (Join-Path $script:repoRoot 'Launch-ScopeForgeFromGitHub.ps1')
+    }
+
     It 'does not re-add dead live targets as synthetic crawl seeds' {
         $tempDir = Join-Path $TestDrive 'katana-seed-filter'
         New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
@@ -800,6 +826,12 @@ Describe 'ScopeForge crawl seed preservation' {
 }
 
 Describe 'ScopeForge HTML report segmentation' {
+    BeforeAll {
+        $script:repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+        . (Join-Path $script:repoRoot 'ScopeForge.ps1')
+        . (Join-Path $script:repoRoot 'Launch-ScopeForgeFromGitHub.ps1')
+    }
+
     It 'separates reachable targets from dead or unstable targets in the HTML report' {
         $outputDir = Join-Path $TestDrive 'report-segmentation-output'
         $layout = Get-OutputLayout -OutputDir $outputDir
@@ -973,6 +1005,12 @@ Describe 'ScopeForge HTML report segmentation' {
 }
 
 Describe 'ScopeForge suggested review areas' {
+    BeforeAll {
+        $script:repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+        . (Join-Path $script:repoRoot 'ScopeForge.ps1')
+        . (Join-Path $script:repoRoot 'Launch-ScopeForgeFromGitHub.ps1')
+    }
+
     It 'prefers baseline reachable guidance over the generic fallback when no scored findings exist but reachable targets remain' {
         $suggestions = @(Get-SuggestedReviewAreas -InterestingUrls @() -LiveTargets @(
                 [pscustomobject]@{
@@ -991,6 +1029,12 @@ Describe 'ScopeForge suggested review areas' {
 }
 
 Describe 'ScopeForge bootstrap cache coherence' {
+    BeforeAll {
+        $script:repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+        . (Join-Path $script:repoRoot 'ScopeForge.ps1')
+        . (Join-Path $script:repoRoot 'Launch-ScopeForgeFromGitHub.ps1')
+    }
+
     It 'prefers newer local workspace files over a stale temp bootstrap cache' {
         $bootstrapRoot = Join-Path $TestDrive 'ScopeForge-Bootstrap'
         $filesToFetch = @('ScopeForge.ps1', 'Launch-ScopeForge.ps1')
@@ -1018,6 +1062,12 @@ Describe 'ScopeForge bootstrap cache coherence' {
 }
 
 Describe 'ScopeForge summary reachability split' {
+    BeforeAll {
+        $script:repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+        . (Join-Path $script:repoRoot 'ScopeForge.ps1')
+        . (Join-Path $script:repoRoot 'Launch-ScopeForgeFromGitHub.ps1')
+    }
+
     It 'exports reachable and dead-or-unstable target counts in summaries and triage markdown' {
         $summary = Merge-ReconResults -ScopeItems @([pscustomobject]@{ Id = 'scope-001' }) -HostsAll @([pscustomobject]@{ Host = 'app.example.com' }) -LiveTargets @(
             [pscustomobject]@{ Host = 'app.example.com'; Url = 'https://app.example.com/'; StatusCode = 200; Technologies = @('Apache HTTP Server', 'YouTube') },
@@ -1058,6 +1108,12 @@ Describe 'ScopeForge summary reachability split' {
 }
 
 Describe 'ScopeForge httpx diagnostics' {
+    BeforeAll {
+        $script:repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+        . (Join-Path $script:repoRoot 'ScopeForge.ps1')
+        . (Join-Path $script:repoRoot 'Launch-ScopeForgeFromGitHub.ps1')
+    }
+
     BeforeEach {
         $layout = Get-OutputLayout -OutputDir (Join-Path $TestDrive 'output')
         Initialize-OutputDirectories -Layout $layout

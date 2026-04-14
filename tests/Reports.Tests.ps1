@@ -1,7 +1,9 @@
-$repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
-. (Join-Path $repoRoot 'ScopeForge.ps1')
-
 Describe 'ScopeForge reports' {
+    BeforeAll {
+        $script:repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+        . (Join-Path $script:repoRoot 'ScopeForge.ps1')
+    }
+
     It 'generates self-contained HTML and actionable triage markdown' {
         $layout = Get-OutputLayout -OutputDir (Join-Path $TestDrive 'output')
         Initialize-OutputDirectories -Layout $layout

@@ -1,16 +1,18 @@
-$repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
-. (Join-Path $repoRoot 'Launch-ScopeForge.ps1')
-$script:OriginalGetLauncherFileWorkspace = (Get-Item Function:\Get-LauncherFileWorkspace).ScriptBlock
-$script:OriginalShowLauncherScopeSelection = (Get-Item Function:\Show-LauncherScopeSelection).ScriptBlock
-. (Join-Path $repoRoot 'ScopeForge.ps1')
-
-function Get-TestFixtureContent {
-    param([Parameter(Mandatory)][string]$Name)
-
-    return [System.IO.File]::ReadAllText((Join-Path $repoRoot ("tests\fixtures\{0}" -f $Name)))
-}
-
 Describe 'ScopeForge launcher boolean handling' {
+    BeforeAll {
+        $script:repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+        . (Join-Path $script:repoRoot 'Launch-ScopeForge.ps1')
+        $script:OriginalGetLauncherFileWorkspace = (Get-Item Function:\Get-LauncherFileWorkspace).ScriptBlock
+        $script:OriginalShowLauncherScopeSelection = (Get-Item Function:\Show-LauncherScopeSelection).ScriptBlock
+        . (Join-Path $script:repoRoot 'ScopeForge.ps1')
+
+        function Get-TestFixtureContent {
+            param([Parameter(Mandatory)][string]$Name)
+
+            return [System.IO.File]::ReadAllText((Join-Path $script:repoRoot ("tests\fixtures\{0}" -f $Name)))
+        }
+    }
+
     Context 'ConvertTo-LauncherBoolean' {
         It 'keeps native booleans unchanged' {
             if (-not (ConvertTo-LauncherBoolean -Value $true)) { throw 'Expected $true to stay $true.' }

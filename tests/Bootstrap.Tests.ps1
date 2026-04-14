@@ -1,7 +1,9 @@
-$repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
-. (Join-Path $repoRoot 'Launch-ScopeForgeFromGitHub.ps1')
-
 Describe 'ScopeForge bootstrap refresh' {
+    BeforeAll {
+        $script:repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+        . (Join-Path $script:repoRoot 'Launch-ScopeForgeFromGitHub.ps1')
+    }
+
     It 'renders bootstrap status when cache timestamps are unavailable' {
         Mock Write-Host { }
 

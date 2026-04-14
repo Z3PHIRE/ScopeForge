@@ -1,7 +1,9 @@
-$repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
-. (Join-Path $repoRoot 'ScopeForge.ps1')
-
 Describe 'ScopeForge tool bootstrap and safety' {
+    BeforeAll {
+        $script:repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+        . (Join-Path $script:repoRoot 'ScopeForge.ps1')
+    }
+
     BeforeEach {
         $script:ScopeForgeToolHelpCache = @{}
     }
