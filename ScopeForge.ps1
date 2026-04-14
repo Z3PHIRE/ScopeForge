@@ -2708,7 +2708,9 @@ function Write-JsonFile {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][object]$Data)
 
-    Set-Content -LiteralPath $Path -Value ($Data | ConvertTo-Json -Depth 100) -Encoding utf8
+    # Preserve single-item collections as JSON arrays instead of collapsing them via pipeline enumeration.
+    $json = ConvertTo-Json -InputObject $Data -Depth 100
+    Set-Content -LiteralPath $Path -Value $json -Encoding utf8
 }
 
 function Export-FlatCsv {
@@ -4271,23 +4273,52 @@ function Export-TriageMarkdownReport {
         $lines.Add('- No interesting URLs were ranked for this run.') | Out-Null
     } else {
         foreach ($item in ($InterestingUrls | Select-Object -First 20)) {
-            $lines.Add(("### [{0}/{1}] {2}" -f $item.Priority, $item.Score, $item.Url)) | Out-Null
-            $lines.Add(("- Host: {0}" -f $item.Host)) | Out-Null
-            $lines.Add(("- Status: {0}" -f $item.StatusCode)) | Out-Null
-            if ($item.ContentType) {
-                $lines.Add(("- Content-Type: {0}" -f $item.ContentType)) | Out-Null
+            $itemPriority = [string](Get-ObjectValue -InputObject $item -Names @('Priority') -Default '')
+            $itemScore = Get-ObjectValue -InputObject $item -Names @('Score') -Default ''
+            $itemUrl = [string](Get-ObjectValue -InputObject $item -Names @('Url', 'URL') -Default '')
+            $itemHost = [string](Get-ObjectValue -InputObject $item -Names @('Host') -Default '')
+            $itemStatusCode = Get-ObjectValue -InputObject $item -Names @('StatusCode') -Default ''
+            $itemContentType = [string](Get-ObjectValue -InputObject $item -Names @('ContentType', 'content-type', 'content_type') -Default '')
+            $itemParameters = @(
+                (ConvertTo-ArrayOrEmpty -Data (Get-ObjectValue -InputObject $item -Names @('Parameters') -Default @())) |
+                ForEach-Object { [string]$_ } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+            $itemFamily = [string](Get-ObjectValue -InputObject $item -Names @('PrimaryFamily') -Default '')
+            $itemCategories = @(
+                (ConvertTo-ArrayOrEmpty -Data (Get-ObjectValue -InputObject $item -Names @('Categories', 'categories') -Default @())) |
+                ForEach-Object { [string]$_ } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+            $itemReasons = @(
+                (ConvertTo-ArrayOrEmpty -Data (Get-ObjectValue -InputObject $item -Names @('Reasons', 'reasons') -Default @())) |
+                ForEach-Object { [string]$_ } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+            $itemTechnologies = @(
+                (ConvertTo-ArrayOrEmpty -Data (Get-ObjectValue -InputObject $item -Names @('Technologies', 'tech', 'technologies') -Default @())) |
+                ForEach-Object { [string]$_ } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+            $itemTitle = [string](Get-ObjectValue -InputObject $item -Names @('Title', 'title') -Default '')
+
+            $lines.Add(("### [{0}/{1}] {2}" -f $itemPriority, $itemScore, $itemUrl)) | Out-Null
+            $lines.Add(("- Host: {0}" -f $itemHost)) | Out-Null
+            $lines.Add(("- Status: {0}" -f $itemStatusCode)) | Out-Null
+            if ($itemContentType) {
+                $lines.Add(("- Content-Type: {0}" -f $itemContentType)) | Out-Null
             }
-            if ($item.Parameters -and $item.Parameters.Count -gt 0) {
-                $lines.Add(("- Parameters: {0}" -f (($item.Parameters | ForEach-Object { [string]$_ }) -join ', '))) | Out-Null
+            if ($itemParameters.Count -gt 0) {
+                $lines.Add(("- Parameters: {0}" -f ($itemParameters -join ', '))) | Out-Null
             }
-            $lines.Add(("- Family: {0}" -f $item.PrimaryFamily)) | Out-Null
-            $lines.Add(("- Categories: {0}" -f (($item.Categories | ForEach-Object { [string]$_ }) -join ', '))) | Out-Null
-            $lines.Add(("- Reasons: {0}" -f (($item.Reasons | ForEach-Object { [string]$_ }) -join ', '))) | Out-Null
-            if ($item.Technologies -and $item.Technologies.Count -gt 0) {
-                $lines.Add(("- Technologies: {0}" -f (($item.Technologies | ForEach-Object { [string]$_ }) -join ', '))) | Out-Null
+            $lines.Add(("- Family: {0}" -f $itemFamily)) | Out-Null
+            $lines.Add(("- Categories: {0}" -f ($itemCategories -join ', '))) | Out-Null
+            $lines.Add(("- Reasons: {0}" -f ($itemReasons -join ', '))) | Out-Null
+            if ($itemTechnologies.Count -gt 0) {
+                $lines.Add(("- Technologies: {0}" -f ($itemTechnologies -join ', '))) | Out-Null
             }
-            if ($item.Title) {
-                $lines.Add(("- Title: {0}" -f $item.Title)) | Out-Null
+            if ($itemTitle) {
+                $lines.Add(("- Title: {0}" -f $itemTitle)) | Out-Null
             }
             $lines.Add('') | Out-Null
         }
@@ -4442,6 +4473,7 @@ function Export-ReconReport {
     $displayedShortlistForExport = @()
     $triageFilteredFindings = @()
     $triageReviewableFindings = @()
+    $triageFilteredIndex = @{}
     $triageData = if ($script:ScopeForgeContext) { $script:ScopeForgeContext.Triage } else { $null }
     if ($triageData) {
         $triageFilteredFindings = ConvertTo-ArrayOrEmpty -Data @($triageData.FilteredFindings)
@@ -4449,7 +4481,6 @@ function Export-ReconReport {
         $triageReviewableFindings = ConvertTo-ArrayOrEmpty -Data @($triageData.ReviewableFindings)
         $triageShortlist = ConvertTo-ArrayOrEmpty -Data @($triageData.Shortlist)
         $displayedShortlist = [System.Collections.Generic.List[object]]::new()
-        $triageFilteredIndex = @{}
         foreach ($finding in @($triageFilteredFindings)) {
             if (-not $finding) { continue }
             $findingReviewKey = [string](Get-ObjectValue -InputObject $finding -Names @('ReviewKey') -Default '')
@@ -4481,17 +4512,39 @@ function Export-ReconReport {
         $shortlistLines.Add(('- noise removed: {0}' -f @($triageNoiseFindings).Count)) | Out-Null
         $shortlistLines.Add('') | Out-Null
         foreach ($item in ($triageShortlist | Select-Object -First 20)) {
-            $shortlistLines.Add(('## [{0}/{1}] {2}' -f $item.Priority, $item.Score, $item.Url)) | Out-Null
-            if ($item.ContentType) {
-                $shortlistLines.Add(('- Content-Type: {0}' -f $item.ContentType)) | Out-Null
+            $shortlistPriority = [string](Get-ObjectValue -InputObject $item -Names @('Priority') -Default '')
+            $shortlistScore = Get-ObjectValue -InputObject $item -Names @('Score') -Default ''
+            $shortlistUrl = [string](Get-ObjectValue -InputObject $item -Names @('Url', 'URL') -Default '')
+            $shortlistContentType = [string](Get-ObjectValue -InputObject $item -Names @('ContentType', 'content-type', 'content_type') -Default '')
+            $shortlistParameters = @(
+                (ConvertTo-ArrayOrEmpty -Data (Get-ObjectValue -InputObject $item -Names @('Parameters') -Default @())) |
+                ForEach-Object { [string]$_ } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+            $shortlistFamily = [string](Get-ObjectValue -InputObject $item -Names @('PrimaryFamily') -Default '')
+            $shortlistCategories = @(
+                (ConvertTo-ArrayOrEmpty -Data (Get-ObjectValue -InputObject $item -Names @('Categories', 'categories') -Default @())) |
+                ForEach-Object { [string]$_ } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+            $shortlistReasons = @(
+                (ConvertTo-ArrayOrEmpty -Data (Get-ObjectValue -InputObject $item -Names @('Reasons', 'reasons') -Default @())) |
+                ForEach-Object { [string]$_ } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+            $shortlistState = [string](Get-ObjectValue -InputObject $item -Names @('StateStatus') -Default '')
+
+            $shortlistLines.Add(('## [{0}/{1}] {2}' -f $shortlistPriority, $shortlistScore, $shortlistUrl)) | Out-Null
+            if ($shortlistContentType) {
+                $shortlistLines.Add(('- Content-Type: {0}' -f $shortlistContentType)) | Out-Null
             }
-            if ($item.Parameters -and $item.Parameters.Count -gt 0) {
-                $shortlistLines.Add(('- Parameters: {0}' -f (($item.Parameters | ForEach-Object { [string]$_ }) -join ', '))) | Out-Null
+            if ($shortlistParameters.Count -gt 0) {
+                $shortlistLines.Add(('- Parameters: {0}' -f ($shortlistParameters -join ', '))) | Out-Null
             }
-            $shortlistLines.Add(('- Family: {0}' -f $item.PrimaryFamily)) | Out-Null
-            $shortlistLines.Add(('- Categories: {0}' -f ($item.Categories -join ', '))) | Out-Null
-            $shortlistLines.Add(('- Reasons: {0}' -f ($item.Reasons -join ', '))) | Out-Null
-            $shortlistLines.Add(('- State: {0}' -f $item.StateStatus)) | Out-Null
+            $shortlistLines.Add(('- Family: {0}' -f $shortlistFamily)) | Out-Null
+            $shortlistLines.Add(('- Categories: {0}' -f ($shortlistCategories -join ', '))) | Out-Null
+            $shortlistLines.Add(('- Reasons: {0}' -f ($shortlistReasons -join ', '))) | Out-Null
+            $shortlistLines.Add(('- State: {0}' -f $shortlistState)) | Out-Null
             $shortlistLines.Add('') | Out-Null
         }
         foreach ($item in ($triageShortlist | Select-Object -First 15)) {
