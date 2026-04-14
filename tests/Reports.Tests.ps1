@@ -130,6 +130,58 @@ Describe 'ScopeForge reports' {
         }
     }
 
+    It 'shows a depth warning badge in the run snapshot when manifest depth exceeds five' {
+        $layout = Get-OutputLayout -OutputDir (Join-Path $TestDrive 'output-depth-badge')
+        Initialize-OutputDirectories -Layout $layout
+        Set-Content -LiteralPath $layout.RunManifestJson -Encoding utf8 -Value (@{
+                RunId       = 'run-depth'
+                ProgramName = 'demo'
+                RunSettings = @{
+                    PresetName      = 'balanced'
+                    ProfileName     = 'webapp'
+                    UniqueUserAgent = 'scopeforge-test'
+                    Depth           = 6
+                }
+            } | ConvertTo-Json -Depth 20)
+
+        $summary = [pscustomobject]@{
+            ProgramName                  = 'demo'
+            GeneratedAtUtc               = '2026-03-26T12:00:00Z'
+            PowerShellVersion            = '7.5.0'
+            ScopeItemCount               = 1
+            ExcludedItemCount            = 0
+            DiscoveredHostCount          = 1
+            LiveHostCount                = 1
+            LiveTargetCount              = 1
+            ReachableTargetCount         = 1
+            DeadOrUnstableTargetCount    = 0
+            DiscoveredUrlCount           = 1
+            InterestingUrlCount          = 0
+            ProtectedInterestingCount    = 0
+            ErrorCount                   = 0
+            UniqueUserAgent              = 'scopeforge-test'
+            StatusCodeDistribution       = @([pscustomobject]@{ StatusCode = 200; Count = 1 })
+            TopTechnologies              = @()
+            ReachableTopTechnologies     = @()
+            TopSubdomains                = @()
+            TopInterestingCategories     = @()
+            TopInterestingFamilies       = @()
+            InterestingPriorityDistribution = @()
+            ErrorPhaseDistribution       = @()
+            ErrorToolDistribution        = @()
+            TopAuthReviewable            = @()
+            TopApiReviewable             = @()
+            TopProtectedReviewable       = @()
+        }
+
+        Export-ReconReport -Summary $summary -ScopeItems @() -HostsAll @() -HostsLive @() -LiveTargets @() -DiscoveredUrls @() -InterestingUrls @() -Exclusions @() -Errors @() -Layout $layout -ExportHtml
+        $html = Get-Content -LiteralPath $layout.ReportHtml -Raw -Encoding utf8
+
+        if ($html -notlike '*Run Snapshot*') { throw 'Expected the run snapshot panel to be rendered.' }
+        if ($html -notlike '*Depth > 5*') { throw 'Expected the run snapshot to display a high-depth warning badge.' }
+        if ($html -notlike '*<span>Depth</span><strong class="mono">6</strong>*') { throw 'Expected the run snapshot to display the configured depth value.' }
+    }
+
     It 'preserves single-item collections as JSON arrays' {
         $jsonPath = Join-Path $TestDrive 'single-item.json'
 

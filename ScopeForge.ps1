@@ -1956,7 +1956,63 @@ function Get-ReviewUrlAnalysis {
     $path = if ($uri.AbsolutePath) { $uri.AbsolutePath } else { '/' }
     $extension = [System.IO.Path]::GetExtension($path).ToLowerInvariant()
     $pathLower = $path.ToLowerInvariant()
-    $volatileNames = New-ScopeForgeStringSet -Values @('__cf_chl_f_tk','__cf_chl_rt_tk','__cf_chl_tk','__cf_chl_captcha_tk__','cf_chl_2','cf_chl_prog','cf_clearance','fbclid','gclid','mc_cid','mc_eid','token','access_token','id_token','session_state','nonce','timestamp','ts','sig','signature','expires','exp')
+    $volatileNames = New-ScopeForgeStringSet -Values @(
+        '__cf_chl_f_tk',
+        '__cf_chl_rt_tk',
+        '__cf_chl_tk',
+        '__cf_chl_captcha_tk__',
+        'cf_chl_2',
+        'cf_chl_prog',
+        'cf_clearance',
+        'fbclid',
+        'gclid',
+        'mc_cid',
+        'mc_eid',
+        'token',
+        'access_token',
+        'id_token',
+        'session_state',
+        'nonce',
+        'timestamp',
+        'ts',
+        'sig',
+        'signature',
+        'expires',
+        'exp',
+        'segment_anonymous_id',
+        'anonymous_id',
+        'anonymousId',
+        '_rsc',
+        '__nextjs_original_pathname',
+        'next_page',
+        'amp_device_id',
+        'twclid',
+        'msclkid',
+        'li_fat_id',
+        'ttclid',
+        '_hsenc',
+        '_hsmi',
+        'hsa_acc',
+        'hsa_cam',
+        'hsa_grp',
+        'hsa_ad',
+        'hsa_src',
+        'hsa_tgt',
+        'hsa_kw',
+        'vero_id',
+        'wickedid',
+        'yclid',
+        'igshid',
+        'epik',
+        'irclickid',
+        'xtor',
+        'sitetoken',
+        'clickid',
+        'adgroupid',
+        'campaignid',
+        'creativeid',
+        'matchtype'
+    )
     $keptPairs = [System.Collections.Generic.List[object]]::new()
     $hasVolatileParams = $false
     if ($uri.Query) {
@@ -2426,6 +2482,12 @@ function Get-TriageReconData {
         @{ Category = 'Auth'; Family = 'Auth'; Score = 4; Reason = 'Authentication surface'; Pattern = '(?i)(^|[/._?&=-])(login|signin|sign-in|logout|register|signup|auth|oauth|sso|session|token|refresh|mfa|verify|password|forgot-password)([/._?&=-]|$)' },
         @{ Category = 'Admin'; Family = 'Administrative'; Score = 4; Reason = 'Administrative surface'; Pattern = '(?i)(^|[/._?&=-])(admin|dashboard|manage|console|panel|backoffice|staff|portal)([/._?&=-]|$)' },
         @{ Category = 'API'; Family = 'API'; Score = 4; Reason = 'API or schema surface'; Pattern = '(?i)(/api(?:/|$)|/graphql(?:/|$)|swagger|openapi|graphiql|api-docs|/v[0-9]+(?:/|$))' },
+        @{ Category = 'API'; Family = 'API'; Score = 5; Reason = 'Token or session management endpoint'; Pattern = '(?i)(^|[/._?&=-])(token|session|refresh|credential|jwt|bearer|auth-token|access-token|id-token)([/._?&=-]|$)' },
+        @{ Category = 'API'; Family = 'API'; Score = 5; Reason = 'Sensitive data endpoint (medical/financial/PII)'; Pattern = '(?i)(patient|onboarding|payer|insurance|prescription|medical|clinical|health-data|phi|billing|payment-method)' },
+        @{ Category = 'API'; Family = 'API'; Score = 4; Reason = 'Telemetry or observability ingestion endpoint'; Pattern = '(?i)(traces|metrics|spans|telemetry|otel|opentelemetry|datadog|newrelic|splunk)' },
+        @{ Category = 'API'; Family = 'API'; Score = 4; Reason = 'SCIM or identity provisioning endpoint'; Pattern = '(?i)(scim|provisioning|directory|ldap|saml|idp|service-provider)' },
+        @{ Category = 'Config'; Family = 'Operations'; Score = 4; Reason = 'Infrastructure or secrets management endpoint'; Pattern = '(?i)(vault|akeyless|secrets|config-service|env-config|feature-flag|launchdarkly)' },
+        @{ Category = 'Admin'; Family = 'Administrative'; Score = 4; Reason = 'Multi-tenant administrative surface'; Pattern = '(?i)(tenant|organization|workspace|account-management|user-management|role|permission|rbac|acl)' },
         @{ Category = 'Redirect'; Family = 'Redirect'; Score = 3; Reason = 'Redirect or callback workflow'; Pattern = '(?i)(callback|redirect(?:_uri)?|return(?:url)?|continue|next=|url=|oidc_)' },
         @{ Category = 'Files'; Family = 'Files'; Score = 3; Reason = 'File handling workflow'; Pattern = '(?i)(upload|download|export|import|attachment|avatar|file|document)' },
         @{ Category = 'Debug'; Family = 'Operations'; Score = 3; Reason = 'Debug or verbose endpoint'; Pattern = '(?i)(debug|trace|stack|exception|error|dump|logs?)' },
@@ -2552,6 +2614,15 @@ function Get-TriageReconData {
             'General'
         }
 
+        if (
+            $familyScores.ContainsKey('Auth') -and
+            $familyScores.ContainsKey('Operations') -and
+            $familyScores['Auth'] -ge 4 -and
+            $pathQuery -match '(?i)(^|[/._?&=-])(login|signin|sign-in|logout|register|signup|auth|oauth|sso)([/._?&=-]|$)'
+        ) {
+            $primaryFamily = 'Auth'
+        }
+
         $stateStatus = 'new'
 
         if ($null -ne $ignoreKeys -and $ignoreKeys.Contains([string]$analysis.ReviewKey)) {
@@ -2609,13 +2680,43 @@ function Get-TriageReconData {
     }
 
     $orderedReviewable = @($reviewable | Sort-Object -Property StateStatus, PriorityRank, @{ Expression = 'Score'; Descending = $true }, Url)
-    $preferredShortlist = @($orderedReviewable | Where-Object { $_.StateStatus -eq 'new' })
-    $shortlist = @($preferredShortlist | Select-Object -First 15)
-    if ($shortlist.Count -lt 15) {
-        $needed = 15 - $shortlist.Count
-        $fill = @($orderedReviewable | Where-Object { $shortlist.ReviewKey -notcontains $_.ReviewKey } | Select-Object -First $needed)
-        $shortlist += $fill
+    $shortlistByBasePath = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $selectedShortlistKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $preferredShortlist = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($item in @($orderedReviewable | Where-Object { $_.StateStatus -eq 'new' })) {
+        $itemUri = $null
+        $basePath = if ([Uri]::TryCreate([string]$item.Url, [UriKind]::Absolute, [ref]$itemUri)) {
+            ('{0}{1}' -f $itemUri.Host.ToLowerInvariant(), $itemUri.AbsolutePath.TrimEnd('/'))
+        } else {
+            [string]$item.Url
+        }
+
+        if (-not $shortlistByBasePath.Add($basePath)) { continue }
+        $null = $selectedShortlistKeys.Add([string]$item.ReviewKey)
+        $preferredShortlist.Add($item) | Out-Null
+        if ($preferredShortlist.Count -ge 15) { break }
     }
+
+    if ($preferredShortlist.Count -lt 15) {
+        foreach ($item in $orderedReviewable) {
+            if ($selectedShortlistKeys.Contains([string]$item.ReviewKey)) { continue }
+
+            $itemUri = $null
+            $basePath = if ([Uri]::TryCreate([string]$item.Url, [UriKind]::Absolute, [ref]$itemUri)) {
+                ('{0}{1}' -f $itemUri.Host.ToLowerInvariant(), $itemUri.AbsolutePath.TrimEnd('/'))
+            } else {
+                [string]$item.Url
+            }
+
+            if (-not $shortlistByBasePath.Add($basePath)) { continue }
+            $null = $selectedShortlistKeys.Add([string]$item.ReviewKey)
+            $preferredShortlist.Add($item) | Out-Null
+            if ($preferredShortlist.Count -ge 15) { break }
+        }
+    }
+
+    $shortlist = @($preferredShortlist)
 
     return [pscustomobject]@{
         FilteredFindings = @($filtered | Sort-Object -Property StateStatus, Host, Url)
@@ -3328,7 +3429,18 @@ function Invoke-HttpProbe {
 
             $result = $null
             try {
-                $result = Invoke-ExternalCommand -FilePath $HttpxPath -Arguments $arguments -TimeoutSeconds $batchTimeoutSeconds -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
+                $directResult = Invoke-ExternalCommandArgumentSafe -FilePath $HttpxPath -Arguments $arguments -TimeoutSeconds $batchTimeoutSeconds -IgnoreExitCode
+                [System.IO.File]::WriteAllText($stdoutFile, [string]$directResult.StdOut, [System.Text.UTF8Encoding]::new($false))
+                [System.IO.File]::WriteAllText($stderrFile, [string]$directResult.StdErr, [System.Text.UTF8Encoding]::new($false))
+                $result = [pscustomobject]@{
+                    ExitCode   = $directResult.ExitCode
+                    StdOut     = $directResult.StdOut
+                    StdErr     = $directResult.StdErr
+                    StdOutPath = $stdoutFile
+                    StdErrPath = $stderrFile
+                    FilePath   = $directResult.FilePath
+                    Arguments  = $directResult.Arguments
+                }
             } catch {
                 $message = $_.Exception.Message
                 if ($message -like 'Command timed out*') {
@@ -3341,7 +3453,18 @@ function Invoke-HttpProbe {
                     )
 
                     try {
-                        $result = Invoke-ExternalCommand -FilePath $HttpxPath -Arguments $fallbackArguments -TimeoutSeconds ([Math]::Max(($TimeoutSeconds * 8), 240)) -StdOutPath $stdoutFile -StdErrPath $stderrFile -IgnoreExitCode
+                        $fallbackResult = Invoke-ExternalCommandArgumentSafe -FilePath $HttpxPath -Arguments $fallbackArguments -TimeoutSeconds ([Math]::Max(($TimeoutSeconds * 8), 240)) -IgnoreExitCode
+                        [System.IO.File]::WriteAllText($stdoutFile, [string]$fallbackResult.StdOut, [System.Text.UTF8Encoding]::new($false))
+                        [System.IO.File]::WriteAllText($stderrFile, [string]$fallbackResult.StdErr, [System.Text.UTF8Encoding]::new($false))
+                        $result = [pscustomobject]@{
+                            ExitCode   = $fallbackResult.ExitCode
+                            StdOut     = $fallbackResult.StdOut
+                            StdErr     = $fallbackResult.StdErr
+                            StdOutPath = $stdoutFile
+                            StdErrPath = $stderrFile
+                            FilePath   = $fallbackResult.FilePath
+                            Arguments  = $fallbackResult.Arguments
+                        }
                     } catch {
                         Add-ErrorRecord -Phase 'HttpProbe' -Message $_.Exception.Message -Details ("batch {0}/{1}, size={2}, mode=fallback" -f $batchIndex, $batchCount, $currentBatch.Count) -Tool 'httpx' -ErrorCode $(if ($_.Exception.Message -like 'Command timed out*') { 'ToolTimeout' } else { 'RuntimeError' })
                         Write-ReconLog -Level WARN -Message ("Skipping httpx batch {0}/{1} after repeated failure." -f $batchIndex, $batchCount)
@@ -3356,23 +3479,7 @@ function Invoke-HttpProbe {
 
             $stdoutCaptured = if (Test-Path -LiteralPath $stdoutFile) { Get-Content -LiteralPath $stdoutFile -Raw -Encoding utf8 } else { '' }
             if ($result.ExitCode -eq 0 -and [string]::IsNullOrWhiteSpace([string]$stdoutCaptured)) {
-                Write-ReconLog -Level WARN -Message ("httpx batch {0}/{1} returned empty stdout via redirected capture. Retrying with direct stdio capture." -f $batchIndex, $batchCount)
-                try {
-                    $retryResult = Invoke-ExternalCommandArgumentSafe -FilePath $HttpxPath -Arguments $arguments -TimeoutSeconds $batchTimeoutSeconds -IgnoreExitCode
-                    Set-Content -LiteralPath $stdoutFile -Value ([string]$retryResult.StdOut) -Encoding utf8
-                    Set-Content -LiteralPath $stderrFile -Value ([string]$retryResult.StdErr) -Encoding utf8
-                    $result = [pscustomobject]@{
-                        ExitCode   = $retryResult.ExitCode
-                        StdOut     = $retryResult.StdOut
-                        StdErr     = $retryResult.StdErr
-                        StdOutPath = $stdoutFile
-                        StdErrPath = $stderrFile
-                        FilePath   = $retryResult.FilePath
-                        Arguments  = $retryResult.Arguments
-                    }
-                } catch {
-                    Write-ReconLog -Level WARN -Message ("httpx batch {0}/{1} direct stdio retry failed. Continuing with the original empty capture." -f $batchIndex, $batchCount)
-                }
+                Write-ReconLog -Level WARN -Message ("httpx batch {0}/{1} returned empty stdout after direct stdio capture." -f $batchIndex, $batchCount)
             }
 
             if (Test-Path -LiteralPath $stdoutFile) {
@@ -5347,21 +5454,37 @@ function Export-ReconReport {
         }
     }
 
-    $runSettings = if ($manifest -and $manifest.RunSettings) { $manifest.RunSettings } else { $null }
-    $toolSnapshot = if ($manifest -and $manifest.ToolSnapshot) { @($manifest.ToolSnapshot) } else { @() }
+    $runSettings = if ($manifest -and $manifest.PSObject.Properties['RunSettings'] -and $manifest.RunSettings) { $manifest.RunSettings } else { $null }
+    $toolSnapshot = if ($manifest -and $manifest.PSObject.Properties['ToolSnapshot'] -and $manifest.ToolSnapshot) { @($manifest.ToolSnapshot) } else { @() }
+    $manifestProgramName = if ($manifest -and $manifest.PSObject.Properties['ProgramName'] -and $manifest.ProgramName) { [string]$manifest.ProgramName } else { '' }
+    $manifestRunId = if ($manifest -and $manifest.PSObject.Properties['RunId'] -and $manifest.RunId) { [string]$manifest.RunId } else { '' }
+    $manifestStartTimeUtc = if ($manifest -and $manifest.PSObject.Properties['StartTimeUtc']) { $manifest.StartTimeUtc } else { $null }
+    $manifestEndTimeUtc = if ($manifest -and $manifest.PSObject.Properties['EndTimeUtc']) { $manifest.EndTimeUtc } else { $null }
     $shortlistItems = if ($triageData -and $triageData.Shortlist) { @($triageData.Shortlist | Select-Object -First 15) } else { @() }
     $shortlistFallbackTargets = if (@($shortlistItems).Count -eq 0) { @($reachableLiveTargets | Select-Object -First 5) } else { @() }
     $shortlistDisplayCount = if (@($shortlistItems).Count -gt 0) { @($shortlistItems).Count } else { @($shortlistFallbackTargets).Count }
-    $programLabel = if ($manifest -and $manifest.ProgramName) { [string]$manifest.ProgramName } else { [string]$Summary.ProgramName }
-    $runIdLabel = if ($manifest -and $manifest.RunId) { [string]$manifest.RunId } else { 'n/a' }
+    $programLabel = if (-not [string]::IsNullOrWhiteSpace($manifestProgramName)) { $manifestProgramName } else { [string]$Summary.ProgramName }
+    $runIdLabel = if (-not [string]::IsNullOrWhiteSpace($manifestRunId)) { $manifestRunId } else { 'n/a' }
     $presetLabel = if ($runSettings) { '{0} / {1}' -f [string]$runSettings.PresetName, [string]$runSettings.ProfileName } else { 'n/a' }
     $userAgentLabel = if ($runSettings -and $runSettings.UniqueUserAgent) { [string]$runSettings.UniqueUserAgent } elseif ($Summary.UniqueUserAgent) { [string]$Summary.UniqueUserAgent } else { 'n/a' }
+    $runDepth = $null
+    $depthLabel = 'n/a'
+    $parsedRunDepth = 0
+    if ($runSettings -and $null -ne $runSettings.Depth -and [int]::TryParse([string]$runSettings.Depth, [ref]$parsedRunDepth)) {
+        $runDepth = $parsedRunDepth
+        $depthLabel = [string]$parsedRunDepth
+    }
+    $depthAlertRowHtml = if ($null -ne $runDepth -and $runDepth -gt 5) {
+        '<div class="mini-row"><span>Crawl Alert</span><strong><span class="status-badge status-warning">Depth > 5</span></strong></div>'
+    } else {
+        ''
+    }
     $runStartedDisplay = 'n/a'
     $runEndedDisplay = if ($Summary.GeneratedAtUtc) { [string]$Summary.GeneratedAtUtc } else { 'n/a' }
     $durationDisplay = 'n/a'
     if ($manifest) {
-        $parsedStart = Convert-ToReportDateTimeOffset -Value $manifest.StartTimeUtc
-        $parsedEnd = Convert-ToReportDateTimeOffset -Value $manifest.EndTimeUtc
+        $parsedStart = Convert-ToReportDateTimeOffset -Value $manifestStartTimeUtc
+        $parsedEnd = Convert-ToReportDateTimeOffset -Value $manifestEndTimeUtc
         if ($null -ne $parsedStart) { $runStartedDisplay = $parsedStart.UtcDateTime.ToString('yyyy-MM-dd HH:mm:ss ''UTC''') }
         if ($null -ne $parsedEnd) { $runEndedDisplay = $parsedEnd.UtcDateTime.ToString('yyyy-MM-dd HH:mm:ss ''UTC''') }
         if (($null -ne $parsedStart) -and ($null -ne $parsedEnd)) { $durationDisplay = Format-RunDuration -Duration ($parsedEnd - $parsedStart) }
@@ -5507,7 +5630,7 @@ function Export-ReconReport {
 <body><header class="hero-header"><div class="hero-inner"><div class="hero-title"><div class="hero-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12h16"/><path d="M12 4v16"/><circle cx="12" cy="12" r="9"/></svg></div><div><div class="hero-eyebrow">Security Recon Dashboard</div><h1>$(ConvertTo-HtmlSafe $programLabel)</h1><div class="hero-meta-line">Run <span class="mono">$(ConvertTo-HtmlSafe $runIdLabel)</span> · Timestamp <span class="mono">$(ConvertTo-HtmlSafe $runEndedDisplay)</span> · Duration <span class="mono">$(ConvertTo-HtmlSafe $durationDisplay)</span></div></div></div><div class="hero-cards"><div class="hero-card"><div class="hero-card-label">Preset</div><div class="hero-card-value mono">$(ConvertTo-HtmlSafe $presetLabel)</div></div><div class="hero-card"><div class="hero-card-label">User-Agent</div><div class="hero-card-value mono">$(ConvertTo-HtmlSafe $userAgentLabel)</div></div><div class="hero-card"><div class="hero-card-label">Run Started</div><div class="hero-card-value mono">$(ConvertTo-HtmlSafe $runStartedDisplay)</div></div><div class="hero-card"><div class="hero-card-label">Run Ended</div><div class="hero-card-value mono">$(ConvertTo-HtmlSafe $runEndedDisplay)</div></div></div></div></header><div class="wrap">
 <div class="toolbar-card"><div class="toolbar-row"><div class="toolbar-copy">Professional offensive-security layout with triage-first navigation.</div><div class="toolbar-actions"><button type="button" class="tool-btn" data-expand-sections="true">Expand All</button><button type="button" class="tool-btn" data-collapse-sections="true">Collapse All</button><button type="button" class="tool-btn" data-clear-search="true">Clear Filter</button></div></div><div class="toolbar-row"><input id="globalSearch" class="search search-inline" type="search" placeholder="Filter URLs, families, scopes, status codes..." /><div class="quick-filters"><button type="button" class="filter-chip" data-filter-value="critical">Critical</button><button type="button" class="filter-chip" data-filter-value="protected">Protected</button><button type="button" class="filter-chip" data-filter-value="api">API</button><button type="button" class="filter-chip" data-filter-value="auth">Auth</button><button type="button" class="filter-chip" data-filter-value="admin">Admin</button><button type="button" class="filter-chip" data-filter-value="401">401</button><button type="button" class="filter-chip" data-filter-value="403">403</button></div></div><nav class="quick-nav"><a class="nav-pill" href="#section-shortlist" data-open-section="section-shortlist">Shortlist <span class="section-count">$shortlistDisplayCount</span></a><a class="nav-pill" href="#section-auth" data-open-section="section-auth">Auth <span class="section-count">$(@($Summary.TopAuthReviewable).Count)</span></a><a class="nav-pill" href="#section-interesting" data-open-section="section-interesting">Interesting <span class="section-count">$(@($InterestingUrls).Count)</span></a><a class="nav-pill" href="#section-protected" data-open-section="section-protected">Protected <span class="section-count">$protectedTargetCount</span></a><a class="nav-pill" href="#section-live" data-open-section="section-live">Reachable <span class="section-count">$reachableLiveTargetCount</span></a><a class="nav-pill" href="#section-dead" data-open-section="section-dead">Dead / Unstable <span class="section-count">$deadOrUnstableTargetCount</span></a><a class="nav-pill" href="#section-discovered" data-open-section="section-discovered">Discovered URLs <span class="section-count">$(@($DiscoveredUrls).Count)</span></a><a class="nav-pill" href="#section-excluded" data-open-section="section-excluded">Excluded <span class="section-count">$reportExcludedCount</span></a></nav></div>
 <div class="grid">$kpiCardsHtml</div>
-<div class="dashboard-shell"><section class="card"><h2 class="panel-title">Priority Overview</h2><div class="panel-subtitle">Critical, high and medium findings grouped for immediate triage. URLs stay fully clickable and copyable.</div><div class="priority-columns">$priorityOverviewHtml</div></section><div class="insight-stack"><section class="card"><h2 class="panel-title">HTTP Status Distribution</h2><div class="panel-subtitle">Current retained live-target mix by HTTP status.</div><div style="margin-top:16px;">$statusChartHtml</div></section><section class="card"><h2 class="panel-title">Run Snapshot</h2><div class="mini-row"><span>Preset / Profile</span><strong class="mono">$(ConvertTo-HtmlSafe $presetLabel)</strong></div><div class="mini-row"><span>User-Agent</span><strong class="mono">$(ConvertTo-HtmlSafe $userAgentLabel)</strong></div><div class="mini-row"><span>Interesting Families</span><strong class="mono">$interestingFamilyCount</strong></div><div class="mini-row"><span>Protected Endpoints</span><strong class="mono">$protectedTargetCount</strong></div></section></div></div>
+<div class="dashboard-shell"><section class="card"><h2 class="panel-title">Priority Overview</h2><div class="panel-subtitle">Critical, high and medium findings grouped for immediate triage. URLs stay fully clickable and copyable.</div><div class="priority-columns">$priorityOverviewHtml</div></section><div class="insight-stack"><section class="card"><h2 class="panel-title">HTTP Status Distribution</h2><div class="panel-subtitle">Current retained live-target mix by HTTP status.</div><div style="margin-top:16px;">$statusChartHtml</div></section><section class="card"><h2 class="panel-title">Run Snapshot</h2><div class="mini-row"><span>Preset / Profile</span><strong class="mono">$(ConvertTo-HtmlSafe $presetLabel)</strong></div><div class="mini-row"><span>User-Agent</span><strong class="mono">$(ConvertTo-HtmlSafe $userAgentLabel)</strong></div><div class="mini-row"><span>Depth</span><strong class="mono">$(ConvertTo-HtmlSafe $depthLabel)</strong></div>$depthAlertRowHtml<div class="mini-row"><span>Interesting Families</span><strong class="mono">$interestingFamilyCount</strong></div><div class="mini-row"><span>Protected Endpoints</span><strong class="mono">$protectedTargetCount</strong></div></section></div></div>
 <details open id="section-shortlist" class="report-section"><summary><span>Shortlist</span><small>$shortlistSectionSubtitle</small></summary><div class="section-body"><div class="shortlist-grid">$shortlistCardsHtml</div></div></details>
 <details open id="section-auth" class="report-section"><summary><span>Auth Endpoints</span><small>Top authentication reviewables with status, reason and suggested action.</small></summary><div class="section-body"><div class="table-scroll"><table data-filter-table="true" data-sort-table="true"><thead><tr><th><button type="button">URL</button></th><th><button type="button">Status</button></th><th><button type="button">Reason</button></th><th><button type="button">Suggested Action</button></th></tr></thead><tbody>$authRows</tbody></table></div></div></details>
 <section class="card next-actions-panel"><h2 class="panel-title">Next Actions</h2><div class="panel-subtitle">Checklist built from the current triage signals.</div><div class="actions-grid">$nextActionChecklistHtml</div></section>

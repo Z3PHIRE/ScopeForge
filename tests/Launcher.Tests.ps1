@@ -86,7 +86,7 @@ Describe 'ScopeForge launcher boolean handling' {
                 -DefaultOutputDir '.\output' `
                 -ManagedScopeFile:$false
 
-            foreach ($snippet in @('1. Domain', '2. Wildcard', '3. URL', 'Etape 2 - Construire un scope avec plusieurs cibles', 'Dictionnaires / wordlists', 'Le launcher valide les fichiers')) {
+            foreach ($snippet in @('1. Domain', '2. Wildcard', '3. URL', 'Etape 2 - Construire un scope avec plusieurs cibles', 'Dictionnaires / wordlists', 'Le launcher valide les fichiers', 'Au-dela de 5, le run peut')) {
                 if ($content -notlike ("*{0}*" -f $snippet)) {
                     throw ("Expected START-HERE content to contain '{0}'." -f $snippet)
                 }
@@ -111,6 +111,33 @@ Describe 'ScopeForge launcher boolean handling' {
             }
 
             Show-LauncherPreRunSummary -ScopeItems $scopeItems -RunConfig $runConfig
+        }
+
+        It 'surfaces a high-depth warning in the pre-run summary' {
+            $scopeItems = @([pscustomobject]@{ Id = 'scope-001'; Type = 'URL'; NormalizedValue = 'https://app.example.com/'; Exclusions = @() })
+            $runConfig = @{
+                OutputDir         = '.\output'
+                Resume            = $false
+                EnableGau         = $true
+                EnableWaybackUrls = $true
+                EnableHakrawler   = $true
+                Depth             = 6
+                Threads           = 10
+                IncludeApex       = $false
+            }
+            $script:preRunMessages = @()
+            Mock Write-Host {
+                param($Object, $ForegroundColor)
+                if ($null -ne $Object) {
+                    $script:preRunMessages += [string]$Object
+                }
+            }
+
+            Show-LauncherPreRunSummary -ScopeItems $scopeItems -RunConfig $runConfig
+
+            if (-not ($script:preRunMessages | Where-Object { $_ -like '*depth=6 est tres eleve*' } | Select-Object -First 1)) {
+                throw 'Expected the pre-run summary to surface the high-depth crawl warning.'
+            }
         }
 
         It 'renders the compact dashboard with a persistent banner and without tables by default' {
@@ -346,6 +373,51 @@ Describe 'ScopeForge launcher boolean handling' {
             if ($result.EnableGau.GetType().FullName -ne 'System.Boolean') { throw 'Expected EnableGau to stay a native boolean.' }
             if ($result.NoInstall.GetType().FullName -ne 'System.Boolean') { throw 'Expected NoInstall to stay a native boolean.' }
             if ($result.Resume.GetType().FullName -ne 'System.Boolean') { throw 'Expected Resume to stay a native boolean.' }
+        }
+
+        It 'records a launcher warning when the configured crawl depth exceeds five' {
+            $script:launcherSettingsJson = @'
+{
+  "preset": "balanced",
+  "profile": "webapp",
+  "programName": "demo",
+  "outputDir": "./output",
+  "depth": 6,
+  "threads": 12,
+  "timeoutSeconds": 45,
+  "uniqueUserAgent": "ua-test",
+  "includeApex": false,
+  "respectSchemeOnly": false,
+  "enableGau": true,
+  "enableWaybackUrls": true,
+  "enableHakrawler": true,
+  "noInstall": false,
+  "quiet": false,
+  "resume": false,
+  "openReportOnFinish": true
+}
+'@
+
+            $result = Build-DocumentRunConfig `
+                -InitialScopeFile '.\scope.json' `
+                -ProgramName 'demo' `
+                -OutputDir '.\output' `
+                -Depth 3 `
+                -UniqueUserAgent 'ua-test' `
+                -Threads 10 `
+                -TimeoutSeconds 30 `
+                -EnableGau $true `
+                -EnableWaybackUrls $true `
+                -EnableHakrawler $true `
+                -NoInstall $false `
+                -Quiet $false `
+                -IncludeApex $false `
+                -RespectSchemeOnly $false `
+                -Resume $false `
+                -OpenReportOnFinish $true
+
+            if (@($result.LauncherWarnings).Count -ne 1) { throw 'Expected a single high-depth launcher warning to be recorded.' }
+            if ($result.LauncherWarnings[0] -notlike '*depth=6 est tres eleve*') { throw 'Expected the launcher warning to mention the configured depth.' }
         }
 
         It 'surfaces an invalid document boolean before accepting a corrected rerun' {
@@ -593,6 +665,76 @@ Describe 'ScopeForge launcher boolean handling' {
             if (-not (Test-Path -LiteralPath $manifest.CatalogPath)) { throw 'Expected a catalog copy of the manifest to exist.' }
             if ($manifest.RepoVersion.GitCommit -ne 'abc1234') { throw 'Expected manifest to capture repo version metadata.' }
             if ($manifest.ToolSnapshot[0].Version -ne 'httpx 1.7.0') { throw 'Expected manifest to capture tool snapshot metadata.' }
+        }
+
+        It 'records config divergence when an optional enabled tool is unavailable' {
+            $outputDir = Join-Path $TestDrive 'output-divergence'
+            $scopeFile = Join-Path $TestDrive 'scope-divergence.json'
+            Set-Content -LiteralPath $scopeFile -Encoding utf8 -Value '[{"type":"Domain","value":"example.com","exclusions":[]}]'
+
+            $runConfig = @{
+                RunId               = 'run-divergence'
+                ScopeFile           = $scopeFile
+                ProgramName         = 'demo'
+                OutputDir           = $outputDir
+                Depth               = 3
+                UniqueUserAgent     = 'ua-test'
+                Threads             = 10
+                TimeoutSeconds      = 30
+                EnableGau           = $false
+                EnableWaybackUrls   = $false
+                EnableHakrawler     = $true
+                NoInstall           = $false
+                Quiet               = $false
+                IncludeApex         = $false
+                RespectSchemeOnly   = $false
+                Resume              = $false
+                OpenReportOnFinish  = $true
+            }
+            $result = [pscustomobject]@{
+                ProgramName = 'demo'
+                OutputDir   = $outputDir
+                Summary     = [pscustomobject]@{
+                    ScopeItemCount            = 1
+                    ExcludedItemCount         = 0
+                    DiscoveredHostCount       = 1
+                    LiveHostCount             = 1
+                    LiveTargetCount           = 1
+                    DiscoveredUrlCount        = 1
+                    InterestingUrlCount       = 0
+                    ProtectedInterestingCount = 0
+                    ErrorCount                = 0
+                }
+            }
+
+            $manifest = Save-LauncherRunManifest -RunConfig $runConfig -Result $result -RunStartedAtUtc '2026-03-26T12:00:00Z' -RunEndedAtUtc '2026-03-26T12:05:00Z'
+
+            if (@($manifest.ConfigDivergence).Count -ne 1) { throw 'Expected a single config divergence entry for hakrawler.' }
+            if ($manifest.ConfigDivergence[0].Setting -ne 'EnableHakrawler') { throw 'Expected the divergence to point at EnableHakrawler.' }
+            if ($manifest.ConfigDivergence[0].Actual -ne 'tool-unavailable') { throw 'Expected the divergence to record an unavailable tool.' }
+        }
+
+        It 'prints launcher warnings for config divergence entries' {
+            $script:divergenceMessages = @()
+            Mock Write-Host {
+                param($Object, $ForegroundColor)
+                if ($null -ne $Object) {
+                    $script:divergenceMessages += [string]$Object
+                }
+            }
+
+            Show-LauncherConfigDivergenceWarnings -ConfigDivergence @(
+                [pscustomobject]@{
+                    Setting = 'EnableHakrawler'
+                    Value   = $true
+                    Actual  = 'tool-unavailable'
+                    Impact  = 'Coverage reduced - this tool was enabled but could not run.'
+                }
+            )
+
+            if (-not ($script:divergenceMessages | Where-Object { $_ -like '*EnableHakrawler=true but hakrawler is unavailable*' } | Select-Object -First 1)) {
+                throw 'Expected the launcher warning to explain the hakrawler divergence.'
+            }
         }
 
         It 'creates a rerun config with a fresh output directory and frozen scope' {

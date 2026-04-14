@@ -625,6 +625,136 @@ Describe 'ScopeForge triage content signals' {
         $triageMarkdown = Get-Content -LiteralPath $layout.TriageMarkdown -Raw -Encoding utf8
         if ($triageMarkdown -notlike '*- Parameters: client_id, response_type, scope*') { throw 'Expected triage markdown to expose matched parameter names.' }
     }
+
+    It 'removes Segment and Next.js volatile parameters from review keys while preserving functional parameters' {
+        $analysis = Get-ReviewUrlAnalysis -Url 'https://auth.example.com/khealth/login?segment_anonymous_id=550e8400-e29b-41d4-a716-446655440000&_rsc=1a2b3c&returnUrl=%2Fhome'
+
+        if (-not $analysis.HasVolatileParams) { throw 'Expected volatile tracking parameters to be flagged.' }
+        if ($analysis.ReviewKey -ne 'https://auth.example.com/khealth/login?returnUrl=%2Fhome') { throw 'Expected volatile tracking parameters to be removed from the review key.' }
+        if ((@($analysis.Parameters) -join ',') -ne 'returnUrl') { throw 'Expected only functional parameter names to remain after volatile filtering.' }
+    }
+
+    It 'forces Auth as the primary family when auth routes also match operations patterns' {
+        $triageState = [pscustomobject]@{
+            Path              = Join-Path $TestDrive 'triage-state-auth-operations.json'
+            Entries           = @{}
+            IgnoreKeys        = New-ScopeForgeStringSet
+            FalsePositiveKeys = New-ScopeForgeStringSet
+            ValidatedKeys     = New-ScopeForgeStringSet
+            SeenKeys          = New-ScopeForgeStringSet
+        }
+
+        $triage = Get-TriageReconData -LiveTargets @() -DiscoveredUrls @(
+            [pscustomobject]@{
+                Url         = 'https://auth.example.com/login/status?trace=1'
+                Host        = 'auth.example.com'
+                ScopeId     = 'scope-001'
+                Source      = 'katana'
+                StatusCode  = 403
+                ContentType = 'text/html'
+            }
+        ) -TriageState $triageState
+
+        $finding = @($triage.ReviewableFindings | Select-Object -First 1)
+        if (-not $finding) { throw 'Expected the overlapping auth/operations route to remain reviewable.' }
+        if ($finding[0].PrimaryFamily -ne 'Auth') { throw 'Expected Auth to override Operations for login-style routes.' }
+        if ($finding[0].Categories -notcontains 'Auth') { throw 'Expected the overlapping route to keep its Auth category.' }
+    }
+
+    It 'deduplicates the shortlist by normalized base path when multiple reviewable URLs share the same endpoint path' {
+        $triageState = [pscustomobject]@{
+            Path              = Join-Path $TestDrive 'triage-state-shortlist-basepath.json'
+            Entries           = @{}
+            IgnoreKeys        = New-ScopeForgeStringSet
+            FalsePositiveKeys = New-ScopeForgeStringSet
+            ValidatedKeys     = New-ScopeForgeStringSet
+            SeenKeys          = New-ScopeForgeStringSet
+        }
+
+        $triage = Get-TriageReconData -LiveTargets @() -DiscoveredUrls @(
+            [pscustomobject]@{
+                Url         = 'https://auth.example.com/khealth/login?returnUrl=%2Fhome'
+                Host        = 'auth.example.com'
+                ScopeId     = 'scope-001'
+                Source      = 'katana'
+                StatusCode  = 403
+                ContentType = 'text/html'
+            },
+            [pscustomobject]@{
+                Url         = 'https://auth.example.com/khealth/login?returnUrl=%2Fbilling'
+                Host        = 'auth.example.com'
+                ScopeId     = 'scope-001'
+                Source      = 'katana'
+                StatusCode  = 403
+                ContentType = 'text/html'
+            },
+            [pscustomobject]@{
+                Url         = 'https://app.example.com/graphql'
+                Host        = 'app.example.com'
+                ScopeId     = 'scope-002'
+                Source      = 'katana'
+                StatusCode  = 403
+                ContentType = 'text/html'
+            }
+        ) -TriageState $triageState
+
+        $loginShortlistEntries = @($triage.Shortlist | Where-Object { $_.Url -like 'https://auth.example.com/khealth/login*' })
+        if (@($triage.ReviewableFindings).Count -ne 3) { throw 'Expected all three URLs to remain reviewable before shortlist shaping.' }
+        if (@($triage.Shortlist).Count -ne 2) { throw 'Expected shortlist shaping to collapse duplicate base paths.' }
+        if ($loginShortlistEntries.Count -ne 1) { throw 'Expected only one login base path entry to survive in the shortlist.' }
+        if ((@($triage.Shortlist | Select-Object -ExpandProperty Url) -notcontains 'https://app.example.com/graphql')) { throw 'Expected the shortlist to keep the distinct secondary endpoint.' }
+    }
+
+    It 'promotes session, patient-data and telemetry endpoints with enriched API scoring' {
+        $triageState = [pscustomobject]@{
+            Path              = Join-Path $TestDrive 'triage-state-api-enrichment.json'
+            Entries           = @{}
+            IgnoreKeys        = New-ScopeForgeStringSet
+            FalsePositiveKeys = New-ScopeForgeStringSet
+            ValidatedKeys     = New-ScopeForgeStringSet
+            SeenKeys          = New-ScopeForgeStringSet
+        }
+
+        $triage = Get-TriageReconData -LiveTargets @() -DiscoveredUrls @(
+            [pscustomobject]@{
+                Url         = 'https://accounts.example.com/api/account/session'
+                Host        = 'accounts.example.com'
+                ScopeId     = 'scope-001'
+                Source      = 'katana'
+                StatusCode  = 403
+                ContentType = 'application/json'
+            },
+            [pscustomobject]@{
+                Url         = 'https://app.example.com/api/patient-onboarding-data'
+                Host        = 'app.example.com'
+                ScopeId     = 'scope-001'
+                Source      = 'katana'
+                StatusCode  = 200
+                ContentType = 'application/json'
+            },
+            [pscustomobject]@{
+                Url         = 'https://otel-http.example.com/clienttoken/v1/traces'
+                Host        = 'otel-http.example.com'
+                ScopeId     = 'scope-001'
+                Source      = 'katana'
+                StatusCode  = 200
+                ContentType = 'application/json'
+            }
+        ) -TriageState $triageState
+
+        $sessionFinding = @($triage.ReviewableFindings | Where-Object { $_.Url -eq 'https://accounts.example.com/api/account/session' } | Select-Object -First 1)
+        $patientFinding = @($triage.ReviewableFindings | Where-Object { $_.Url -eq 'https://app.example.com/api/patient-onboarding-data' } | Select-Object -First 1)
+        $telemetryFinding = @($triage.ReviewableFindings | Where-Object { $_.Url -eq 'https://otel-http.example.com/clienttoken/v1/traces' } | Select-Object -First 1)
+
+        if (-not $sessionFinding -or -not $patientFinding -or -not $telemetryFinding) { throw 'Expected all enriched API endpoints to remain reviewable.' }
+        if ($sessionFinding[0].Priority -ne 'Critical') { throw 'Expected the session endpoint to be promoted to Critical.' }
+        if ($sessionFinding[0].PrimaryFamily -ne 'API') { throw 'Expected the session endpoint to map to the API family.' }
+        if ($sessionFinding[0].Reasons -notcontains 'Token or session management endpoint') { throw 'Expected the session endpoint to record the token/session reason.' }
+        if ($patientFinding[0].Priority -ne 'Critical') { throw 'Expected the patient-data endpoint to be promoted to Critical.' }
+        if ($patientFinding[0].Reasons -notcontains 'Sensitive data endpoint (medical/financial/PII)') { throw 'Expected the patient-data endpoint to record the sensitive-data reason.' }
+        if ($telemetryFinding[0].Priority -ne 'Critical') { throw 'Expected the telemetry endpoint to accumulate enough API signal for Critical priority.' }
+        if ($telemetryFinding[0].Reasons -notcontains 'Telemetry or observability ingestion endpoint') { throw 'Expected the telemetry endpoint to record the observability reason.' }
+    }
 }
 
 Describe 'ScopeForge discovered URL context propagation' {
@@ -1148,9 +1278,7 @@ Describe 'ScopeForge httpx diagnostics' {
             Description     = 'URL seed https://app.example.com/'
         }
 
-        Mock Invoke-ExternalCommand {
-            param($FilePath, $Arguments, $TimeoutSeconds, $StdOutPath, $StdErrPath, $IgnoreExitCode)
-
+        Mock Invoke-ExternalCommandArgumentSafe {
             $lines = @(
                 ([pscustomobject]@{ input = 'https://app.example.com/'; url = 'https://app.example.com/login'; 'status-code' = 200; title = 'Sign in' } | ConvertTo-Json -Compress),
                 ([pscustomobject]@{ input = 'https://app.example.com/'; url = 'https://app.example.com/login'; 'status-code' = 200; title = 'Sign in' } | ConvertTo-Json -Compress),
@@ -1162,15 +1290,12 @@ Describe 'ScopeForge httpx diagnostics' {
                 '{"url":'
             )
 
-            Set-Content -LiteralPath $StdOutPath -Value $lines -Encoding utf8
-            Set-Content -LiteralPath $StdErrPath -Value '' -Encoding utf8
-
             [pscustomobject]@{
                 ExitCode  = 0
-                StdOut    = ''
+                StdOut    = ($lines -join [Environment]::NewLine)
                 StdErr    = ''
-                FilePath  = $FilePath
-                Arguments = @($Arguments)
+                FilePath  = 'httpx.exe'
+                Arguments = @()
             }
         }
 
@@ -1233,6 +1358,15 @@ Describe 'ScopeForge httpx diagnostics' {
                 Arguments = @($Arguments)
             }
         }
+        Mock Invoke-ExternalCommandArgumentSafe {
+            [pscustomobject]@{
+                ExitCode  = 0
+                StdOut    = ''
+                StdErr    = ''
+                FilePath  = 'httpx.exe'
+                Arguments = @()
+            }
+        }
 
         $liveTargets = @(Invoke-HttpProbe -InputUrls @('https://app.example.com/') -ScopeItems @($scopeItem) -HttpxPath 'httpx.exe' -RawOutputPath $script:ScopeForgeContext.Layout.HttpxRaw -Threads 1 -TimeoutSeconds 10)
         $batchLog = Get-Content -LiteralPath $script:ScopeForgeContext.Layout.HttpxBatchLog -Raw -Encoding utf8
@@ -1254,7 +1388,7 @@ Describe 'ScopeForge httpx diagnostics' {
         if ($snapshotMeta.InputCount -ne 1 -or $snapshotMeta.FirstInputUrl -ne 'https://app.example.com/') { throw 'Expected the empty-batch context snapshot to preserve the first input URL and input count.' }
     }
 
-    It 'retries httpx batch capture with direct stdio when redirected stdout is empty' {
+    It 'uses direct stdio capture for httpx batches without falling back to redirected execution' {
         $scopeItem = [pscustomobject]@{
             Id               = 'scope-001'
             Index            = 1
@@ -1274,22 +1408,14 @@ Describe 'ScopeForge httpx diagnostics' {
             Description      = 'URL seed https://app.example.com/'
         }
 
+        $script:httpxRedirectedInvocationCount = 0
         Mock Invoke-ExternalCommand {
-            param($FilePath, $Arguments, $TimeoutSeconds, $StdOutPath, $StdErrPath, $IgnoreExitCode)
-
-            Set-Content -LiteralPath $StdOutPath -Value '' -Encoding utf8
-            Set-Content -LiteralPath $StdErrPath -Value '' -Encoding utf8
-
-            [pscustomobject]@{
-                ExitCode  = 0
-                StdOut    = ''
-                StdErr    = ''
-                FilePath  = $FilePath
-                Arguments = @($Arguments)
-            }
+            $script:httpxRedirectedInvocationCount++
+            throw 'Invoke-ExternalCommand should not be used for httpx batch probing.'
         }
 
         Mock Invoke-ExternalCommandArgumentSafe {
+            $script:httpxDirectInvocationCount = $(if (Get-Variable -Name httpxDirectInvocationCount -Scope Script -ErrorAction SilentlyContinue) { $script:httpxDirectInvocationCount + 1 } else { 1 })
             $jsonLine = ([pscustomobject]@{
                     input         = 'https://app.example.com/'
                     url           = 'https://app.example.com/api/profile'
@@ -1313,12 +1439,14 @@ Describe 'ScopeForge httpx diagnostics' {
         $liveTargets = @(Invoke-HttpProbe -InputUrls @('https://app.example.com/') -ScopeItems @($scopeItem) -HttpxPath 'httpx.exe' -RawOutputPath $script:ScopeForgeContext.Layout.HttpxRaw -Threads 1 -TimeoutSeconds 10)
         $batchLog = Get-Content -LiteralPath $script:ScopeForgeContext.Layout.HttpxBatchLog -Raw -Encoding utf8
 
-        if ($liveTargets.Count -ne 1) { throw 'Expected the direct stdio retry to recover one retained live target.' }
-        if ($liveTargets[0].Url -ne 'https://app.example.com/api/profile') { throw 'Expected the recovered target URL to come from the direct stdio retry.' }
-        if ($liveTargets[0].Title -ne 'Profile API') { throw 'Expected the recovered target title to be preserved.' }
-        if ($liveTargets[0].Technologies.Count -ne 2) { throw 'Expected the recovered technologies to be preserved.' }
+        if ($liveTargets.Count -ne 1) { throw 'Expected the direct stdio capture to retain one live target.' }
+        if ($liveTargets[0].Url -ne 'https://app.example.com/api/profile') { throw 'Expected the retained target URL to come from the direct stdio capture.' }
+        if ($liveTargets[0].Title -ne 'Profile API') { throw 'Expected the retained target title to be preserved.' }
+        if ($liveTargets[0].Technologies.Count -ne 2) { throw 'Expected the retained technologies to be preserved.' }
+        if ($script:httpxDirectInvocationCount -ne 1) { throw 'Expected httpx to run exactly once via direct stdio capture.' }
+        if ($script:httpxRedirectedInvocationCount -ne 0) { throw 'Expected redirected process capture to stay unused for httpx.' }
         if ($batchLog -notlike '*BATCH|index=1/1|input=1|stdout_lines=1|exit=0*') {
-            throw ("Expected the batch log to reflect the recovered stdout line. Actual log: {0}" -f $batchLog)
+            throw ("Expected the batch log to reflect the direct stdout line. Actual log: {0}" -f $batchLog)
         }
     }
 

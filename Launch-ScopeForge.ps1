@@ -744,6 +744,21 @@ function Show-LauncherPreRunSummary {
     if ($RunConfig.ContainsKey('Resume') -and [bool]$RunConfig.Resume) {
         $warnings.Add("Resume depend des donnees deja presentes dans le dossier de sortie.") | Out-Null
     }
+    if ($RunConfig.ContainsKey('Depth') -and [int]$RunConfig.Depth -gt 5) {
+        $depthWarning = ("⚠ depth={0} est tres eleve. Au-dela de 5, le crawl genere surtout du bruit (assets CDN, pages dynamiques) et peut durer plusieurs heures. Recommandation : depth=3 pour webapp, depth=2 pour api." -f [int]$RunConfig.Depth)
+        if ($warnings -notcontains $depthWarning) {
+            $warnings.Add($depthWarning) | Out-Null
+        }
+    }
+    if ($RunConfig.ContainsKey('LauncherWarnings')) {
+        foreach ($warning in @($RunConfig.LauncherWarnings)) {
+            $warningText = [string]$warning
+            if ([string]::IsNullOrWhiteSpace($warningText)) { continue }
+            if ($warnings -notcontains $warningText) {
+                $warnings.Add($warningText) | Out-Null
+            }
+        }
+    }
 
     Write-Host ''
     Write-Host '  Duree approximative' -ForegroundColor Cyan
@@ -4302,6 +4317,56 @@ function Get-LauncherToolSnapshot {
     )
 }
 
+function Get-LauncherConfigDivergence {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$RunConfig,
+        [Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$ToolSnapshot
+    )
+
+    $configDivergence = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($toolEntry in @(
+        [pscustomobject]@{ Name = 'gau'; ConfigKey = 'EnableGau' },
+        [pscustomobject]@{ Name = 'waybackurls'; ConfigKey = 'EnableWaybackUrls' },
+        [pscustomobject]@{ Name = 'hakrawler'; ConfigKey = 'EnableHakrawler' }
+    )) {
+        $isEnabled = if ($RunConfig.ContainsKey([string]$toolEntry.ConfigKey)) {
+            ConvertTo-LauncherBoolean -Value $RunConfig[[string]$toolEntry.ConfigKey] -Name ([string]$toolEntry.ConfigKey) -Default $false
+        } else {
+            $false
+        }
+
+        $inSnapshot = @($ToolSnapshot | Where-Object { [string]$_.Name -eq [string]$toolEntry.Name } | Select-Object -First 1)
+        if ($isEnabled -and $inSnapshot.Count -eq 0) {
+            $configDivergence.Add([pscustomobject]@{
+                Setting = [string]$toolEntry.ConfigKey
+                Value   = $true
+                Actual  = 'tool-unavailable'
+                Impact  = 'Coverage reduced - this tool was enabled but could not run.'
+            }) | Out-Null
+        }
+    }
+
+    return @($configDivergence)
+}
+
+function Show-LauncherConfigDivergenceWarnings {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyCollection()][pscustomobject[]]$ConfigDivergence)
+
+    foreach ($entry in @($ConfigDivergence)) {
+        $toolName = switch ([string]$entry.Setting) {
+            'EnableGau' { 'gau' }
+            'EnableWaybackUrls' { 'waybackurls' }
+            'EnableHakrawler' { 'hakrawler' }
+            default { ([string]$entry.Setting -replace '^Enable', '').ToLowerInvariant() }
+        }
+
+        Write-Host ("⚠ Config divergence: {0}=true but {1} is unavailable. Coverage is reduced." -f [string]$entry.Setting, $toolName) -ForegroundColor Yellow
+    }
+}
+
 function Get-LauncherRepoVersionDescriptor {
     $gitCommand = Get-Command -Name 'git' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($gitCommand) {
@@ -4353,6 +4418,8 @@ function Save-LauncherRunManifest {
     $repoVersion = Get-LauncherRepoVersionDescriptor
     $runId = if ($RunConfig.ContainsKey('RunId') -and $RunConfig.RunId) { [string]$RunConfig.RunId } else { [Guid]::NewGuid().ToString('N') }
     $summary = $Result.Summary
+    $toolSnapshot = @(Get-LauncherToolSnapshot -OutputDir $Result.OutputDir)
+    $configDivergence = @(Get-LauncherConfigDivergence -RunConfig $RunConfig -ToolSnapshot $toolSnapshot)
 
     $manifest = [ordered]@{
         ManifestVersion    = 1
@@ -4391,7 +4458,8 @@ function Save-LauncherRunManifest {
             EnginePath          = $(if ($engineInfo) { $engineInfo.Path } else { $null })
             EngineUpdatedUtc    = $(if ($engineInfo) { $engineInfo.LastWriteTimeUtc } else { $null })
         }
-        ToolSnapshot      = @(Get-LauncherToolSnapshot -OutputDir $Result.OutputDir)
+        ToolSnapshot      = $toolSnapshot
+        ConfigDivergence  = $configDivergence
         Reports           = [ordered]@{
             ManifestPath = $manifestPath
             ReportHtml   = Join-Path $Result.OutputDir 'reports/report.html'
@@ -4952,6 +5020,8 @@ Etape 6 - Remplir 02-run-settings.json
   - threads
   - timeoutSeconds
   - resume
+- `depth` : profondeur de crawl katana (recommande: 2-4). Au-dela de 5, le run peut
+  durer plusieurs heures et le signal/bruit devient defavorable.
 - Reglages qui affectent surtout la couverture :
   - enableGau
   - enableWaybackUrls
@@ -5241,9 +5311,14 @@ function Build-DocumentRunConfig {
                 New-LauncherConfigError -Field 'outputDir' -Value $outputDirValue -Problem 'Doit etre renseigné.' -Example '"outputDir": "./output"'
             }
 
+            $warnings = [System.Collections.Generic.List[string]]::new()
+
             $depthValue = Get-LauncherDocumentProperty -InputObject $settings -Name 'depth' -Default $null
             if ($null -ne $depthValue) {
                 $localDepth = ConvertTo-LauncherInteger -Value $depthValue -Name 'depth' -Default $localDepth -Minimum 1 -Maximum 20
+            }
+            if ($localDepth -gt 5) {
+                $warnings.Add(("⚠ depth={0} est tres eleve. Au-dela de 5, le crawl genere surtout du bruit (assets CDN, pages dynamiques) et peut durer plusieurs heures. Recommandation : depth=3 pour webapp, depth=2 pour api." -f $localDepth)) | Out-Null
             }
 
             $threadsValue = Get-LauncherDocumentProperty -InputObject $settings -Name 'threads' -Default $null
@@ -5301,6 +5376,7 @@ function Build-DocumentRunConfig {
                 LauncherSessionRoot    = $documentSet.RootPath
                 LauncherSessionId      = $(if ($documentSessionRecord) { $documentSessionRecord.session_id } else { $null })
                 LauncherLogMode        = $(if ($effectiveLoggingMode) { $effectiveLoggingMode } else { $(if ($documentSessionRecord) { $documentSessionRecord.logging_mode } else { Get-LauncherDefaultLoggingMode }) })
+                LauncherWarnings       = @($warnings)
                 ScopePreview           = $scopePreview
             }
         } catch {
@@ -5681,7 +5757,8 @@ function Start-ScopeForgeLauncher {
         $runConfig['LauncherSessionId'] = $sessionRecord.session_id
     }
 
-    Save-LauncherRunManifest -RunConfig $runConfig -Result $result -RunStartedAtUtc $runStartedAtUtc -RunEndedAtUtc ([DateTimeOffset]::UtcNow.ToString('o')) | Out-Null
+    $savedManifest = Save-LauncherRunManifest -RunConfig $runConfig -Result $result -RunStartedAtUtc $runStartedAtUtc -RunEndedAtUtc ([DateTimeOffset]::UtcNow.ToString('o'))
+    Show-LauncherConfigDivergenceWarnings -ConfigDivergence @($savedManifest.ConfigDivergence)
     Sync-LauncherReportHtml -Result $result
 
     $recentScopePath = Get-LauncherRecentScopeUpdatePath -RunConfig $runConfig
