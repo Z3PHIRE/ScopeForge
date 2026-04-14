@@ -47,30 +47,20 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $requiredPesterVersion = [version]'3.4.0'
+          # Install Pester 5.x for modern syntax support
           $installedPester = Get-Module -ListAvailable -Name Pester |
-            Where-Object { $_.Version -eq $requiredPesterVersion } |
+            Sort-Object Version -Descending |
             Select-Object -First 1
 
-          if (-not $installedPester) {
-            Install-Module -Name Pester -RequiredVersion $requiredPesterVersion -Scope CurrentUser -Force -SkipPublisherCheck -AllowClobber
+          if (-not $installedPester -or $installedPester.Version.Major -lt 5) {
+            Install-Module -Name Pester -MinimumVersion 5.0 -Scope CurrentUser -Force -SkipPublisherCheck -AllowClobber
           }
 
-          Import-Module Pester -RequiredVersion $requiredPesterVersion -Force
+          Import-Module Pester -MinimumVersion 5.0 -Force
 
-          $invokePester = Get-Command Invoke-Pester
-          $pesterParams = @{ PassThru = $true }
+          $config = New-PesterConfiguration
+          $config.Run.Path = '.\tests'
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
 
-          if ($invokePester.Parameters.ContainsKey('Path')) {
-            $pesterParams.Path = '.\tests'
-          }
-          else {
-            $pesterParams.Script = '.\tests'
-          }
-
-          $result = Invoke-Pester @pesterParams
-          $failedCount = if ($null -ne $result.FailedCount) { [int]$result.FailedCount } else { 0 }
-
-          if ($failedCount -gt 0) {
-            throw "Pester failures: $failedCount"
-          }
+          Invoke-Pester -Configuration $config

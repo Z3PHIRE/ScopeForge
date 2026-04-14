@@ -456,18 +456,57 @@ function Get-PlatformInfo {
     [CmdletBinding()]
     param()
 
-    $os = if ($IsWindows) { 'windows' } elseif ($IsLinux) { 'linux' } elseif ($IsMacOS) { 'darwin' } else { throw 'Unsupported OS.' }
-    $arch = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
-        'X64' { 'amd64' }
-        'Arm64' { 'arm64' }
-        'X86' { '386' }
-        default { throw "Unsupported architecture: $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)" }
+    # Compatibilite PowerShell 5.1 et PowerShell 7+
+    $os = $null
+    if (Get-Variable -Name 'IsWindows' -ErrorAction SilentlyContinue) {
+        # PowerShell 7+
+        if ($IsWindows) { $os = 'windows' }
+        elseif ($IsLinux) { $os = 'linux' }
+        elseif ($IsMacOS) { $os = 'darwin' }
+    } else {
+        # PowerShell 5.1 (Windows-only) ou fallback
+        if ($PSVersionTable.PSEdition -eq 'Desktop') {
+            $os = 'windows'
+        } else {
+            # Fallback via environnement
+            $envOS = [System.Environment]::OSVersion.Platform
+            if ($envOS -match 'Win') { $os = 'windows' }
+            elseif ($envOS -match 'Unix') { $os = 'linux' }
+            else { $os = 'windows' } # Default pour PS5.1
+        }
+    }
+
+    if (-not $os) { $os = 'windows' }
+
+    $arch = 'amd64'
+    try {
+        $runtimeArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+        $arch = switch ($runtimeArch) {
+            'X64' { 'amd64' }
+            'Arm64' { 'arm64' }
+            'X86' { '386' }
+            default { 'amd64' }
+        }
+    } catch {
+        # Fallback pour PowerShell 5.1
+        $ptrSize = [System.IntPtr]::Size
+        $arch = if ($ptrSize -eq 8) { 'amd64' } else { '386' }
+    }
+
+    $description = $null
+    try {
+        $description = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription
+    } catch {
+        $description = "{0} {1}" -f $os, (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue).ProductName
+        if (-not $description) {
+            $description = "{0} (platform inconnue)" -f $os
+        }
     }
 
     [pscustomobject]@{
         Os           = $os
         Architecture = $arch
-        Description  = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription
+        Description  = $description
     }
 }
 
@@ -908,6 +947,102 @@ function Invoke-ExternalCommandArgumentSafe {
         StdErr    = $stderr
         FilePath  = $resolvedFilePath
         Arguments = $filteredArguments
+    }
+}
+
+function Invoke-WithRetry {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][scriptblock]$ScriptBlock,
+        [string]$OperationName = 'Operation',
+        [ValidateRange(1, 10)][int]$MaxAttempts = 3,
+        [ValidateRange(1, 60)][int]$BaseDelaySeconds = 5,
+        [double]$BackoffMultiplier = 2.0
+    )
+
+    $attempt = 0
+    $lastError = $null
+
+    while ($attempt -lt $MaxAttempts) {
+        try {
+            return & $ScriptBlock
+        } catch {
+            $attempt++
+            $lastError = $_
+            if ($attempt -ge $MaxAttempts) {
+                Write-ReconLog -Level ERROR -Message ("{0} failed after {1} attempts: {2}" -f $OperationName, $MaxAttempts, $_.Exception.Message)
+                throw
+            }
+            $delay = [Math]::Round($BaseDelaySeconds * [Math]::Pow($BackoffMultiplier, $attempt - 1))
+            Write-ReconLog -Level WARN -Message ("{0} attempt {1}/{2} failed. Retrying in {3}s..." -f $OperationName, $attempt, $MaxAttempts, $delay)
+            Start-Sleep -Seconds $delay
+        }
+    }
+}
+
+function Start-ParallelRecon {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object[]]$Targets,
+        [Parameter(Mandatory)][scriptblock]$ScanScript,
+        [ValidateRange(1, 50)][int]$MaxConcurrency = 5,
+        [int]$PollIntervalMs = 500
+    )
+
+    $jobs = @()
+    $results = @()
+
+    Write-ReconLog -Level INFO -Message ("Starting parallel scan with {0} targets, max concurrency={1}" -f $Targets.Count, $MaxConcurrency)
+
+    try {
+        foreach ($target in $Targets) {
+            # Attendre qu'un slot se libere si on a atteint la limite
+            while ((Get-Job -State Running).Count -ge $MaxConcurrency) {
+                Start-Sleep -Milliseconds $PollIntervalMs
+            }
+
+            # Lancer un nouveau job
+            $jobs += Start-Job -ScriptBlock $ScanScript -ArgumentList $target
+        }
+
+        # Attendre tous les jobs
+        Write-ReconLog -Level INFO -Message ("Waiting for {0} background jobs to complete..." -f $jobs.Count)
+        $results = $jobs | Wait-Job -Timeout 3600 | ForEach-Object {
+            $job = $_
+            if ($job.State -eq 'Failed') {
+                Write-ReconLog -Level ERROR -Message ("Job failed: $($job.Name)")
+            }
+            Receive-Job -Job $job
+            Remove-Job -Job $job -Force
+        }
+    } catch {
+        Write-ReconLog -Level ERROR -Message ("Parallel scan error: $_")
+        # Nettoyer tous les jobs restants
+        Get-Job | Remove-Job -Force -ErrorAction SilentlyContinue
+        throw
+    }
+
+    Write-ReconLog -Level INFO -Message ("Parallel scan completed. {0} results collected." -f $results.Count)
+    return $results
+}
+
+function Test-ToolHealth {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ToolPath,
+        [int]$TimeoutSeconds = 10
+    )
+
+    try {
+        if (-not (Test-Path -LiteralPath $ToolPath)) {
+            return $false
+        }
+
+        # Essayer d'obtenir la version
+        $version = Invoke-ExternalCommand -FilePath $ToolPath -Arguments @('-version', '--version', '-v') -TimeoutSeconds $TimeoutSeconds -IgnoreExitCode -ErrorAction SilentlyContinue
+        return $null -ne $version
+    } catch {
+        return $false
     }
 }
 
@@ -5351,6 +5486,19 @@ function Invoke-BugBountyRecon {
         [bool]$EnableGau = $true,
         [bool]$EnableWaybackUrls = $true,
         [bool]$EnableHakrawler = $true,
+        # Nouveaux outils pour couverture etendue
+        [bool]$EnableNuclei = $false,
+        [bool]$EnableDnsx = $false,
+        [bool]$EnableWhatweb = $false,
+        # Scan profile : fast, normal, aggressive
+        [ValidateSet('fast', 'normal', 'aggressive')][string]$ScanProfile = 'fast',
+        # Options nuclei
+        [string]$NucleiTemplates = '',
+        [string]$NucleiSeverity = 'critical,high,medium',
+        # Options parallellisation
+        [ValidateRange(1, 50)][int]$MaxParallelTargets = 5,
+        # Retry et fiabilite
+        [ValidateRange(1, 10)][int]$MaxRetries = 3,
         [switch]$NoInstall,
         [switch]$Quiet,
         [switch]$IncludeApex,
