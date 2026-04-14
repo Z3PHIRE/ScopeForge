@@ -60,7 +60,36 @@ jobs:
 
           $config = New-PesterConfiguration
           $config.Run.Path = '.\tests'
-          $config.Run.Exit = $true
+          $config.Run.PassThru = $true
           $config.Output.Verbosity = 'Detailed'
+          $config.TestResult.Enabled = $true
+          $config.TestResult.OutputPath = '.\artifacts\pester\nunit.xml'
+          $config.TestResult.OutputFormat = 'NUnitXml'
 
-          Invoke-Pester -Configuration $config
+          if (-not (Test-Path -LiteralPath '.\artifacts\pester')) {
+            $null = New-Item -ItemType Directory -Path '.\artifacts\pester' -Force
+          }
+
+          $result = Invoke-Pester -Configuration $config
+
+          if ($result.FailedCount -gt 0) {
+            Write-Host ''
+            Write-Host 'Pester failures:' -ForegroundColor Red
+            foreach ($failed in @($result.Failed)) {
+              Write-Host ("- {0}" -f $failed.ExpandedPath) -ForegroundColor Red
+              if ($failed.ErrorRecord) {
+                Write-Host ("  {0}" -f $failed.ErrorRecord) -ForegroundColor DarkRed
+              } elseif ($failed.FailureMessage) {
+                Write-Host ("  {0}" -f $failed.FailureMessage) -ForegroundColor DarkRed
+              }
+            }
+            throw "Pester reported $($result.FailedCount) failing test(s)."
+          }
+
+      - name: Upload Pester results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pester-results
+          path: .\artifacts\pester\nunit.xml
+          if-no-files-found: ignore

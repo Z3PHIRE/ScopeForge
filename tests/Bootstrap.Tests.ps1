@@ -5,7 +5,7 @@ Describe 'ScopeForge bootstrap refresh' {
     It 'renders bootstrap status when cache timestamps are unavailable' {
         Mock Write-Host { }
 
-        Show-BootstrapStatusPanel -BootstrapRoot (Join-Path $TestDrive 'bootstrap-null-status') -RepositoryOwner 'Z3PHIRE' -RepositoryName 'ScopeForge' -Branch 'main' -LauncherPath (Join-Path $TestDrive 'Launch-ScopeForge.ps1') -UpdatedUtc $null -WillRefresh:$true -ForcedRefresh:$false -RefreshReason 'First download' -RemoteVersionKey $null -AppliedVersionKey $null -VersionCheckStatus 'Remote version key unavailable.' -CheckedAtUtc $null -AutoRefreshHours 24
+        Show-BootstrapStatusPanel -BootstrapRoot (Join-Path $TestDrive 'bootstrap-null-status') -SourceLabel 'https://raw.githubusercontent.com/Z3PHIRE/ScopeForge/main' -LauncherPath (Join-Path $TestDrive 'Launch-ScopeForge.ps1') -UpdatedUtc $null -WillRefresh:$true -ForcedRefresh:$false -RefreshReason 'First download' -RemoteVersionKey $null -AppliedVersionKey $null -VersionCheckStatus 'Remote version key unavailable.' -CheckedAtUtc $null -AutoRefreshHours 24
     }
 
     It 'writes bootstrap metadata when the last checked timestamp is unavailable' {
